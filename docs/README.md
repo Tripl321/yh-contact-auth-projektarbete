@@ -1,11 +1,27 @@
-# Teknisk referensdokumentation
+# SHALLOT — Teknisk Dokumentation
 
-Denna katalog innehaller teknisk referensdokumentation for projektet.
-Formell projektdokumentation (kravspecifikation, arkitektur, protokoll,
-säkerhetsdesign, slutrapport) lagras i Craft och hanteras via Craft MCP.
+Detta är den tekniska dokumentationen för projektet SHALLOT (Secure-by-Design ID-bricka för OT-miljö). All dokumentation skrivs som Markdown och versionshanteras i detta repo.
 
-## Referensdokument i detta repo
+## Dokumentstruktur
 
-- Pin-tilldelningar och kopplingsscheman
-- Protokollspecifikation (LoRa P2P)
-- Biblioteksberoenden och versioner
+| Dokument | Vecka | Status |
+|----------|-------|--------|
+| [01-kravspecifikation.md](01-kravspecifikation.md) | 1 | Ej påbörjad |
+| [02-arkitektur.md](02-arkitektur.md) | 1 | Ej påbörjad |
+| [03-komponentval.md](03-komponentval.md) | 1 | Ej påbörjad |
+| [04-kopplingsdokumentation.md](04-kopplingsdokumentation.md) | 1 | Ej påbörjad |
+| [05-protokollspecifikation.md](05-protokollspecifikation.md) | 2 | Ej påbörjad |
+| [06-radio-parametrar.md](06-radio-parametrar.md) | 2 | Ej påbörjad |
+| [07-sakerhetsdesign.md](07-sakerhetsdesign.md) | 3 | Ej påbörjad |
+| [08-hotmodellering.md](08-hotmodellering.md) | 3 | Ej påbörjad |
+| [09-integrationsbeskrivning.md](09-integrationsbeskrivning.md) | 4 | Ej påbörjad |
+| [10-resultat-och-reflektion.md](10-resultat-och-reflektion.md) | 4 | Ej påbörjad |
+| [11-framework-mappning.md](11-framework-mappning.md) | 4 | Ej påbörjad |
+
+## Konventioner
+
+- Filnamn: NN-namn.md (NN = tvåsiffrigt löpnummer)
+- Språk: Svenska
+- Diagram: Mermaid eller inbäddade SVG-bilder i docs/assets/
+- Bilder av breadboard: docs/assets/photos/
+- Export till PDF för slutinlämning sker i vecka 4
