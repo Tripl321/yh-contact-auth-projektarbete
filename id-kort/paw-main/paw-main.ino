@@ -8,10 +8,10 @@
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
  *   - PRO-58: LoRa P2P communication with PLC
  *
- * Hardware pin mapping:
- *   UART (UNO Q):  GP0=TX, GP1=RX (Serial1)
- *   LoRa (SPI1):   GP10=CLK, GP11=MOSI, GP28=MISO, GP9=CS, GP6=BUSY, GP8=RESET, GP21=DIO1
- *   e-Paper (SPI0):GP23=DIN, GP22=SCK, GP5=CS, GP24=DC, GP25=RST, GP7=BUSY
+ * Hardware pin mapping (using exact Feather RP2350 silkscreen labels):
+ *   UART (UNO Q):  TX->1, RX->0 (Serial1)
+ *   LoRa (SPI1):   SCK=10, MOSI=11, MISO=6, CS=9, BUSY=7, RESET=8, DIO1=A2
+ *   e-Paper (SPI0):DIN=MO, CLK=SCK, CS=5, DC=A0, RST=A1, BUSY=A3
  *
  * Architecture:
  *   1. Wait for key from UNO Q at startup
@@ -48,25 +48,25 @@
 // =============================================================
 
 // --- LoRa Core1262 (SPI1) ---
-#define LORA_SCK_PIN     10  // GP10
-#define LORA_MOSI_PIN    11  // GP11
-#define LORA_MISO_PIN    28  // GP28 (A2)
-#define LORA_CS_PIN       9  // GP9
-#define LORA_BUSY_PIN     6  // GP6
-#define LORA_RESET_PIN    8  // GP8
-#define LORA_DIO1_PIN    21  // GP21
+#define LORA_SCK_PIN     10  // SCK pin on Feather silkscreen
+#define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen
+#define LORA_MISO_PIN    6   // MISO pin on Feather silkscreen
+#define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen
+#define LORA_BUSY_PIN    7   // Pin 7 on Feather silkscreen
+#define LORA_RESET_PIN   8   // Pin 8 on Feather silkscreen
+#define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen
 
 // --- e-Paper (SPI0) ---
-#define EPD_DIN_PIN      23  // GP23 (MO)
-#define EPD_CLK_PIN      22  // GP22 (SCK)
-#define EPD_CS_PIN        5  // GP5 (D5)
-#define EPD_DC_PIN       24  // GP24 (D24)
-#define EPD_RST_PIN      25  // GP25 (D25)
-#define EPD_BUSY_PIN      7  // GP7 (D7)
+#define EPD_DIN_PIN      MO  // MO pin on Feather silkscreen (SPI0 MOSI)
+#define EPD_CLK_PIN      SCK // SCK pin on Feather silkscreen (SPI0 SCK)
+#define EPD_CS_PIN       5   // Pin 5 on Feather silkscreen
+#define EPD_DC_PIN       A0  // A0 on Feather silkscreen
+#define EPD_RST_PIN      A1  // A1 on Feather silkscreen
+#define EPD_BUSY_PIN     A3  // A3 on Feather silkscreen
 
 // --- UART to UNO Q ---
-#define UNOQ_TX_PIN       0  // GP0
-#define UNOQ_RX_PIN       1  // GP1
+// Hardware Serial1: TX->1, RX->0 on Feather silkscreen
+// No pin defines needed - using Serial1 directly
 
 // =============================================================
 // Protocol Message Types
@@ -235,9 +235,8 @@ bool ShallotEPD::begin() {
     pinMode(EPD_RST_PIN, OUTPUT);
     pinMode(EPD_BUSY_PIN, INPUT);
 
-    // Configure SPI0 for e-Paper
-    SPI.setTX(EPD_DIN_PIN);
-    SPI.setSCK(EPD_CLK_PIN);
+    // SPI0 is hardware-wired on Feather RP2350: SCK (GP22), MO (GP23), MI (GP20)
+    // Do NOT use SPI.setTX() or SPI.setSCK() for SPI0 - it's already configured!
     SPI.begin();
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 

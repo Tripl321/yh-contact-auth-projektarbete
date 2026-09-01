@@ -86,15 +86,15 @@ elif [ "$METHOD" = "arduino" ]; then
         exit 1
     fi
     
-    cd "$PROJECT_DIR"
+    cd "$SCRIPT_DIR"
     
     # Build
     echo "Building for Adafruit Feather RP2350..."
     arduino-cli compile \
-        --fqbn arduino-pico:rp2040:feather_rp2350 \
+        --fqbn rp2040:rp2040:generic_rp2350 \
         --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
         --output-dir "$BUILD_DIR" \
-        id-kort/paw-main/paw-main.ino
+        paw-main.ino
     
     # Find UF2 or HEX file
     UF2_FILE=$(find "$BUILD_DIR" -name "*.uf2" 2>/dev/null | head -n 1)
@@ -112,6 +112,9 @@ elif [ "$METHOD" = "arduino" ]; then
         exit 1
     fi
 fi
+
+# Clean up - keep only the final UF2 file
+rm -f "$BUILD_DIR"/*.bin "$BUILD_DIR"/*.elf "$BUILD_DIR"/*.map "$BUILD_DIR"/*.ino.uf2
 
 # Success
 echo ""
