@@ -1,0 +1,102 @@
+name: Build PAW UF2 Firmware
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'id-kort/paw-main/**'
+      - '.github/workflows/build-paw-uf2.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force rebuild'
+        required: false
+        default: 'false'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/earlephilhower/arduino-pico:latest
+      options: --privileged
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y git wget
+
+      - name: Clone arduino-pico core
+        run: |
+          cd /tmp
+          git clone --depth 1 https://github.com/earlephilhower/arduino-pico.git
+          cd arduino-pico
+          git submodule update --init --depth 1
+
+      - name: Build PAW firmware (UF2)
+        run: |
+          # Set up Arduino CLI
+          wget -q https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_latest_Linux_64bit.tar.gz
+          tar -xzf arduino-cli_latest_Linux_64bit.tar.gz
+          mv arduino-cli /usr/local/bin/
+          
+          # Configure Arduino CLI
+          arduino-cli config init
+          arduino-cli core update-index
+          
+          # Install arduino-pico platform
+          arduino-cli core install arduino-pico:rp2040
+          
+          # Build for Adafruit Feather RP2350
+          cd /workspace/github__Tripl321__yh-lora-auth-projektarbete
+          arduino-cli compile \
+            --fqbn arduino-pico:rp2040:feather_rp2350 \
+            --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+            --output-dir build/paw-main \
+            id-kort/paw-main/paw-main.ino
+          
+          # Convert to UF2
+          # The arduino-pico toolchain should produce UF2 automatically for RP2350
+          # If not, we can use pico-sdk's uf2 tool
+          ls -la build/paw-main/
+
+      - name: Rename UF2 file
+        run: |
+          # Find the UF2 file and rename it
+          UF2_FILE=$(find build/paw-main -name "*.uf2" | head -n 1)
+          if [ -n "$UF2_FILE" ]; then
+            cp "$UF2_FILE" build/paw-main/paw-main.uf2
+            echo "UF2 file created: paw-main.uf2"
+          else
+            echo "No UF2 file found!"
+            # Try to find hex file and convert
+            HEX_FILE=$(find build/paw-main -name "*.hex" | head -n 1)
+            if [ -n "$HEX_FILE" ]; then
+              echo "Found HEX file, attempting conversion..."
+              # This would require elf2uf2 tool from pico-sdk
+            fi
+          fi
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paw-main-uf2
+          path: build/paw-main/paw-main.uf2
+          compression-level: 0
+
+      - name: Create Release (on main branch)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: paw-latest
+          name: PAW Firmware (Latest)
+          files: build/paw-main/paw-main.uf2
+          prerelease: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
