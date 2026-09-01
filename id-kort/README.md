@@ -8,6 +8,21 @@ Firmware for ID-kort-noden: Adafruit Feather RP2350 med Core1262-868M och 1.54" 
 - Berakna HMAC-SHA256(nyckel, nonce) och returnera svar
 - Visa status pa e-Paper-display
 
+## Repositoriestruktur
+
+```
+id-kort/
+├── README.md                    # Detta dokument
+├── paw-main/                    # **Huvud-firmware (flasha denna!)**
+│   ├── paw-main.ino             # Kombinerad firmware
+│   ├── README.md                # Flashningsinstruktioner
+│   └── platformio.ini           # PlatformIO-konfiguration
+├── paw-key-receiver/           # PRO-48: Nyckelmottagning (referens)
+│   └── paw-key-receiver.ino
+└── epaper-status-display/      # PRO-57: e-Paper driver (referens)
+    └── epaper-status-display.ino
+```
+
 ## Pin-tilldelning -- e-Paper (SPI0)
 
 | Feather | e-Paper |
@@ -31,8 +46,32 @@ Firmware for ID-kort-noden: Adafruit Feather RP2350 med Core1262-868M och 1.54" 
 | D8 (GPIO8) | RESET |
 | D21 (GPIO21) | DIO1 |
 
+## Pin-tilldelning -- UART till UNO Q
+
+| Feather | UNO Q |
+|---|---|
+| GP0 (TX) | Serial1 RX |
+| GP1 (RX) | Serial1 TX |
+
 ## Bibliotek
 
-- arduino-pico (earlephilhower) karna
-- RadioLib (jgromes) for SX1262
-- Waveshare e-Paper bibliotek (officiella exempel for Pico/Pico2)
+- **arduino-pico** (earlephilhower) - RP2350 karnan
+- **RadioLib** (jgromes) - for SX1262 LoRa (när du ersätter mock-implementationen)
+
+## Flasha PAW
+
+Se [paw-main/README.md](paw-main/README.md) för detaljerade instruktioner.
+
+### Snabbstart med Arduino IDE:
+
+1. Installera `arduino-pico` board support
+2. Välj board: **Adafruit Feather RP2350**
+3. Öppna `paw-main/paw-main.ino`
+4. Klicka **Upload** (håll BOOTSEL om UF2 krävs)
+
+### Snabbstart med PlatformIO:
+
+```bash
+cd id-kort/paw-main
+pio run --target upload
+```
