@@ -234,7 +234,12 @@ if not ports:
 print(f"  {'Port':<28} {'Board Name':<28} {'FQBN':<48}")
 print(f"  {'-'*28} {'-'*28} {'-'*48}")
 for p in ports:
-    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    # Handle both old (address) and new (port.address/port.label) formats
+    port_dict = p.get("port", {}) or p.get("address", {})
+    if isinstance(port_dict, dict):
+        port = port_dict.get("label") or port_dict.get("address", "")
+    else:
+        port = str(port_dict or "")
     mb = p.get("matching_boards") or p.get("boards") or []
     if mb:
         name = mb[0].get("name", "?")
@@ -267,23 +272,27 @@ detect_port() {
   result="$(arduino-cli board list --format json 2>/dev/null | python3 - "$target_fqbn" "$target_name" <<'PY'
 import json, sys
 fqbn_want = sys.argv[1] if len(sys.argv) > 1 else ""
-ame_want  = sys.argv[2] if len(sys.argv) > 2 else ""
+name_want  = sys.argv[2] if len(sys.argv) > 2 else ""
 try:
     data = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 ports = data.get("ports", []) or data.get("detected_ports", [])
+# Helper to extract port string from various formats
+cb = lambda p: (p.get("port", {}) or p.get("address", {})).get("label") or \
+               (p.get("port", {}) or p.get("address", {})).get("address") or \
+               p.get("port", "") or p.get("address", "")
 # 1) exakt FQBN-match
 for p in ports:
     mb = p.get("matching_boards") or p.get("boards") or []
-    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    port = cb(p)
     for b in mb:
         if b.get("fqbn") == fqbn_want:
             print(port); sys.exit(0)
 # 2) board name innehåller målnamnet (t.ex. "Feather RP2350", "Pico 2")
 for p in ports:
     mb = p.get("matching_boards") or p.get("boards") or []
-    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    port = cb(p)
     for b in mb:
         if name_want and name_want.lower() in (b.get("name", "") or "").lower():
             print(port); sys.exit(0)
