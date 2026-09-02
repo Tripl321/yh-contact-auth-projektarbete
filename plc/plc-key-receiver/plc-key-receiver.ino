@@ -64,7 +64,7 @@ static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
 #define LORA_RESET_PIN  8  // GP8 (physical pin 11)
 #define LORA_DIO1_PIN   21 // GP21 (physical pin 27)
 
-SPIClassRP2040 spi1(spi1);
+SPIClassRP2040 spi1(spi1_hw);
 
 // =============================================================
 // Minimal SHA-256 (same implementation as UNO Q firmware)

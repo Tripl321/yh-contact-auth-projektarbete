@@ -35,7 +35,7 @@
 #define SX1262_REG_VERSION  0x14
 #define SX1262_CMD_READ_REGISTER  0x1D
 
-SPIClassRP2040 spi1(spi1);
+SPIClassRP2040 spi1(spi1_hw);
 
 void setup() {
   Serial.begin(115200);
