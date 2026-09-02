@@ -478,8 +478,7 @@ void ShallotEPD::showStatus(EpdStatus status) {
 
 static const uint32_t sha256_k[64] = {
 
-  0x428a2f
-98,
+  0x428a2f98,
  0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
   0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -527,8 +526,7 @@ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
       w[i] = ((uint32_t)msg[blk + i*4] << 24)
            | ((uint32_t)msg[blk + i*4 + 1] << 16)
       
-     | ((uint
-32_t)msg[blk + i*4 + 2] << 8)
+     | ((uint32_t)msg[blk + i*4 + 2] << 8)
            | ((uint32_t)msg[blk + i*4 + 3]);
     }
     for (int i = 16; i < 64; i++) {
@@ -884,8 +882,7 @@ void setup() {
     if (receiveKeyFromUNOQ()) {
         currentState = STATE_WAITING_FOR_CHALLENGE;
         Serial.println("[PRO-48] Key received successfully.");
-        digitalWrite(LED_BUI
-LTIN, HIGH);
+        digitalWrite(LED_BUILTIN, HIGH);
         
         // Update e-Paper to show waiting for challenge
         epd.begin();
@@ -939,8 +936,7 @@ void loop() {
                         epd.showStatus(EPD_STATUS_AUTHENTICATING);
                         
                         Serial.print("[PRO-50] Challenge: ");
-                        for (int i = 0; i < CHALLENGE
-_SIZE; i++) {
+                        for (int i = 0; i < CHALLENGE_SIZE; i++) {
                             Serial.printf("%02X", challenge[i]);
                         }
                         Serial.println();
