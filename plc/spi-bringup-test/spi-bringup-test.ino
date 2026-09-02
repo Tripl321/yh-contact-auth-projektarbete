@@ -35,7 +35,7 @@
 #define SX1262_REG_VERSION  0x14
 #define SX1262_CMD_READ_REGISTER  0x1D
 
-SPIClassRP2040 spi1(spi1_hw);
+SPIClassRP2040 loraSPI(spi1_hw);
 
 void setup() {
   Serial.begin(115200);
@@ -61,10 +61,10 @@ void setup() {
   delay(10);
 
   // Initialize SPI1 with custom pins
-  spi1.setSCK(SPI1_SCK_PIN);
-  spi1.setTX(SPI1_MOSI_PIN);
-  spi1.setRX(SPI1_MISO_PIN);
-  spi1.begin();
+  loraSPI.setSCK(SPI1_SCK_PIN);
+  loraSPI.setTX(SPI1_MOSI_PIN);
+  loraSPI.setRX(SPI1_MISO_PIN);
+  loraSPI.begin();
 
   Serial.println();
   Serial.println("SPI1 initialized:");
@@ -92,19 +92,19 @@ void setup() {
     }
   }
 
-  spi1.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+  loraSPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
   digitalWrite(CS_PIN, LOW);
 
   // Send read register command + address
-  spi1.transfer(SX1262_CMD_READ_REGISTER);
-  spi1.transfer(0x00);  // status byte (dummy)
-  spi1.transfer(SX1262_REG_VERSION);
+  loraSPI.transfer(SX1262_CMD_READ_REGISTER);
+  loraSPI.transfer(0x00);  // status byte (dummy)
+  loraSPI.transfer(SX1262_REG_VERSION);
 
   // Read the version byte
-  uint8_t version = spi1.transfer(0x00);
+  uint8_t version = loraSPI.transfer(0x00);
 
   digitalWrite(CS_PIN, HIGH);
-  spi1.endTransaction();
+  loraSPI.endTransaction();
 
   Serial.printf("SX1262 version register: 0x%02X\n", version);
 
