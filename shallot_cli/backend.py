@@ -136,7 +136,8 @@ def ensure_core_installed(comp: Component) -> None:
     pkg = comp.core.split("@")[0]
     _run(["arduino-cli", "core", "update-index"])
     listing = _run(["arduino-cli", "core", "list"]).stdout
-    if not any(line.split()[0] == pkg for line in listing.splitlines()):
+    installed = [line.split()[0] for line in listing.splitlines() if line.strip() and len(line.split()) >= 1]
+    if pkg not in installed:
         print(f"Installerar core: {comp.core}")
         _run(["arduino-cli", "core", "install", comp.core])
     print(f"✓ Core {pkg} redo")
