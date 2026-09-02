@@ -38,14 +38,20 @@ declare -A COMP_SRC=(
   ["unoq"]="key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"
 )
 declare -A COMP_FQBN=(
-  ["paw"]="arduino-pico:rp2040:adafruit_feather_rp2350_hstx"
-  ["plc"]="arduino-pico:rp2040:rpipico2"
-  ["unoq"]="arduino:zephyr:arduino_uno_q_stm32u585xx"
+  ["paw"]="rp2040:rp2040:adafruit_feather_rp2350_hstx"
+  ["plc"]="rp2040:rp2040:rpipico2"
+  ["unoq"]="arduino:zephyr:unoq"
 )
 declare -A COMP_CORE=(
-  ["paw"]="arduino-pico:rp2040"
-  ["plc"]="arduino-pico:rp2040"
+  ["paw"]="rp2040:rp2040"
+  ["plc"]="rp2040:rp2040"
   ["unoq"]="arduino:zephyr@0.90.0"
+)
+# Board names for detection
+declare -A COMP_NAME=(
+  ["paw"]="Feather RP2350"
+  ["plc"]="Pico 2"
+  ["unoq"]="UNO Q"
 )
 # Extra filer som ska kopieras med (prj.conf för UNO Q etc.)
 declare -A COMP_EXTRAS_SRC=(
@@ -177,12 +183,12 @@ ensure_core_installed() {
   ok "Core $pkg redo"
 }
 
-# RP2040-paketet (arduino-pico) kräver extra board-URL
+# RP2040 core requires the board index URL
 ensure_pico_index() {
   local cfg
   cfg="$(arduino-cli config dump 2>/dev/null)"
   if ! echo "$cfg" | grep -q "package_rp2040_index.json"; then
-    log "Lägger till arduino-pico board-URL"
+    log "Lägger till RP2040 board-URL"
     arduino-cli config set board_manager.additional_urls \
       https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
     arduino-cli core update-index >/dev/null 2>&1 || true
