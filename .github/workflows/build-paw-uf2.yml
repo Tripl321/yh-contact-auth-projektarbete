@@ -6,6 +6,10 @@ on:
     paths:
       - 'id-kort/paw-main/**'
       - '.github/workflows/build-paw-uf2.yml'
+  pull_request:
+    paths:
+      - 'id-kort/paw-main/**'
+      - '.github/workflows/build-paw-uf2.yml'
   workflow_dispatch:
     inputs:
       force:
@@ -52,10 +56,10 @@ jobs:
           # Install arduino-pico platform
           arduino-cli core install arduino-pico:rp2040
           
-          # Build for Adafruit Feather RP2350
-          cd /workspace/github__Tripl321__yh-lora-auth-projektarbete
+          # Build for Adafruit Feather RP2350 HSTX
+          cd "$GITHUB_WORKSPACE"
           arduino-cli compile \
-            --fqbn arduino-pico:rp2040:feather_rp2350 \
+            --fqbn arduino-pico:rp2040:adafruit_feather_rp2350_hstx \
             --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
             --output-dir build/paw-main \
             id-kort/paw-main/paw-main.ino
