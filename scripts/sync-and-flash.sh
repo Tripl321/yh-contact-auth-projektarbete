@@ -10,6 +10,7 @@
 #   ./sync-and-flash.sh plc       # PLC (Pico 2)
 #   ./sync-and-flash.sh unoq      # UNO Q (STM32U585)
 #   ./sync-and-flash.sh sync      # bara synka repo+sketchbook, inte flasha
+#   ./sync-and-flash.sh list      # lista anslutna boards med port+FQBN
 #
 # Krav:
 #   - git (finns på macOS som standard)
@@ -205,22 +206,89 @@ compile_component() {
   fi
 }
 
-# Listar anslutna portar och returnerar (via stdout) första porten som
-# matchar en gissning baserad på FQBN. Användaren kan överstyra med
-# SHALLOT_PORT=<port>.
+# Skriv ut alla anslutna boards med port, namn och FQBN.
+# Använder JSON-utdata från arduino-cli för robust parsning.
+list_boards() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "python3 krävs för 'list' (finns på macOS som standard)"
+    return 1
+  fi
+  echo -e "${CYAN}Anslutna boards:${NC}"
+  arduino-cli board list --format json 2>/dev/null | python3 - <<'PY'
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("  (kunde inte läsa board list)")
+    sys.exit(0)
+ports = data.get("ports", []) or data.get("detected_ports", [])
+if not ports:
+    print("  Inga anslutna boards.")
+    sys.exit(0)
+print(f"  {'Port':<28} {'Board Name':<28} {'FQBN':<48}")
+print(f"  {'-'*28} {'-'*28} {'-'*48}")
+for p in ports:
+    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    mb = p.get("matching_boards") or p.get("boards") or []
+    if mb:
+        name = mb[0].get("name", "?")
+        fqbn = mb[0].get("fqbn", "?")
+    else:
+        name = "(okänd board)"
+        fqbn = "(ingen FQBN detekterad)"
+    print(f"  {str(port):<28} {str(name):<28} {str(fqbn):<48}")
+PY
+}
+
+# Returnerar (via stdout) porten som matchar komponentens FQBN.
+# Matchar board name om FQBN saknas (t.ex. UF2-bootloader-läge).
+# Prioritering: explicit SHALLOT_PORT > FQBN-match > namn-match > ingen träff.
 detect_port() {
   if [[ -n "${SHALLOT_PORT:-}" ]]; then
     echo "$SHALLOT_PORT"
     return
   fi
-  # arduino-cli board list ger tab-separerade fält; port är kolumn 1
-  local port
-  port="$(arduino-cli board list 2>/dev/null | awk -F'\t' 'NR>1 {print $1}' | head -n1)"
-  if [[ -z "$port" ]]; then
-    # Fallback: prova utan -F (vissa versioner använder mellanslag)
-    port="$(arduino-cli board list 2>/dev/null | awk 'NR>1 {print $1}' | head -n1)"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "python3 krävs för portdetektion (finns på macOS som standard)"
+    return 1
   fi
-  echo "$port"
+
+  local target_fqbn="${COMP_FQBN[$1]}"
+  local target_name="${COMP_NAME[$1]}"
+
+  local result
+  result="$(arduino-cli board list --format json 2>/dev/null | python3 - "$target_fqbn" "$target_name" <<'PY'
+import json, sys
+fqbn_want = sys.argv[1] if len(sys.argv) > 1 else ""
+ame_want  = sys.argv[2] if len(sys.argv) > 2 else ""
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ports = data.get("ports", []) or data.get("detected_ports", [])
+# 1) exakt FQBN-match
+for p in ports:
+    mb = p.get("matching_boards") or p.get("boards") or []
+    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    for b in mb:
+        if b.get("fqbn") == fqbn_want:
+            print(port); sys.exit(0)
+# 2) board name innehåller målnamnet (t.ex. "Feather RP2350", "Pico 2")
+for p in ports:
+    mb = p.get("matching_boards") or p.get("boards") or []
+    port = p.get("address", {}).get("label") or p.get("port") or p.get("address", "")
+    for b in mb:
+        if name_want and name_want.lower() in (b.get("name", "") or "").lower():
+            print(port); sys.exit(0)
+PY
+)"
+
+  if [[ -n "$result" ]]; then
+    echo "$result"
+    return 0
+  fi
+  return 1
 }
 
 flash_component() {
@@ -231,13 +299,18 @@ flash_component() {
   local sketch_dir="$SKETCHBOOK/$sketch_name"
 
   local port
-  port="$(detect_port)"
+  port="$(detect_port "$comp")"
   if [[ -z "$port" ]]; then
-    err "Ingen ansluten board hittades. Anslut $comp via USB och försök igen."
-    err "Eller sätt port explicit: SHALLOT_PORT=/dev/cu.usbmodemXXXX ./sync-and-flash.sh $comp"
+    err "Ingen ansluten board hittades som matchar $comp."
+    err ""
+    err "Anslut $comp via USB och försök igen, eller sätt port explicit:"
+    err "  SHALLOT_PORT=/dev/cu.usbmodemXXXX ./sync-and-flash.sh $comp"
+    err ""
+    err "Lista alla anslutna boards med:"
+    err "  ./sync-and-flash.sh list"
     return 1
   fi
-  warn "Använder port: $port"
+  warn "Använder port: $port (matchad mot $comp)"
   log "Flashar $comp till $port ..."
   # UNO Q kräver inte UF2; Pico-boards flashas via arduino-cli upload.
   if flash_out="$(arduino-cli upload -p "$port" --fqbn "$fqbn" "$sketch_dir" 2>&1)"; then

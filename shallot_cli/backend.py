@@ -46,7 +46,7 @@ FEATURE_BRANCH = "vibe/paw-line-corruption-fix-bf5bdb"
 
 def ensure_git() -> None:
     if not _have("git"):
-        print("✗ git hittades inte. Installera Xcode Command Line Tools: xcode-select --install", file=sys.stderr)
+        print("\u2717 git hittades inte. Installera Xcode Command Line Tools: xcode-select --install", file=sys.stderr)
         sys.exit(1)
 
 
@@ -74,7 +74,7 @@ def checkout_branch(repo_dir: Path) -> str:
     _run(["git", "-C", str(repo_dir), "checkout", branch])
     _run(["git", "-C", str(repo_dir), "reset", "--hard", f"origin/{branch}"])
     short = _run(["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"]).stdout.strip()
-    print(f"✓ På branch {branch} @ {short}")
+    print(f"\u2713 P\u00e5 branch {branch} @ {short}")
     return branch
 
 
@@ -85,18 +85,18 @@ def checkout_branch(repo_dir: Path) -> str:
 def sync_component(comp: Component, repo_dir: Path, sketchbook: Path) -> Path:
     src = repo_dir / comp.src_path
     if not src.is_file():
-        print(f"✗ Källfil saknas: {src}", file=sys.stderr)
+        print(f"\u2717 K\u00e4llfil saknas: {src}", file=sys.stderr)
         sys.exit(1)
     sketch_name = src.stem
     dest_dir = sketchbook / sketch_name
     dest_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest_dir / f"{sketch_name}.ino")
-    print(f"✓ Synkade {comp.key} -> {dest_dir / (sketch_name + '.ino')}")
+    print(f"\u2713 Synkade {comp.key} -> {dest_dir / (sketch_name + '.ino')}")
     for extra_rel in comp.extras:
         extra_src = repo_dir / extra_rel
         if extra_src.is_file():
             shutil.copy2(extra_src, dest_dir / extra_src.name)
-            print(f"✓ Synkade extra: {extra_src.name} -> {dest_dir}")
+            print(f"\u2713 Synkade extra: {extra_src.name} -> {dest_dir}")
     return dest_dir
 
 
@@ -105,7 +105,7 @@ def sync_all(repo_dir: Path, sketchbook: Path) -> None:
         try:
             sync_component(c, repo_dir, sketchbook)
         except Exception as e:
-            print(f"⚠ Kunde inte synka {c.key}: {e}")
+            print(f"\u26a0 Kunde inte synka {c.key}: {e}")
 
 
 # ----------------------------------------------------------------------------
@@ -115,9 +115,9 @@ def sync_all(repo_dir: Path, sketchbook: Path) -> None:
 def ensure_arduino_cli() -> bool:
     if _have("arduino-cli"):
         return True
-    print("⚠ arduino-cli hittades inte. Försöker installera via Homebrew...")
+    print("\u26a0 arduino-cli hittades inte. F\u00f6rs\u00f6ker installera via Homebrew...")
     if not _have("brew"):
-        print("✗ Homebrew saknas. Installera från https://brew.sh", file=sys.stderr)
+        print("\u2717 Homebrew saknas. Installera fr\u00e5n https://brew.sh", file=sys.stderr)
         return False
     _run(["brew", "install", "arduino-cli"])
     return _have("arduino-cli")
@@ -127,34 +127,33 @@ def ensure_pico_index() -> None:
     cfg = _run(["arduino-cli", "config", "dump"])
     pico_url = "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
     if pico_url not in (cfg.stdout or ""):
-        print("Lägger till arduino-pico board-URL")
+        print("L\u00e4gger till arduino-pico board-URL")
         _run(["arduino-cli", "config", "set", "board_manager.additional_urls", pico_url])
-        _run(["arduino-cli", "core", "update-index"])
-    else:
-        _run(["arduino-cli", "core", "update-index"])
+    _run(["arduino-cli", "core", "update-index"])
 
 
 def ensure_core_installed(comp: Component) -> None:
     pkg = comp.core.split("@")[0]
-    # For RP2040 boards, ensure the pico index is available
+    # For RP2040 boards, ensure the pico platform is available
     if "rp2040" in comp.core:
         ensure_pico_index()
+        _run(["arduino-cli", "core", "update-index"])
     _run(["arduino-cli", "core", "update-index"])
     listing = _run(["arduino-cli", "core", "list"]).stdout
     installed = [line.split()[0] for line in listing.splitlines() if line.strip() and len(line.split()) >= 1]
     if pkg not in installed:
-        print(f"Installerar core: {comp.core}")
+        print(f"Installerar plattform: {comp.core}")
         _run(["arduino-cli", "core", "install", comp.core])
-    print(f"✓ Core {pkg} redo")
+    print(f"\u2713 Plattform {pkg} redo")
 
 
 def compile_component(comp: Component, sketch_dir: Path) -> bool:
     print(f"Kompilerar {comp.key} (FQBN: {comp.fqbn})...")
     r = _run(["arduino-cli", "compile", "--fqbn", comp.fqbn, str(sketch_dir)])
     if r.returncode == 0:
-        print(f"✓ Kompilering OK: {comp.key}")
+        print(f"\u2713 Kompilering OK: {comp.key}")
         return True
-    print(f"✗ Kompilering misslyckades för {comp.key}", file=sys.stderr)
+    print(f"\u2717 Kompilering misslyckades f\u00f6r {comp.key}", file=sys.stderr)
     print(r.stdout[-1500:] + r.stderr[-1500:])
     return False
 
@@ -166,12 +165,12 @@ def compile_component(comp: Component, sketch_dir: Path) -> bool:
 def list_boards() -> None:
     r = _run(["arduino-cli", "board", "list", "--format", "json"])
     if r.returncode != 0:
-        print("✗ kunde inte lista boards", file=sys.stderr)
+        print("\u2717 kunde inte lista boards", file=sys.stderr)
         return
     try:
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
-        print("✗ kunde inte tolka board list-utdata")
+        print("\u2717 kunde inte tolka board list-utdata")
         return
     ports = data.get("ports", []) or data.get("detected_ports", [])
     if not ports:
@@ -187,7 +186,7 @@ def list_boards() -> None:
             name = mb[0].get("name", "?")
             fqbn = mb[0].get("fqbn", "?")
         else:
-            name = "(okänd board)"
+            name = "(ok\u00e4nd board)"
             fqbn = "(ingen FQBN detekterad)"
         print(f"  {str(port):<28} {str(name):<28} {str(fqbn):<48}")
 
@@ -225,17 +224,17 @@ def detect_port(comp: Component) -> Optional[str]:
 def flash_component(comp: Component, sketch_dir: Path) -> bool:
     port = detect_port(comp)
     if not port:
-        print(f"✗ Ingen ansluten board hittades som matchar {comp.key}.", file=sys.stderr)
-        print("  Anslut boarden via USB och försök igen, eller sätt port explicit:", file=sys.stderr)
+        print(f"\u2717 Ingen ansluten board hittades som matchar {comp.key}.", file=sys.stderr)
+        print("  Anslut boarden via USB och f\u00f6rs\u00f6k igen, eller s\u00e4tt port explicit:", file=sys.stderr)
         print(f"    SHALLOT_PORT=/dev/cu.usbmodemXXXX shallot flash {comp.key}", file=sys.stderr)
         print("  Lista boards med: shallot list", file=sys.stderr)
         return False
-    print(f"⚠ Använder port: {port} (matchad mot {comp.key})")
+    print(f"\u26a0 Anv\u00e4nder port: {port} (matchad mot {comp.key})")
     r = _run(["arduino-cli", "upload", "-p", port, "--fqbn", comp.fqbn, str(sketch_dir)])
     if r.returncode == 0:
-        print(f"✓ Flashning OK: {comp.key} @ {port}")
+        print(f"\u2713 Flashning OK: {comp.key} @ {port}")
         return True
-    print(f"✗ Flashning misslyckades för {comp.key}", file=sys.stderr)
+    print(f"\u2717 Flashning misslyckades f\u00f6r {comp.key}", file=sys.stderr)
     print((r.stdout or "")[-1500:] + (r.stderr or "")[-1500:], file=sys.stderr)
     return False
 
@@ -268,6 +267,6 @@ def write_status(comp: Component, ok: bool, stage: str, detail: str,
     # Keep last 100 entries
     history = history[-100:]
     status_file.write_text(json.dumps(history, indent=2, ensure_ascii=False))
-    print(f"✓ Status skriven till {status_file}")
-    print("  Committa och pusha för att göra den synlig för Vibe-agenten:")
+    print(f"\u2713 Status skriven till {status_file}")
+    print("  Committa och pusha f\u00f6r att g\u00f6ra den synlig f\u00f6r Vibe-agenten:")
     print(f"    git -C {repo_dir} add status.json && git -C {repo_dir} commit -m 'status: {comp.key} {stage} {('ok' if ok else 'fail')}'")
