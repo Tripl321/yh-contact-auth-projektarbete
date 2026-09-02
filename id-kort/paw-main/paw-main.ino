@@ -4,21 +4,21 @@
  * 
  * Full PAW firmware combining:
  *   - PRO-48: Key reception from UNO Q (paw-key-receiver.ino)
- *   - PRO-50: HMAC-SHA256 challenge-response (to be integrated)
+ *   - PRO-50: HMAC-SHA256 challenge-response
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
- *   - PRO-58: LoRa P2P communication with PLC
+ *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
  *
- * Hardware pin mapping (using exact Feather RP2350 silkscreen labels):
+ * Hardware pin mapping (Feather RP2350 silkscreen labels):
  *   UART (UNO Q):  TX->1, RX->0 (Serial1)
  *   LoRa (SPI1):   SCK=D10, MOSI=D11, MISO=D24, CS=D9, BUSY=pin7, RESET=pin4, DIO1=A2
  *   e-Paper (SPI0):DIN=MO, CLK=SCK, CS=5, DC=A0, RST=A1, BUSY=A3
  *
  * Architecture:
- *   1. Wait for key from UNO Q at startup
- *   2. Initialize LoRa and e-Paper
- *   3. Listen for challenge (nonce) from PLC
- *   4. Compute HMAC-SHA256(key, nonce) and respond
- *   5. Update e-Paper with authentication status
+ *   1. Wait for key from UNO Q at startup via Serial1
+ *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
+ *   3. Listen for challenge (nonce) from PLC over LoRa
+ *   4. Compute HMAC-SHA256(key, nonce) and transmit response
+ *   5. Update e-Paper with privacy-compliant authentication status icons
  *
  * Privacy: e-Paper shows ONLY status icons (no text, no PII)
  *   States: AUTHENTICATING, AUTHENTICATED, FAILED
@@ -26,22 +26,20 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-
-// SPI1 is not pre-defined for Feather RP2350 HSTX (SPI_HOWMANY=1).
-// Create our own instance. Cannot name it "spi1" (conflicts with SDK macro).
-SPIClassRP2040 loraSPI(spi1_hw);
+#include <RadioLib.h>
 
 // =============================================================
 // Configuration
 // =============================================================
 
-// LoRa settings
-#define LORA_FREQUENCY   868.0
-#define LORA_BANDWIDTH   125.0
+// LoRa settings (868 MHz EU band)
+#define LORA_FREQUENCY        868.0
+#define LORA_BANDWIDTH        125.0
 #define LORA_SPREADING_FACTOR 9
-#define LORA_CODING_RATE  5
-#define LORA_PREAMBLE_LENGTH 8
-#define LORA_SYNC_WORD    0x12
+#define LORA_CODING_RATE      5
+#define LORA_PREAMBLE_LENGTH  8
+#define LORA_SYNC_WORD        0x12
+#define LORA_OUTPUT_POWER     14
 
 // Timeouts
 #define KEY_DISTRIBUTION_TIMEOUT 10000  // ms
@@ -52,40 +50,58 @@ SPIClassRP2040 loraSPI(spi1_hw);
 // =============================================================
 
 // --- LoRa Core1262 (SPI1) ---
-#define LORA_SCK_PIN     10  // SCK pin on Feather silkscreen
-#define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen
+#define LORA_SCK_PIN     10  // SCK pin on Feather silkscreen (GPIO10)
+#define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen (GPIO11)
 #define LORA_MISO_PIN    24  // D24 on Feather silkscreen (GPIO24, hardware SPI1 MISO)
-#define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen
-#define LO
-RA_BUSY_PIN    
-7   // Pin 7 on Feather silkscreen
-#define LORA_RESET_PIN   4   // Pin "4" on Feather silkscreen (GPIO4, digital output for RESET)
-#define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen
+#define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen (GPIO9)
+#define LORA_BUSY_PIN    7   // Pin 7 on Feather silkscreen (GPIO7)
+#define LORA_RESET_PIN   4   // Pin 4 on Feather silkscreen (GPIO4, digital output for RESET)
+#define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen (GPIO28)
 
 // --- e-Paper (SPI0) ---
-#define EPD_DIN_PIN      MO  // MO pin on Feather silkscreen (SPI0 MOSI)
-#define EPD_CLK_PIN      SCK // SCK pin on Feather silkscreen (SPI0 SCK)
-#define EPD_CS_PIN       5   // Pin 5 on Feather silkscreen
-#define EPD_DC_PIN       A0  // A0 on Feather silkscreen
-#define EPD_RST_PIN      A1  // A1 on Feather silkscreen
-#define EPD_BUSY_PIN     A3  // A3 on Feather silkscreen
+#define EPD_DIN_PIN      MO  // MO pin on Feather silkscreen (SPI0 MOSI - GPIO23)
+#define EPD_CLK_PIN      SCK // SCK pin on Feather silkscreen (SPI0 SCK - GPIO22)
+#define EPD_CS_PIN       5   // Pin 5 on Feather silkscreen (GPIO5)
+#define EPD_DC_PIN       A0  // A0 on Feather silkscreen (GPIO26)
+#define EPD_RST_PIN      A1  // A1 on Feather silkscreen (GPIO27)
+#define EPD_BUSY_PIN     A3  // A3 on Feather silkscreen (GPIO29)
 
 // --- UART to UNO Q ---
 // Hardware Serial1: TX->1, RX->0 on Feather silkscreen
-// No pin defines needed - using Serial1 directly
+
+// =============================================================
+// SPI1 Instance for Core1262
+// =============================================================
+// SPIClassRP2040 constructor: (spi_inst_t *spi, rx_pin, cs_pin, sck_pin, tx_pin)
+SPIClassRP2040 loraSPI(spi1, LORA_MISO_PIN, LORA_CS_PIN, LORA_SCK_PIN, LORA_MOSI_PIN);
+
+// =============================================================
+// RadioLib SX1262 Module
+// =============================================================
+SX1262 radio = new Module(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RESET_PIN, LORA_BUSY_PIN, loraSPI);
+
+// Interrupt flag for received LoRa packets
+static volatile bool loraPacketReceived = false;
+
+#if defined(ESP8266) || defined(ESP32)
+  ICACHE_RAM_ATTR
+#endif
+static void setLoRaFlag(void) {
+    loraPacketReceived = true;
+}
 
 // =============================================================
 // Protocol Message Types
 // =============================================================
 
-// Key distribution (from paw-key-receiver.ino)
+// Key distribution (UART)
 #define MSG_HANDSHAKE    0xA1
 #define MSG_READY        0xA2
 #define MSG_KEY_DATA     0xA3
 #define MSG_STORED       0xA4
 #define MSG_ERROR        0xA5
 
-// Authentication protocol
+// Authentication protocol (LoRa)
 #define MSG_CHALLENGE    0xB1
 #define MSG_RESPONSE     0xB2
 #define MSG_RESULT       0xB3
@@ -115,14 +131,12 @@ RA_BUSY_PIN
 // Key Storage
 // =============================================================
 
-static uint8_t aesKey[
-AES_KE
-Y_SIZE];
+static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
-// Waveform LUT for e-Paper (from epaper-status-display.ino)
+// Waveform LUT for e-Paper
 // =============================================================
 
 static const unsigned char WF_FULL_1IN54[159] = {
@@ -156,7 +170,7 @@ enum EpdStatus {
 };
 
 // =============================================================
-// e-Paper Driver Class (from epaper-status-display.ino)
+// e-Paper Driver Class
 // =============================================================
 
 class ShallotEPD {
@@ -174,8 +188,8 @@ private:
     void waitUntilIdle();
     void reset();
     void setLut(const unsigned char* lut);
- 
-   void clearBuffer();
+
+    void clearBuffer();
     void drawPixel(int x, int y, bool white);
     void drawLine(int x0, int y0, int x1, int y1, bool white);
     void drawRect(int x, int y, int w, int h, bool white);
@@ -245,16 +259,13 @@ bool ShallotEPD::begin() {
     pinMode(EPD_BUSY_PIN, INPUT);
 
     // SPI0 is hardware-wired on Feather RP2350: SCK (GP22), MO (GP23), MI (GP20)
-    // Do NOT use SPI.setTX() or SPI.setSCK() for SPI0 - it's already configured!
     SPI.begin();
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 
     reset();
-  
-  waitUntilIdle();
+    waitUntilIdle();
 
     sendCommand(0x12);  // SWRESET
-
     waitUntilIdle();
 
     sendCommand(0x01);  // Driver output control
@@ -338,13 +349,9 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
 
 void ShallotEPD::sleep() {
     sendCommand(0x10);  // Enter deep sleep
-
-    send
-Data(0x
-01);
+    sendData(0x01);
     delay(200);
-    digitalWrite(EPD_RST_PIN
-, LOW);
+    digitalWrite(EPD_RST_PIN, LOW);
 }
 
 void ShallotEPD::clearBuffer() {
@@ -413,13 +420,10 @@ void ShallotEPD::drawCircleFilled(int cx, int cy, int r, bool white) {
     for (int y = -r; y <= r; y++) {
         for (int x = -r; x <= r; x++) {
             if (x * x + y * y <= r * r) {
-             
-   drawPixel(cx
- + x, cy + y, white);
+                drawPixel(cx + x, cy + y, white);
             }
         }
     }
-
 }
 
 void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
@@ -480,29 +484,26 @@ void ShallotEPD::showStatus(EpdStatus status) {
 }
 
 // =============================================================
-// SHA-256 Implementation (from paw-key-receiver.ino)
+// SHA-256 Implementation
 // =============================================================
 
 static const uint32_t sha256_k[64] = {
-
-  0x428a2f
-98,
- 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
 #define SHA256_ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
@@ -514,56 +515,55 @@ static const uint32_t sha256_k[64] = {
 #define SHA256_SIG1(x) (SHA256_ROTR(x, 17) ^ SHA256_ROTR(x, 19) ^ ((x) >> 10))
 
 void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
-  uint32_t h[8] = {
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-  };
+    uint32_t h[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
 
-  size_t paddedLen = ((len + 9 + 63) / 64) * 64;
-  uint8_t* msg = (uint8_t*)calloc(paddedLen, 1);
-  memcpy(msg, data, len);
-  msg[len] = 0x80;
-  uint64_t bitLen = (uint64_t)len * 8;
-  for (int i = 0; i < 8; i++) {
-    msg[paddedLen - 1 - i] = (bitLen >> (i * 8)) & 0xFF;
-  }
-
-  for (size_t blk = 0; blk < paddedLen; blk += 64) {
-    uint32_t w[64];
-    for (int i = 0; i < 16; i++) {
-      w[i] = ((uint32_t)msg[blk + i*4] << 24)
-           | ((uint32_t)msg[blk + i*4 + 1] << 16)
-      
-     | ((uint
-32_t)msg[blk + i*4 + 2] << 8)
-           | ((uint32_t)msg[blk + i*4 + 3]);
-    }
-    for (int i = 16; i < 64; i++) {
-      w[i] = SHA256_SIG1(w[i-2]) + w[i-7] + SHA256_SIG0(w[i-15]) + w[i-16];
+    size_t paddedLen = ((len + 9 + 63) / 64) * 64;
+    uint8_t* msg = (uint8_t*)calloc(paddedLen, 1);
+    if (!msg) return;
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    uint64_t bitLen = (uint64_t)len * 8;
+    for (int i = 0; i < 8; i++) {
+        msg[paddedLen - 1 - i] = (bitLen >> (i * 8)) & 0xFF;
     }
 
-    uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (size_t blk = 0; blk < paddedLen; blk += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)msg[blk + i * 4] << 24)
+                 | ((uint32_t)msg[blk + i * 4 + 1] << 16)
+                 | ((uint32_t)msg[blk + i * 4 + 2] << 8)
+                 | ((uint32_t)msg[blk + i * 4 + 3]);
+        }
+        for (int i = 16; i < 64; i++) {
+            w[i] = SHA256_SIG1(w[i - 2]) + w[i - 7] + SHA256_SIG0(w[i - 15]) + w[i - 16];
+        }
 
-    for (int i = 0; i < 64; i++) {
-      uint32_t t1 = hh + SHA256_EP1(e) + SHA256_CH(e, f, g) + sha256_k[i] + w[i];
-      uint32_t t2 = SHA256_EP0(a) + SHA256_MAJ(a, b, c);
-      hh = g; g = f; f = e; e = d + t1;
-      d = c; c = b; b = a; a = t1 + t2;
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = hh + SHA256_EP1(e) + SHA256_CH(e, f, g) + sha256_k[i] + w[i];
+            uint32_t t2 = SHA256_EP0(a) + SHA256_MAJ(a, b, c);
+            hh = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
     }
 
-    h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-    h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
-  }
+    for (int i = 0; i < 8; i++) {
+        hash[i * 4]     = (h[i] >> 24) & 0xFF;
+        hash[i * 4 + 1] = (h[i] >> 16) & 0xFF;
+        hash[i * 4 + 2] = (h[i] >> 8) & 0xFF;
+        hash[i * 4 + 3] = h[i] & 0xFF;
+    }
 
-  for (int i = 0; i < 8; i++) {
-    hash[i*4]   = (h[i] >> 24) & 0xFF;
-    hash[i*4+1] = (h[i] >> 16) & 0xFF;
-    hash[i*4+2] = (h[i] >> 8) & 0xFF;
-    hash[i*4+3] = h[i] & 0xFF;
-  }
-
-  free(msg);
+    free(msg);
 }
 
 // =============================================================
@@ -571,15 +571,15 @@ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
 // =============================================================
 
 uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int j = 0; j < 8; j++) {
-      if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320;
-      else crc >>= 1;
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320;
+            else crc >>= 1;
+        }
     }
-  }
-  return crc ^ 0xFFFFFFFF;
+    return crc ^ 0xFFFFFFFF;
 }
 
 // =============================================================
@@ -589,50 +589,46 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 #define HMAC_BLOCK_SIZE 64
 
 void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t msgLen, uint8_t* mac) {
-  uint8_t k_ipad[HMAC_BLOCK_SIZE];
-  uint8_t k_opad[HMAC_BLOCK_SIZE];
-  uint8_t innerHash[32];
-  uint8_t outerHash[32];
+    uint8_t k_ipad[HMAC_BLOCK_SIZE];
+    uint8_t k_opad[HMAC_BLOCK_SIZE];
+    uint8_t innerHash[32];
+    uint8_t outerHash[32];
 
-  // Prepare inner and outer padding
-  memset(k_ipad, 0x36, HMAC_BLOCK_SIZE);
-  memset(k_opad, 0x5C, HMAC_BLOCK_SIZE);
+    // Prepare inner and outer padding
+    memset(k_ipad, 0x36, HMAC_BLOCK_SIZE);
+    memset(k_opad, 0x5C, HMAC_BLOCK_SIZE);
 
-  // XOR key with ipad and opad
-  for (size_t i = 0; i < keyLen; i++) {
-    if (i < HMAC_BLOCK_SIZE) {
-      k_ipad[i] ^= key[i];
-     
- k_opad[i] ^=
-
- key[i];
+    // XOR key with ipad and opad
+    for (size_t i = 0; i < keyLen; i++) {
+        if (i < HMAC_BLOCK_SIZE) {
+            k_ipad[i] ^= key[i];
+            k_opad[i] ^= key[i];
+        }
     }
-  }
 
-  // Inner hash: SHA256(k_ipad || msg)
- 
-  uint8_t* innerMsg = (uint8_t*)calloc(HMAC_BLOCK_SIZE + msgLen, 1);
-  if (!innerMsg) { memset(mac,0,32); return; }
-  memcpy(innerMsg, k_ipad, HMAC_BLOCK_SIZE);
-  memcpy(innerMsg + HMAC_BLOCK_SIZE, msg, msgLen);
-  sha256(innerMsg, HMAC_BLOCK_SIZE + msgLen, innerHash);
+    // Inner hash: SHA256(k_ipad || msg)
+    uint8_t* innerMsg = (uint8_t*)calloc(HMAC_BLOCK_SIZE + msgLen, 1);
+    if (!innerMsg) { memset(mac, 0, 32); return; }
+    memcpy(innerMsg, k_ipad, HMAC_BLOCK_SIZE);
+    memcpy(innerMsg + HMAC_BLOCK_SIZE, msg, msgLen);
+    sha256(innerMsg, HMAC_BLOCK_SIZE + msgLen, innerHash);
 
-  // Outer hash: SHA256(k_opad || innerHash)
-  uint8_t outerMsg[HMAC_BLOCK_SIZE + 32];
-  memcpy(outerMsg, k_opad, HMAC_BLOCK_SIZE);
-  memcpy(outerMsg + HMAC_BLOCK_SIZE, innerHash, 32);
-  sha256(outerMsg, sizeof(outerMsg), outerHash);
+    // Outer hash: SHA256(k_opad || innerHash)
+    uint8_t outerMsg[HMAC_BLOCK_SIZE + 32];
+    memcpy(outerMsg, k_opad, HMAC_BLOCK_SIZE);
+    memcpy(outerMsg + HMAC_BLOCK_SIZE, innerHash, 32);
+    sha256(outerMsg, sizeof(outerMsg), outerHash);
 
-  memcpy(mac, outerHash, 32);
+    memcpy(mac, outerHash, 32);
 
-  // Clear sensitive data
-  memset(k_ipad, 0, HMAC_BLOCK_SIZE);
-  memset(k_opad, 0, HMAC_BLOCK_SIZE);
-  memset(innerHash, 0, 32);
-  memset(outerHash, 0, 32);
-  memset(innerMsg, 0, HMAC_BLOCK_SIZE + msgLen);
-  free(innerMsg);
-  memset(outerMsg, 0, sizeof(outerMsg));
+    // Clear sensitive data
+    memset(k_ipad, 0, HMAC_BLOCK_SIZE);
+    memset(k_opad, 0, HMAC_BLOCK_SIZE);
+    memset(innerHash, 0, 32);
+    memset(outerHash, 0, 32);
+    memset(innerMsg, 0, HMAC_BLOCK_SIZE + msgLen);
+    free(innerMsg);
+    memset(outerMsg, 0, sizeof(outerMsg));
 }
 
 // =============================================================
@@ -640,188 +636,99 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
 // =============================================================
 
 bool receiveKeyFromUNOQ() {
-  uint32_t timeoutStart = millis();
+    uint32_t timeoutStart = millis();
 
-  Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
+    Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
 
-  // Step 1: Wait for handshake
-  while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-    if (Serial1.available() >= 2) {
-      uint8_t msgType = Serial1.read();
-      uint8_t targetId = Serial1.read();
+    // Step 1: Wait for handshake
+    while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+        if (Serial1.available() >= 2) {
+            uint8_t msgType = Serial1.read();
+            uint8_t targetId = Serial1.read();
 
-      if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
-        Serial.println("[PRO-48] Handshake received.");
-        break;
-      }
-    }
-  }
-  if (millis() - timeoutStart >= KEY_DISTRIBUTION_TIMEOUT) {
-    Serial.println("[PRO-48] Timeout waiting for handshake.");
-    return false;
-  }
-
-  // Step 2: Send READY + device ID
-  Serial.print("[PRO-48] Sending READY with device ID: ");
-  for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-  Serial.println();
-
-  Serial1.write(MSG_READY);
-  Serial1.write(deviceId, 4);
-  Serial1.flush();
-
-  // Step 3: Wait for key data (22 bytes
-)
-  timeoutStart = millis();
-  while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-    delay(1);
-  }
-  if (Serial1.available() < 22) {
-    Serial.println("[PRO-48] Timeout waiting for key data.");
-    return false;
-  }
-
-  uint8_t msgType = Serial1.read();
-  if (msgType != MSG_KEY_DATA) {
-    Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
-    return false;
-  }
-
-  uint8_t receivedKeyLen = Serial1.read();
-  if (receivedKeyLen != AES_KEY_SIZE) {
-    Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
-    return false;
-  }
-
-  uint8_t receivedKey[AES_KEY_SIZE];
-  Serial1.readBytes(receivedKey, AES_KEY_SIZE);
-
-  // Read CRC32
-  uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                       | ((uint32_t)Serial1.read() << 16)
-                       | ((uint32_t)Serial1.read() << 8)
-                       | ((uint32_t)Serial1.read());
-
-  // Verify CRC32
-  uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
-  if (computedCrc != receivedCrc) {
-    Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
-                   computedCrc, receivedCrc);
-    Serial1.write(MSG_ERROR);
-    memset(receivedKey, 0, AES_KEY_SIZE);
-    return false;
-  }
-  Serial.println("[PRO-48] CRC verified OK.");
-
-  // Store key
-  memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-  keyStored = true;
-  memset(receivedKey, 0, AES_KEY_SIZE);
-
-  // Send confirmation with hash
-  uint8_t fullHash[32];
-  sha256(aesKey, AES_KEY_SIZE, fullHash);
-  uint8_t keyHash[KEY_HASH_SIZE];
-  memcpy(keyHash, fullHash, KEY_HASH_SIZE);
-
-  Serial1.write(MSG_STORED);
-  Serial1.write(keyHash, KEY_HASH_SIZE);
-  Serial1.flush();
-
-  Serial.print("[PRO-48] Key stored. Hash sent: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
-  Serial.println();
-
-  memset(fullHash, 0, 32);
-  return true;
-}
-
-// =============================================================
-// LoRa Simulated Functions (Placeholder for RadioLib)
-//
- ===
-==========================================================
-// Note: For actual use, include RadioLib and implement proper SX1262 driver
-// This is a placeholder that simulates LoRa communication via Serial for testing
-
-class MockLoRa {
-public:
-    bool begin() {
-        Serial.println("[LoRa] Mock LoRa initialized (simulated)");
-        return true;
-    }
-
-    bool available() {
-        // Check if there's data on Serial (simulating LoRa)
-        return Serial.available() > 0;
-    }
-
-    int read(uint8_t* buf, int len) {
-        // Read from Serial
-        int available = Serial.available();
-        int toRead = min(len, available);
-        for (int i = 0; i < toRead; i++) {
-            buf[i] = Serial.read();
+            if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
+                Serial.println("[PRO-48] Handshake received.");
+                break;
+            }
         }
-        return toRead;
     }
-
-    uint8_t read() {
-        return Serial.read();
-    }
-
-    void write(const uint8_t* buf, int len) {
-        Serial.write(buf, len);
-    }
-
-    void write(uint8_t byte) {
-        Serial.write(byte);
-    }
-
-    void flush() {
-        Serial.flush();
-    }
-
-    // For actual RadioLib implementation, uncomment and configure:
-    /*
-    #include <RadioLib.h>
-    SX1262 radio = new Module(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RESET_PIN, LORA_BUSY_PIN);
-    
-    bool begin() {
-        int state = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SPREADING_FACTOR, 
-                                LORA_CODING_RATE, LORA_SYNC_WORD, LORA_PREAMBLE_LENGTH);
-        if (state == RADIOLIB_ERR_NONE) {
-            Serial.println("[LoRa] SX1262 initialized");
-            radio.setDio1Action(setFlag);
-            return true;
-        }
-        Serial.printf("[LoRa] SX1262 init failed: %d\n", state);
+    if (millis() - timeoutStart >= KEY_DISTRIBUTION_TIMEOUT) {
+        Serial.println("[PRO-48] Timeout waiting for handshake.");
         return false;
     }
-    
-    static volatile bool receivedFlag = false;
-    static void setFlag() { receivedFlag = true; }
-    
-    bool available() { return receivedFlag; }
-    
-    int read(uint8_t* buf, int len) {
-        int state = radio.readData(buf, len);
-        if (state == RADIOLIB_ERR_NONE) {
-            receivedFlag = false;
 
-            return len;
-        }
-        return 0;
-    }
-    
-    void write(const uint8_t* buf, int len) {
-        radio.transmit(buf, len);
-    }
-    */
-};
+    // Step 2: Send READY + device ID
+    Serial.print("[PRO-48] Sending READY with device ID: ");
+    for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
+    Serial.println();
 
-MockLoRa
- lora;
+    Serial1.write(MSG_READY);
+    Serial1.write(deviceId, 4);
+    Serial1.flush();
+
+    // Step 3: Wait for key data (22 bytes: type(1) + len(1) + key(16) + crc(4))
+    timeoutStart = millis();
+    while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+        delay(1);
+    }
+    if (Serial1.available() < 22) {
+        Serial.println("[PRO-48] Timeout waiting for key data.");
+        return false;
+    }
+
+    uint8_t msgType = Serial1.read();
+    if (msgType != MSG_KEY_DATA) {
+        Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
+        return false;
+    }
+
+    uint8_t receivedKeyLen = Serial1.read();
+    if (receivedKeyLen != AES_KEY_SIZE) {
+        Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
+        return false;
+    }
+
+    uint8_t receivedKey[AES_KEY_SIZE];
+    Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+
+    // Read CRC32
+    uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
+                         | ((uint32_t)Serial1.read() << 16)
+                         | ((uint32_t)Serial1.read() << 8)
+                         | ((uint32_t)Serial1.read());
+
+    // Verify CRC32
+    uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
+    if (computedCrc != receivedCrc) {
+        Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n", computedCrc, receivedCrc);
+        Serial1.write(MSG_ERROR);
+        memset(receivedKey, 0, AES_KEY_SIZE);
+        return false;
+    }
+    Serial.println("[PRO-48] CRC verified OK.");
+
+    // Store key securely
+    memcpy(aesKey, receivedKey, AES_KEY_SIZE);
+    keyStored = true;
+    memset(receivedKey, 0, AES_KEY_SIZE);
+
+    // Send confirmation with hash
+    uint8_t fullHash[32];
+    sha256(aesKey, AES_KEY_SIZE, fullHash);
+    uint8_t keyHash[KEY_HASH_SIZE];
+    memcpy(keyHash, fullHash, KEY_HASH_SIZE);
+
+    Serial1.write(MSG_STORED);
+    Serial1.write(keyHash, KEY_HASH_SIZE);
+    Serial1.flush();
+
+    Serial.print("[PRO-48] Key stored. Hash sent: ");
+    for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
+    Serial.println();
+
+    memset(fullHash, 0, 32);
+    return true;
+}
 
 // =============================================================
 // Authentication State Machine
@@ -834,7 +741,8 @@ enum AuthState {
     STATE_WAITING_FOR_RESULT
 };
 
-AuthState currentState = STATE_WAITING_FOR_KEY;
+static AuthState currentState = STATE_WAITING_FOR_KEY;
+static bool loraInitialized = false;
 
 // =============================================================
 // Global e-Paper Instance
@@ -871,20 +779,23 @@ void setup() {
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 
-    // Initialize SPI1 for Core1262 (PRO-28)
-    loraSPI.setSCK(LORA_SCK_PIN);
-    loraSPI.setTX(LORA_MOSI_PIN);
-    loraSPI.setRX(LORA_MISO_PIN);
+    // Initialize SPI1 for Core1262
     loraSPI.begin();
     Serial.println("[PRO-28] SPI1 initialized for Core1262.");
 
-    // Initialize LoRa (mock for now)
-    Serial.println("[PRO-58] Initializing LoRa...");
-    if (!lora.begin()) {
-   
-     Serial.println("[PRO-58] LoRa initialization FAILED!");
+    // Initialize LoRa SX1262 via RadioLib
+    Serial.println("[PRO-58] Initializing RadioLib SX1262 LoRa...");
+    int state = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
+                            LORA_CODING_RATE, LORA_SYNC_WORD, LORA_OUTPUT_POWER,
+                            LORA_PREAMBLE_LENGTH);
+
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.println("[PRO-58] RadioLib SX1262 initialized successfully.");
+        loraInitialized = true;
+        radio.setDio1Action(setLoRaFlag);
+        radio.startReceive();
     } else {
-        Serial.println("[PRO-58] LoRa initialized.");
+        Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
     }
 
     // Step 1: Receive key from UNO Q
@@ -892,16 +803,14 @@ void setup() {
     if (receiveKeyFromUNOQ()) {
         currentState = STATE_WAITING_FOR_CHALLENGE;
         Serial.println("[PRO-48] Key received successfully.");
-        digitalWrite(LED_BUI
-LTIN, HIGH);
-        
+        digitalWrite(LED_BUILTIN, HIGH);
+
         // Update e-Paper to show waiting for challenge
         epd.begin();
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
     } else {
-        Serial.println("[PRO-48] Key reception FAILED!");
+        Serial.println("[PRO-48] Key reception FAILED / Waiting...");
         currentState = STATE_WAITING_FOR_KEY;
-        // Show error on e-Paper
         epd.begin();
         epd.showStatus(EPD_STATUS_FAILED);
     }
@@ -915,10 +824,100 @@ void loop() {
     static uint32_t lastChallengeTime = 0;
     static uint8_t challenge[CHALLENGE_SIZE];
     static uint8_t response[HMAC_SIZE];
+    static uint8_t rxBuffer[64];
 
+    // 1. Check for incoming LoRa packet via interrupt flag
+    if (loraInitialized && loraPacketReceived) {
+        loraPacketReceived = false;
+
+        size_t rxLen = radio.getPacketLength();
+        if (rxLen > sizeof(rxBuffer)) rxLen = sizeof(rxBuffer);
+
+        int state = radio.readData(rxBuffer, rxLen);
+        if (state == RADIOLIB_ERR_NONE && rxLen > 0) {
+            uint8_t msgType = rxBuffer[0];
+            Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
+                          msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
+
+            // Handle MSG_CHALLENGE (0xB1)
+            if (msgType == MSG_CHALLENGE && rxLen >= (1 + CHALLENGE_SIZE)) {
+                Serial.println("[PRO-50] Challenge received from PLC over LoRa");
+                memcpy(challenge, rxBuffer + 1, CHALLENGE_SIZE);
+                lastChallengeTime = millis();
+                currentState = STATE_COMPUTING_RESPONSE;
+
+                epd.begin();
+                epd.showStatus(EPD_STATUS_AUTHENTICATING);
+
+                Serial.print("[PRO-50] Challenge nonce: ");
+                for (int i = 0; i < CHALLENGE_SIZE; i++) Serial.printf("%02X", challenge[i]);
+                Serial.println();
+            }
+            // Handle MSG_RESULT (0xB3)
+            else if (msgType == MSG_RESULT && rxLen >= 2) {
+                uint8_t result = rxBuffer[1];
+                if (result == 0x01) {
+                    Serial.println("[PRO-50] Authentication SUCCESS (LoRa)");
+                    currentState = STATE_WAITING_FOR_CHALLENGE;
+                    epd.begin();
+                    epd.showStatus(EPD_STATUS_AUTHENTICATED);
+
+                    for (int i = 0; i < 5; i++) {
+                        digitalWrite(LED_BUILTIN, HIGH);
+                        delay(100);
+                        digitalWrite(LED_BUILTIN, LOW);
+                        delay(100);
+                    }
+                } else {
+                    Serial.println("[PRO-50] Authentication FAILED (LoRa)");
+                    currentState = STATE_WAITING_FOR_CHALLENGE;
+                    epd.begin();
+                    epd.showStatus(EPD_STATUS_FAILED);
+
+                    for (int i = 0; i < 10; i++) {
+                        digitalWrite(LED_BUILTIN, HIGH);
+                        delay(50);
+                        digitalWrite(LED_BUILTIN, LOW);
+                        delay(50);
+                    }
+                }
+            }
+        }
+        // Resume listening on LoRa
+        radio.startReceive();
+    }
+
+    // 2. Serial fallback / debug simulation for testing
+    if (Serial.available() > 0) {
+        uint8_t msgType = Serial.read();
+        if (msgType == MSG_CHALLENGE) {
+            Serial.println("[PRO-50] (Debug Serial) Challenge received");
+            if (Serial.available() >= CHALLENGE_SIZE) {
+                Serial.readBytes(challenge, CHALLENGE_SIZE);
+                lastChallengeTime = millis();
+                currentState = STATE_COMPUTING_RESPONSE;
+                epd.begin();
+                epd.showStatus(EPD_STATUS_AUTHENTICATING);
+            }
+        } else if (msgType == MSG_RESULT && Serial.available() > 0) {
+            uint8_t res = Serial.read();
+            if (res == 0x01) {
+                Serial.println("[PRO-50] (Debug Serial) Authentication SUCCESS");
+                currentState = STATE_WAITING_FOR_CHALLENGE;
+                epd.begin();
+                epd.showStatus(EPD_STATUS_AUTHENTICATED);
+            } else {
+                Serial.println("[PRO-50] (Debug Serial) Authentication FAILED");
+                currentState = STATE_WAITING_FOR_CHALLENGE;
+                epd.begin();
+                epd.showStatus(EPD_STATUS_FAILED);
+            }
+        }
+    }
+
+    // 3. Main State Machine Execution
     switch (currentState) {
         case STATE_WAITING_FOR_KEY:
-            // Try to receive key again
             if (receiveKeyFromUNOQ()) {
                 currentState = STATE_WAITING_FOR_CHALLENGE;
                 digitalWrite(LED_BUILTIN, HIGH);
@@ -928,37 +927,7 @@ void loop() {
             break;
 
         case STATE_WAITING_FOR_CHALLENGE:
-            // Listen for challenge from PLC
-            if (Serial.available() > 0) {
-                uint8_t msgType = Serial.read();
-                
-                if (msgType == MSG_CHALLENGE) {
-                    Serial.println("[PRO-50] Challenge received from PLC");
-                    
-                    // Read challenge (16 bytes)
-                    if (Serial.available() >= CHALLENGE_SIZE) {
-                        Serial.readBytes(challenge, CHALLENGE_SIZE);
-                        lastChallengeTime = millis();
-   
-                     currentState = STATE_COMPUTING_RESPONSE;
-                        
-                        // Show computing state on e-Paper
-                        epd.begin();
-                        epd.showStatus(EPD_STATUS_AUTHENTICATING);
-                        
-                        Serial.print("[PRO-50] Challenge: ");
-                        for (int i = 0; i < CHALLENGE
-_SIZE; i++) {
-                            Serial.printf("%02X", challenge[i]);
-                        }
-                        Serial.println();
-                    }
-                }
-            }
-            
-            // Timeout check
-            if (millis() - lastChallengeTime > CHALLENGE_TIMEOUT && lastChallengeTime > 0) {
-                currentState = STATE_WAITING_FOR_CHALLENGE;
+            if (lastChallengeTime > 0 && (millis() - lastChallengeTime > CHALLENGE_TIMEOUT)) {
                 lastChallengeTime = 0;
                 Serial.println("[PRO-50] Challenge timeout.");
                 epd.begin();
@@ -967,91 +936,57 @@ _SIZE; i++) {
             break;
 
         case STATE_COMPUTING_RESPONSE:
-            // Compute HMAC-SHA256 response
-            if (keyStored && aesKey != nullptr) {
+            if (keyStored) {
                 hmac_sha256(aesKey, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
-                
-                Serial.print("[PRO-50] Response computed: ");
-                for (int i = 0; i < HMAC_SIZE; i++) {
-                    Serial.printf("%02X", response[i]);
-                }
+
+                Serial.print("[PRO-50] HMAC Response computed: ");
+                for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);
                 Serial.println();
-                
-                // Send response to PLC
+
+                // Transmit LoRa packet: [MSG_RESPONSE, response(32)]
+                uint8_t txPacket[1 + HMAC_SIZE];
+                txPacket[0] = MSG_RESPONSE;
+                memcpy(txPacket + 1, response, HMAC_SIZE);
+
+                if (loraInitialized) {
+                    int txState = radio.transmit(txPacket, sizeof(txPacket));
+                    if (txState == RADIOLIB_ERR_NONE) {
+                        Serial.println("[PRO-50] Response sent over LoRa to PLC.");
+                    } else {
+                        Serial.printf("[PRO-50] LoRa transmit error: %d\n", txState);
+                    }
+                    radio.startReceive();
+                }
+
+                // Also output over Serial for debugging/telemetry
                 Serial.write(MSG_RESPONSE);
                 Serial.write(response, HMAC_SIZE);
                 Serial.flush();
-                
-                Serial.println("[PRO-50] Response sent to PLC");
+
                 currentState = STATE_WAITING_FOR_RESULT;
-                
-                // Clear sensitive data
                 memset(challenge, 0, CHALLENGE_SIZE);
             } else {
                 Serial.println("[PRO-50] ERROR: No key stored!");
-      
-          currentState = STATE_WAITING_FOR_KEY;
+                currentState = STATE_WAITING_FOR_KEY;
                 epd.begin();
                 epd.showStatus(EPD_STATUS_FAILED);
             }
             break;
 
         case STATE_WAITING_FOR_RESULT:
-            // Wait for authentication result from PLC
-            if (Serial.available() > 0) {
-                uint8_t result = Serial.read();
-                
-                if (result == 0x01) {  // Success
-                    Serial.println("[PRO-50] Authentication SUCCESS");
-                    currentState = STATE_WAITING_FOR_CHALLENGE;
-                    
-            
-        // Show success on e-Paper
-                    epd.begin();
-                    epd.showStatus(EPD_STATUS_AUTHENTICATED);
-                    
-                    // Blink LED to indicate success
-                    for (int i = 0; i < 5; i++) {
-                        digitalWrite(LED_BUILTIN, HIGH);
-                        delay(100);
-                        digitalWrite(LED_BUILTIN, LOW);
-                        delay(100);
-                    }
-                } else if (result == 0x00) {  // Failure
-                    Serial.println("[PRO-50] Authentication FAILED");
-                    currentState = STATE_WAITING_FOR_CHALLENGE;
-                    
-                    // Show failure on e-Paper
-                    epd.begin();
-                    epd.showStatus(EPD_STATUS_FAILED);
-                    
-                    // Blink LED rapidly to indicate failure
-                    for (int i = 0; i < 10; i++) {
-                        digitalWrite(LED_BUILTIN, HIGH);
-                        delay(50);
-                        digitalWrite(LED_BUILTIN, LOW);
-                        delay(50);
-                    }
-                }
-            }
             break;
     }
 
-    // Heartbeat
+    // 4. Heartbeat LED Indicator
     static uint32_t lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 1000) {
         lastHeartbeat = millis();
-        
         if (keyStored) {
-            digitalWrite(LE
-D_BUIL
-TIN, !digitalRead(LED_BUILTIN));
+            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
         } else {
-            // No key: blink rapidly
             digitalWrite(LED_BUILTIN, (millis() / 200) % 2);
         }
     }
 
-    // Small delay to prevent CPU overload
     delay(10);
 }
