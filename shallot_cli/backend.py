@@ -125,15 +125,20 @@ def ensure_arduino_cli() -> bool:
 
 def ensure_pico_index() -> None:
     cfg = _run(["arduino-cli", "config", "dump"])
-    if "package_rp2040_index.json" not in (cfg.stdout or ""):
+    pico_url = "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
+    if pico_url not in (cfg.stdout or ""):
         print("Lägger till arduino-pico board-URL")
-        _run(["arduino-cli", "config", "set", "board_manager.additional_urls",
-              "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"])
+        _run(["arduino-cli", "config", "set", "board_manager.additional_urls", pico_url])
+        _run(["arduino-cli", "core", "update-index"])
+    else:
         _run(["arduino-cli", "core", "update-index"])
 
 
 def ensure_core_installed(comp: Component) -> None:
     pkg = comp.core.split("@")[0]
+    # For RP2040 boards, ensure the pico index is available
+    if "rp2040" in comp.core:
+        ensure_pico_index()
     _run(["arduino-cli", "core", "update-index"])
     listing = _run(["arduino-cli", "core", "list"]).stdout
     installed = [line.split()[0] for line in listing.splitlines() if line.strip() and len(line.split()) >= 1]
