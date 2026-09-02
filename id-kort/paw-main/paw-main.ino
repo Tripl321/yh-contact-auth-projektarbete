@@ -600,7 +600,7 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
     }
   }
 
-  // Inner hash: SHA256(k_ipad || msg)
+// Inner hash: SHA256(k_ipad || msg)
  
   uint8_t* innerMsg = (uint8_t*)calloc(HMAC_BLOCK_SIZE + msgLen, 1);
   if (!innerMsg) { memset(mac,0,32); return; }
@@ -652,7 +652,7 @@ bool receiveKeyFromUNOQ() {
     return false;
   }
 
-  // Step 2: Send READY + device ID
+// Step 2: Send READY + device ID
   Serial.print("[PRO-48] Sending READY with device ID: ");
   for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
   Serial.println();
@@ -661,8 +661,8 @@ bool receiveKeyFromUNOQ() {
   Serial1.write(deviceId, 4);
   Serial1.flush();
 
-  // Step 3: Wait for key data (22 bytes
-)
+  // Step 3: Wait for key data (22 bytes)
+
   timeoutStart = millis();
   while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
     delay(1);
@@ -672,19 +672,19 @@ bool receiveKeyFromUNOQ() {
     return false;
   }
 
-  uint8_t msgType = Serial1.read();
+uint8_t msgType = Serial1.read();
   if (msgType != MSG_KEY_DATA) {
     Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
     return false;
   }
 
-  uint8_t receivedKeyLen = Serial1.read();
+uint8_t receivedKeyLen = Serial1.read();
   if (receivedKeyLen != AES_KEY_SIZE) {
     Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
     return false;
   }
 
-  uint8_t receivedKey[AES_KEY_SIZE];
+uint8_t receivedKey[AES_KEY_SIZE];
   Serial1.readBytes(receivedKey, AES_KEY_SIZE);
 
   // Read CRC32
@@ -730,7 +730,6 @@ bool receiveKeyFromUNOQ() {
 // =============================================================
 // LoRa Simulated Functions (Placeholder for RadioLib)
 //
- ===
 ==========================================================
 // Note: For actual use, include RadioLib and implement proper SX1262 driver
 // This is a placeholder that simulates LoRa communication via Serial for testing
@@ -742,12 +741,12 @@ public:
         return true;
     }
 
-    bool available() {
+bool available() {
         // Check if there's data on Serial (simulating LoRa)
         return Serial.available() > 0;
     }
 
-    int read(uint8_t* buf, int len) {
+int read(uint8_t* buf, int len) {
         // Read from Serial
         int available = Serial.available();
         int toRead = min(len, available);
@@ -757,23 +756,23 @@ public:
         return toRead;
     }
 
-    uint8_t read() {
+uint8_t read() {
         return Serial.read();
     }
 
-    void write(const uint8_t* buf, int len) {
+void write(const uint8_t* buf, int len) {
         Serial.write(buf, len);
     }
 
-    void write(uint8_t byte) {
+void write(uint8_t byte) {
         Serial.write(byte);
     }
 
-    void flush() {
+void flush() {
         Serial.flush();
     }
 
-    // For actual RadioLib implementation, uncomment and configure:
+// For actual RadioLib implementation, uncomment and configure:
     /*
     #include <RadioLib.h>
     SX1262 radio = new Module(LORA_CS_PIN, LORA_DIO1_PIN, LORA_RESET_PIN, LORA_BUSY_PIN);
@@ -789,13 +788,13 @@ public:
         Serial.printf("[LoRa] SX1262 init failed: %d\n", state);
         return false;
     }
-    
-    static volatile bool receivedFlag = false;
+
+static volatile bool receivedFlag = false;
     static void setFlag() { receivedFlag = true; }
-    
-    bool available() { return receivedFlag; }
-    
-    int read(uint8_t* buf, int len) {
+
+bool available() { return receivedFlag; }
+
+int read(uint8_t* buf, int len) {
         int state = radio.readData(buf, len);
         if (state == RADIOLIB_ERR_NONE) {
             receivedFlag = false;
@@ -804,8 +803,8 @@ public:
         }
         return 0;
     }
-    
-    void write(const uint8_t* buf, int len) {
+
+void write(const uint8_t* buf, int len) {
         radio.transmit(buf, len);
     }
     */
@@ -861,7 +860,7 @@ void setup() {
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 
-    // Initialize SPI1 for Core1262 (PRO-28)
+// Initialize SPI1 for Core1262 (PRO-28)
     loraSPI.setSCK(LORA_SCK_PIN);
     loraSPI.setTX(LORA_MOSI_PIN);
     loraSPI.setRX(LORA_MISO_PIN);
@@ -877,7 +876,7 @@ void setup() {
         Serial.println("[PRO-58] LoRa initialized.");
     }
 
-    // Step 1: Receive key from UNO Q
+// Step 1: Receive key from UNO Q
     Serial.println("[PRO-48] Starting key reception...");
     if (receiveKeyFromUNOQ()) {
         currentState = STATE_WAITING_FOR_CHALLENGE;
@@ -943,8 +942,8 @@ void loop() {
                     }
                 }
             }
-            
-            // Timeout check
+
+// Timeout check
             if (millis() - lastChallengeTime > CHALLENGE_TIMEOUT && lastChallengeTime > 0) {
                 currentState = STATE_WAITING_FOR_CHALLENGE;
                 lastChallengeTime = 0;
@@ -1025,7 +1024,7 @@ void loop() {
             break;
     }
 
-    // Heartbeat
+// Heartbeat
     static uint32_t lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 1000) {
         lastHeartbeat = millis();
@@ -1038,6 +1037,6 @@ void loop() {
         }
     }
 
-    // Small delay to prevent CPU overload
+// Small delay to prevent CPU overload
     delay(10);
 }
