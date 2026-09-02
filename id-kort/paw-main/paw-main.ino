@@ -50,9 +50,10 @@
 // --- LoRa Core1262 (SPI1) ---
 #define LORA_SCK_PIN     10  // SCK pin on Feather silkscreen
 #define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen
-#define LORA_MISO_PIN    12  // D12 on Feather silkscreen (GPIO12 = SPI1 MISO)   // MISO pin on Feather silkscreen
+#define LORA_MISO_PIN    4   // D12 on Feather silkscreen (GPIO4, alt-fn SPI1 MISO)   // MISO pin on Feather silkscreen
 #define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen
-#define LORA_BUSY_PIN    7   // Pin 7 on Feather silkscreen
+#define LO
+RA_BUSY_PIN    7   // Pin 7 on Feather silkscreen
 #d
 efine LORA_RESET_PIN   8   // Pin 8 on Feather silkscreen
 #define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen
@@ -110,7 +111,8 @@ efine LORA_RESET_PIN   8   // Pin 8 on Feather silkscreen
 // Key Storage
 // =============================================================
 
-static uint8_t aesKey[AES_KEY_SIZE];
+static uint8_t aesKey[AES_KE
+Y_SIZE];
 static bool keyStored = false;
 static const 
 uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
@@ -167,7 +169,8 @@ private:
     void sendData(uint8_t data);
     void waitUntilIdle();
     void reset();
-    void setLut(const unsigned char* lut);
+    void setLut(const unsigned ch
+ar* lut);
     void clearBuffer();
     void drawPixel(i
 nt x, int y, bool white);
@@ -244,7 +247,8 @@ bool ShallotEPD::begin() {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 
     reset();
-    waitUntilIdle();
+  
+  waitUntilIdle();
 
     sendCommand(0x12);  // SWRESET
 
@@ -331,7 +335,8 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
 
 void ShallotEPD::sleep() {
     sendCommand(0x10);  // Enter deep sleep
-    sendData(0x01);
+    send
+Data(0x01);
     delay(200);
     digitalWrite(EPD_RST_PIN
 , LOW);
@@ -403,7 +408,8 @@ void ShallotEPD::drawCircleFilled(int cx, int cy, int r, bool white) {
     for (int y = -r; y <= r; y++) {
         for (int x = -r; x <= r; x++) {
             if (x * x + y * y <= r * r) {
-                drawPixel(cx + x, cy + y, white);
+                drawPix
+el(cx + x, cy + y, white);
             }
         }
     }
@@ -472,7 +478,8 @@ void ShallotEPD::showStatus(EpdStatus status) {
 // =============================================================
 
 static const uint32_t sha256_k[64] = {
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x428a2f
+98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
   0x3956c25b, 0x59
 f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -519,7 +526,8 @@ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
     for (int i = 0; i < 16; i++) {
       w[i] = ((uint32_t)msg[blk + i*4] << 24)
            | ((uint32_t)msg[blk + i*4 + 1] << 16)
-           | ((uint32_t)msg[blk + i*4 + 2] << 8)
+           | ((uin
+t32_t)msg[blk + i*4 + 2] << 8)
            | ((uint32_t)msg[
 blk + i*4 + 3]);
     }
@@ -587,7 +595,8 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
   for (size_t i = 0; i < keyLen; i++) {
     if (i < HMAC_BLOCK_SIZE) {
       k_ipad[i] ^= key[i];
-      k_opad[i] ^= key[i];
+      k_opad[i] ^=
+ key[i];
     }
   }
 
@@ -653,7 +662,8 @@ bool receiveKeyFromUNOQ() {
   Serial1.flush();
 
   // Step 3: Wait for key data (22 bytes)
-  timeoutStart = millis();
+  timeoutSta
+rt = millis();
   while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
     delay(1);
   }
@@ -720,7 +730,8 @@ al.println("[PRO-48] Timeout waiting for key data.");
 
 // =============================================================
 // LoRa Simulated Functions (Placeholder for RadioLib)
-// =============================================================
+// ===
+==========================================================
 // Note: For actual use, include RadioLib and implement proper SX1262 driver
 // This is a placeholder that s
 imulates LoRa communication via Serial for testing
@@ -789,6 +800,7 @@ public:
         int state = radio.readData(buf, len);
         if (state == RADIOLIB_ERR_NONE) {
             receivedFlag = false;
+
             return len;
         }
         return 0;
@@ -861,7 +873,8 @@ void setup() {
     // Initialize LoRa (mock for now)
     Serial.println("[PRO-58] Initializing LoRa...");
     if (!lora.begin()) {
-        Serial.println("[PRO-58] LoRa initialization FAILED!");
+        Serial.print
+ln("[PRO-58] LoRa initialization FAILED!");
     } else {
         Serial.println("[PRO-58] LoRa initialized.");
     }
@@ -918,7 +931,8 @@ void loop() {
                     if (Serial.available() >= CHALLENGE_SIZE) {
                         Serial.readBytes(challenge, CHALLENGE_SIZE);
                         lastChallengeTime = millis();
-                        currentState = STATE_COMPUTING_RESPONSE;
+   
+                     currentState = STATE_COMPUTING_RESPONSE;
                         
                         // Show computing state on e-Paper
                         epd.begin();
@@ -967,7 +981,8 @@ _SIZE; i++) {
                 memset(challenge, 0, CHALLENGE_SIZE);
             } else {
                 Serial.println("[PRO-50] ERROR: No key stored!");
-                currentState = STATE_WAITING_FOR_KEY;
+      
+          currentState = STATE_WAITING_FOR_KEY;
                 epd.begin();
                 epd.showStatus(EPD_STATUS_FAILED);
             }
@@ -1020,7 +1035,8 @@ _SIZE; i++) {
         lastHeartbeat = millis();
         
         if (keyStored) {
-            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+            digitalWrite(LED_BUILTIN, !digitalR
+ead(LED_BUILTIN));
         } else {
             // No key: blink rapidly
             digitalWrite(LED_BUILTIN, (millis() / 200) % 2);
