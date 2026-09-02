@@ -31,13 +31,13 @@
 #include <SPI.h>
 
 // --- SPI1 Pin Definitions for Core1262 ---
-#define SPI1_SCK_PIN   10  // D10 on Feather silkscreen
-#define SPI1_MOSI_PIN  11  // D11 on Feather silkscreen
-#define SPI1_MISO_PIN  24  // D24 on Feather silkscreen (GPIO24, hardware SPI1 MISO)
-#define CS_PIN          9  // D9 on Feather silkscreen
-#define BUSY_PIN        7  // Pin "7" on Feather silkscreen (GPIO7)
-#define RESET_PIN       4  // Pin "4" on Feather silkscreen (GPIO4, digital output)
-#define DIO1_PIN        A2 // A2 on Feather silkscreen (GPIO28)
+#define SPI1_SCK_PIN   10
+#define SPI1_MOSI_PIN  11
+#define SPI1_MISO_PIN  24
+#define CS_PIN          9
+#define BUSY_PIN        7
+#define RESET_PIN       4
+#define DIO1_PIN        A2
 
 // --- SX1262 Register ---
 #define SX1262_REG_VERSION  0x14
@@ -78,15 +78,15 @@ void setup() {
 
   Serial.println();
   Serial.println("SPI1 initialized:");
-  Serial.printf("  SCK  = D10 (GPIO%d)\n", SPI1_SCK_PIN);
-  Serial.printf("  MOSI = D11 (GPIO%d)\n", SPI1_MOSI_PIN);
-  Serial.printf("  MISO = D24 (GPIO%d)\n", SPI1_MISO_PIN);
-  Serial.printf("  CS   = D9  (GPIO%d)\n", CS_PIN);
-  Serial.printf("  RESET= pin4(GPIO%d)\n", RESET_PIN);
+  Serial.print("  SCK  = D10 (GPIO"); Serial.println(SPI1_SCK_PIN);
+  Serial.print("  MOSI = D11 (GPIO"); Serial.println(SPI1_MOSI_PIN);
+  Serial.print("  MISO = D24 (GPIO"); Serial.println(SPI1_MISO_PIN);
+  Serial.print("  CS   = D9  (GPIO"); Serial.println(CS_PIN);
+  Serial.print("  RESET= pin4(GPIO"); Serial.println(RESET_PIN);
   Serial.println();
   Serial.println("NOTE: MISO is on D24 (GPIO24, hardware SPI1 MISO)");
-  Serial.println("      NOT on 'MI' silkscreen (GPIO20 = SPI0 MISO)");
-  Serial.println("      NOT on pin '4' (GPIO4 = SPI0 MISO, used for RESET)");
+  Serial.println("      NOT on MI silkscreen (GPIO20 = SPI0 MISO)");
+  Serial.println("      NOT on pin 4 (GPIO4 = SPI0 MISO, used for RESET)");
   Serial.println();
 
   // Read SX1262 version register
@@ -118,13 +118,14 @@ void setup() {
   digitalWrite(CS_PIN, HIGH);
   loraSPI.endTransaction();
 
-  Serial.printf("SX1262 version register: 0x%02X\n", version);
+  Serial.print("SX1262 version register: 0x");
+  Serial.println(version, HEX);
 
   if (version == 0x00 || version == 0xFF) {
     Serial.println();
     Serial.println("ERROR: Invalid version read!");
     Serial.println("Possible causes:");
-    Serial.println("  1. MISO on wrong pin (check: should be D24, not 'MI' or pin '4')");
+    Serial.println("  1. MISO on wrong pin (check: should be D24, not MI or pin 4)");
     Serial.println("  2. CS not connected");
     Serial.println("  3. SCK not connected");
     Serial.println("  4. SX1262 not powered properly");
@@ -141,9 +142,12 @@ void setup() {
 
   Serial.println();
   Serial.println("--- Pin State Check ---");
-  Serial.printf("BUSY pin (pin7/GPIO%d): %s\n", BUSY_PIN, digitalRead(BUSY_PIN) ? "HIGH" : "LOW");
-  Serial.printf("DIO1 pin (A2/GPIO%d): %s\n", DIO1_PIN, digitalRead(DIO1_PIN) ? "HIGH" : "LOW");
-  Serial.printf("RESET pin (pin4/GPIO%d): %s\n", RESET_PIN, digitalRead(RESET_PIN) ? "HIGH" : "LOW");
+  Serial.print("BUSY pin (pin7/GPIO"); Serial.print(BUSY_PIN); Serial.print("): ");
+  Serial.println(digitalRead(BUSY_PIN) ? "HIGH" : "LOW");
+  Serial.print("DIO1 pin (A2/GPIO"); Serial.print(DIO1_PIN); Serial.print("): ");
+  Serial.println(digitalRead(DIO1_PIN) ? "HIGH" : "LOW");
+  Serial.print("RESET pin (pin4/GPIO"); Serial.print(RESET_PIN); Serial.print("): ");
+  Serial.println(digitalRead(RESET_PIN) ? "HIGH" : "LOW");
 }
 
 void loop() {
