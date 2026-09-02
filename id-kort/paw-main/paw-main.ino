@@ -29,7 +29,7 @@
 
 // SPI1 is not pre-defined for Feather RP2350 HSTX (SPI_HOWMANY=1).
 // Create our own instance. Cannot name it "spi1" (conflicts with SDK macro).
-SPIClassRP2040 loraSPI(spi1_hw);
+SPIClassRP2040 loraSPI(spi1, -1, -1, -1, -1);
 
 // =============================================================
 // Configuration
