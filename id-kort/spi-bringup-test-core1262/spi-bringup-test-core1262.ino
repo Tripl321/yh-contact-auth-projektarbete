@@ -5,14 +5,14 @@
  * This sketch verifies SPI1 wiring by reading the Core1262/SX1262
  * chip version register.
  *
- * CRITICAL: MISO must be on D12 (GPIO12), NOT on "MI" (GPIO20).
+ * CRITICAL: MISO must be on D12 (GPIO4), NOT on "MI" (GPIO20).
  *   "MI" on Feather silkscreen = GPIO20 = SPI0 MISO (used by e-Paper)
- *   D12 on Feather silkscreen = GPIO12 = SPI1 MISO
+ *   D12 on Feather silkscreen = GPIO4, alt-fn = SPI1 MISO
  *
  * Pin mapping (verified against Adafruit Feather RP2350 pinout):
  *   SPI1 SCK  -> D10  (GPIO10)
  *   SPI1 MOSI -> D11  (GPIO11)
- *   SPI1 MISO -> D12  (GPIO12)  <-- NOT "MI" silkscreen!
+ *   SPI1 MISO -> D12  (GPIO4)  <-- NOT "MI" silkscreen!
  *   CS        -> D9   (GPIO9)
  *   BUSY      -> D7   (GPIO7)
  *   RESET     -> D8   (GPIO8)
@@ -27,7 +27,7 @@
 // --- SPI1 Pin Definitions for Core1262 ---
 #define SPI1_SCK_PIN   10  // D10 on Feather silkscreen
 #define SPI1_MOSI_PIN  11  // D11 on Feather silkscreen
-#define SPI1_MISO_PIN  12  // D12 on Feather silkscreen (GPIO12 = SPI1 MISO)
+#define SPI1_MISO_PIN  4   // D12 on Feather silkscreen (GPIO4, alt-fn SPI1 MISO)
 #define CS_PIN          9  // D9 on Feather silkscreen
 #define BUSY_PIN        7  // D7 on Feather silkscreen
 #define RESET_PIN       8  // D8 on Feather silkscreen
@@ -62,7 +62,8 @@ void setup() {
   digitalWrite(RESET_PIN, HIGH);
   delay(10);
 
-  // Initialize SPI1 with custom pins
+  // Ini
+tialize SPI1 with custom pins
   spi1.setSCK(SPI1_SCK_PIN);
   spi1.setTX(SPI1_MOSI_PIN);
   spi1.setRX(SPI1_MISO_PIN);
@@ -75,7 +76,7 @@ void setup() {
   Serial.printf("  MISO = D12 (GPIO%d)\n", SPI1_MISO_PIN);
   Serial.printf("  CS   = D9  (GPIO%d)\n", CS_PIN);
   Serial.println();
-  Serial.println("NOTE: MISO is on D12 (GPIO12 = SPI1 MISO)");
+  Serial.println("NOTE: MISO is on D12 (GPIO4, alt-fn = SPI1 MISO)");
   Serial.println("      NOT on 'MI' silkscreen (GPIO20 = SPI0 MISO)");
   Serial.println();
 
@@ -120,7 +121,8 @@ void setup() {
     Serial.println("  4. SX1262 not powered properly");
     Serial.println("  5. MISO and MOSI swapped");
     Serial.println();
-    Serial.println("=== SPI TEST: FAILED ===");
+    Serial.println("=== SPI
+ TEST: FAILED ===");
   } else {
     Serial.println();
     Serial.println("SPI1 communication verified!");
