@@ -56,9 +56,7 @@ SPIClassRP2040 loraSPI(spi1_hw);
 #define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen
 #define LORA_MISO_PIN    24  // D24 on Feather silkscreen (GPIO24, hardware SPI1 MISO)
 #define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen
-#define LO
-RA_BUSY_PIN    
-7   // Pin 7 on Feather silkscreen
+#define LORA_BUSY_PIN 7   // Pin 7 on Feather silkscreen
 #define LORA_RESET_PIN   4   // Pin "4" on Feather silkscreen (GPIO4, digital output for RESET)
 #define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen
 
@@ -115,9 +113,7 @@ RA_BUSY_PIN
 // Key Storage
 // =============================================================
 
-static uint8_t aesKey[
-AES_KE
-Y_SIZE];
+static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
@@ -339,12 +335,9 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
 void ShallotEPD::sleep() {
     sendCommand(0x10);  // Enter deep sleep
 
-    send
-Data(0x
-01);
+    sendData(0x01);
     delay(200);
-    digitalWrite(EPD_RST_PIN
-, LOW);
+    digitalWrite(EPD_RST_PIN, LOW);
 }
 
 void ShallotEPD::clearBuffer() {
@@ -820,8 +813,7 @@ public:
     */
 };
 
-MockLoRa
- lora;
+MockLoRa lora;
 
 // =============================================================
 // Authentication State Machine
@@ -1043,9 +1035,7 @@ _SIZE; i++) {
         lastHeartbeat = millis();
         
         if (keyStored) {
-            digitalWrite(LE
-D_BUIL
-TIN, !digitalRead(LED_BUILTIN));
+            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
         } else {
             // No key: blink rapidly
             digitalWrite(LED_BUILTIN, (millis() / 200) % 2);
