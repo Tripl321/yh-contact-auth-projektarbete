@@ -50,7 +50,7 @@ declare -A COMP_CORE=(
 # Board names for detection
 declare -A COMP_NAME=(
   ["paw"]="Feather RP2350"
-  ["plc"]="Pico 2"
+  ["plc"]="Raspberry Pi Pico 2"
   ["unoq"]="UNO Q"
 )
 # Extra filer som ska kopieras med (prj.conf för UNO Q etc.)
