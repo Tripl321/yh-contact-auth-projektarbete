@@ -342,6 +342,7 @@ main() {
     echo "  2) PLC  (Raspberry Pi Pico 2)"
     echo "  3) UNO Q (STM32U585)"
     echo "  4) Synka alla (ingen flashning)"
+    echo "  5) Lista anslutna boards"
     echo "  q) Avbryt"
     read -r -p "Val: " choice
     case "$choice" in
@@ -349,6 +350,7 @@ main() {
       2) target="plc" ;;
       3) target="unoq" ;;
       4) target="sync" ;;
+      5) target="list" ;;
       q|Q) exit 0 ;;
       *) err "Ogiltigt val"; exit 1 ;;
     esac
@@ -364,8 +366,13 @@ main() {
     exit 0
   fi
 
+  if [[ "$target" == "list" ]]; then
+    list_boards
+    exit 0
+  fi
+
   if [[ -z "${COMP_SRC[$target]:-}" ]]; then
-    err "Okänd komponent: $target (använd: paw | plc | unoq | sync)"
+    err "Okänd komponent: $target (använd: paw | plc | unoq | sync | list)"
     exit 1
   fi
 
