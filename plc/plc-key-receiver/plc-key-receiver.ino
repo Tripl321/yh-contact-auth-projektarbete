@@ -30,6 +30,7 @@
  */
 
 #include <Arduino.h>
+#include <SPI.h>
 
 // --- Constants ---
 #define AES_KEY_SIZE 16
@@ -52,6 +53,18 @@ static bool keyStored = false;
 // --- Device ID (unique identifier for this PLC node) ---
 // In production: derived from RP2350 chip ID. For prototype: hardcoded.
 static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
+
+
+// --- SPI1 Pin Definitions for Core1262 (PRO-27) ---
+#define SPI1_SCK_PIN   10  // GP10 (physical pin 14)
+#define SPI1_MOSI_PIN  11  // GP11 (physical pin 15)
+#define SPI1_MISO_PIN  12  // GP12 (physical pin 16) = SPI1 MISO
+#define LORA_CS_PIN     9  // GP9 (physical pin 12, software CS)
+#define LORA_BUSY_PIN   6  // GP6 (physical pin 9)
+#define LORA_RESET_PIN  8  // GP8 (physical pin 11)
+#define LORA_DIO1_PIN   21 // GP21 (physical pin 27)
+
+SPIClassRP2040 spi1(spi1);
 
 // =============================================================
 // Minimal SHA-256 (same implementation as UNO Q firmware)
@@ -278,6 +291,13 @@ const uint8_t* getStoredKey() {
 
 void setup() {
   Serial.begin(115200);
+
+  // Initialize SPI1 for Core1262 (PRO-27)
+  spi1.setSCK(SPI1_SCK_PIN);
+  spi1.setTX(SPI1_MOSI_PIN);
+  spi1.setRX(SPI1_MISO_PIN);
+  spi1.begin();
+  Serial.println("[PRO-27] SPI1 initialized for Core1262.");
   Serial1.begin(115200);  // UART to UNO Q (GP0=TX, GP1=RX)
 
   // Status LED
