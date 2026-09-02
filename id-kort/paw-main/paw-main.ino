@@ -27,6 +27,10 @@
 #include <Arduino.h>
 #include <SPI.h>
 
+// SPI1 is not pre-defined for Feather RP2350 HSTX (SPI_HOWMANY=1).
+// Create our own instance. Cannot name it "spi1" (conflicts with SDK macro).
+SPIClassRP2040 loraSPI(spi1_hw);
+
 // =============================================================
 // Configuration
 // =============================================================
@@ -52,11 +56,10 @@
 #define LORA_MOSI_PIN    11  // MOSI pin on Feather silkscreen
 #define LORA_MISO_PIN    24  // D24 on Feather silkscreen (GPIO24, hardware SPI1 MISO)
 #define LORA_CS_PIN      9   // Pin 9 on Feather silkscreen
-#defi
-ne LO
-RA_BUSY_PIN    7   // Pin 7 on Feather silkscreen
-#d
-efine LORA_RESET_PIN   8   // Pin 8 on Feather silkscreen
+#define LO
+RA_BUSY_PIN    
+7   // Pin 7 on Feather silkscreen
+#define LORA_RESET_PIN   4   // Pin "4" on Feather silkscreen (GPIO4, digital output for RESET)
 #define LORA_DIO1_PIN    A2  // A2 on Feather silkscreen
 
 // --- e-Paper (SPI0) ---
@@ -116,8 +119,7 @@ static uint8_t aesKey[
 AES_KE
 Y_SIZE];
 static bool keyStored = false;
-static const 
-uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
+static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
 // Waveform LUT for e-Paper (from epaper-status-display.ino)
@@ -171,12 +173,10 @@ private:
     void sendData(uint8_t data);
     void waitUntilIdle();
     void reset();
-    void setLut(const unsi
-gned ch
-ar* lut);
-    void clearBuffer();
-    void drawPixel(i
-nt x, int y, bool white);
+    void setLut(const unsigned char* lut);
+ 
+   void clearBuffer();
+    void drawPixel(int x, int y, bool white);
     void drawLine(int x0, int y0, int x1, int y1, bool white);
     void drawRect(int x, int y, int w, int h, bool white);
     void drawCircle(int cx, int cy, int r, bool white);
@@ -249,8 +249,7 @@ bool ShallotEPD::begin() {
     SPI.begin();
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 
-    res
-et();
+    reset();
   
   waitUntilIdle();
 
@@ -341,7 +340,8 @@ void ShallotEPD::sleep() {
     sendCommand(0x10);  // Enter deep sleep
 
     send
-Data(0x01);
+Data(0x
+01);
     delay(200);
     digitalWrite(EPD_RST_PIN
 , LOW);
@@ -414,8 +414,8 @@ void ShallotEPD::drawCircleFilled(int cx, int cy, int r, bool white) {
         for (int x = -r; x <= r; x++) {
             if (x * x + y * y <= r * r) {
              
-   drawPix
-el(cx + x, cy + y, white);
+   drawPixel(cx
+ + x, cy + y, white);
             }
         }
     }
@@ -486,9 +486,9 @@ void ShallotEPD::showStatus(EpdStatus status) {
 static const uint32_t sha256_k[64] = {
 
   0x428a2f
-98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-  0x3956c25b, 0x59
-f111f1, 0x923f82a4, 0xab1c5ed5,
+98,
+ 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
   0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
   0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
@@ -534,10 +534,9 @@ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
       w[i] = ((uint32_t)msg[blk + i*4] << 24)
            | ((uint32_t)msg[blk + i*4 + 1] << 16)
       
-     | ((uin
-t32_t)msg[blk + i*4 + 2] << 8)
-           | ((uint32_t)msg[
-blk + i*4 + 3]);
+     | ((uint
+32_t)msg[blk + i*4 + 2] << 8)
+           | ((uint32_t)msg[blk + i*4 + 3]);
     }
     for (int i = 16; i < 64; i++) {
       w[i] = SHA256_SIG1(w[i-2]) + w[i-7] + SHA256_SIG0(w[i-15]) + w[i-16];
@@ -605,6 +604,7 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
       k_ipad[i] ^= key[i];
      
  k_opad[i] ^=
+
  key[i];
     }
   }
@@ -672,14 +672,12 @@ bool receiveKeyFromUNOQ() {
 
   // Step 3: Wait for key data (22 bytes
 )
-  timeoutSta
-rt = millis();
+  timeoutStart = millis();
   while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
     delay(1);
   }
   if (Serial1.available() < 22) {
-    Seri
-al.println("[PRO-48] Timeout waiting for key data.");
+    Serial.println("[PRO-48] Timeout waiting for key data.");
     return false;
   }
 
@@ -739,13 +737,12 @@ al.println("[PRO-48] Timeout waiting for key data.");
 }
 
 // =============================================================
-// LoRa Simulated Functions (Placeholder for R
-adioLib)
-// ===
+// LoRa Simulated Functions (Placeholder for RadioLib)
+//
+ ===
 ==========================================================
 // Note: For actual use, include RadioLib and implement proper SX1262 driver
-// This is a placeholder that s
-imulates LoRa communication via Serial for testing
+// This is a placeholder that simulates LoRa communication via Serial for testing
 
 class MockLoRa {
 public:
@@ -810,8 +807,7 @@ public:
     int read(uint8_t* buf, int len) {
         int state = radio.readData(buf, len);
         if (state == RADIOLIB_ERR_NONE) {
-            receiv
-edFlag = false;
+            receivedFlag = false;
 
             return len;
         }
@@ -876,18 +872,17 @@ void setup() {
     }
 
     // Initialize SPI1 for Core1262 (PRO-28)
-    SPI1.setSCK(LORA_SCK_PIN);
-    SPI1.setTX(LORA_MOSI_PIN);
-    SPI1.setRX(LORA_MISO_PIN);
-    SPI1.begin();
+    loraSPI.setSCK(LORA_SCK_PIN);
+    loraSPI.setTX(LORA_MOSI_PIN);
+    loraSPI.setRX(LORA_MISO_PIN);
+    loraSPI.begin();
     Serial.println("[PRO-28] SPI1 initialized for Core1262.");
 
     // Initialize LoRa (mock for now)
     Serial.println("[PRO-58] Initializing LoRa...");
     if (!lora.begin()) {
    
-     Serial.print
-ln("[PRO-58] LoRa initialization FAILED!");
+     Serial.println("[PRO-58] LoRa initialization FAILED!");
     } else {
         Serial.println("[PRO-58] LoRa initialized.");
     }
@@ -943,8 +938,7 @@ void loop() {
                     // Read challenge (16 bytes)
                     if (Serial.available() >= CHALLENGE_SIZE) {
                         Serial.readBytes(challenge, CHALLENGE_SIZE);
-                        lastChallengeTi
-me = millis();
+                        lastChallengeTime = millis();
    
                      currentState = STATE_COMPUTING_RESPONSE;
                         
@@ -994,8 +988,7 @@ _SIZE; i++) {
                 // Clear sensitive data
                 memset(challenge, 0, CHALLENGE_SIZE);
             } else {
-                Serial.println("[PRO-50] ERROR: No ke
-y stored!");
+                Serial.println("[PRO-50] ERROR: No key stored!");
       
           currentState = STATE_WAITING_FOR_KEY;
                 epd.begin();
@@ -1051,8 +1044,8 @@ y stored!");
         
         if (keyStored) {
             digitalWrite(LE
-D_BUILTIN, !digitalR
-ead(LED_BUILTIN));
+D_BUIL
+TIN, !digitalRead(LED_BUILTIN));
         } else {
             // No key: blink rapidly
             digitalWrite(LED_BUILTIN, (millis() / 200) % 2);

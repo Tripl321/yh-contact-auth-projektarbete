@@ -1,5 +1,5 @@
 /*
- * SHALLOT — SPI Bring-up Test for PAW Core1262 (PRO-28)
+ * SHALLOT -- SPI Bring-up Test for PAW Core1262 (PRO-28)
  * Hardware: Adafruit Feather RP2350 + Core1262-868M on SPI1
  *
  * This sketch verifies SPI1 wiring by reading the Core1262/SX1262
@@ -8,19 +8,23 @@
  * CRITICAL: MISO must be on D24 (GPIO24), NOT on "MI" (GPIO20).
  *   "MI" on Feather silkscreen = GPIO20 = SPI0 MISO (used by e-Paper)
  *   D24 on Feather silkscreen = GPIO24, hardware SPI1 MISO
- *   GPIO4 (silkscreen "4") is SPI0 MISO, NOT SPI1 MISO — using it for SPI1 will cause a runtime panic.
+ *   GPIO4 (silkscreen "4") is SPI0 MISO, NOT SPI1 MISO.
  *   RESET is on pin "4" (GPIO4), which is fine as a digital output.
  *
  * Pin mapping (verified against Adafruit Feather RP2350 pinout):
  *   SPI1 SCK  -> D10  (GPIO10)
  *   SPI1 MOSI -> D11  (GPIO11)
- *   SPI1 MISO -> D24  (GPIO24)  <-- hardware SPI1 MISO, NOT "MI" silkscreen!
+ *   SPI1 MISO -> D24  (GPIO24)  <-- hardware SPI1 MISO
  *   CS        -> D9   (GPIO9)
- *   BUSY      -> D7   (GPIO7)
+ *   BUSY      -> pin7 (GPIO7)
  *   RESET     -> pin4 (GPIO4)  <-- digital output, NOT SPI
  *   DIO1      -> A2   (GPIO28)
  *
  * Core: arduino-pico (earlephilhower)
+ *
+ * NOTE: This sketch must be in its OWN directory, not in the same
+ *       folder as PAW.ino or any other .ino file. Arduino IDE
+ *       compiles all .ino files in a directory together.
  */
 
 #include <Arduino.h>
@@ -31,7 +35,7 @@
 #define SPI1_MOSI_PIN  11  // D11 on Feather silkscreen
 #define SPI1_MISO_PIN  24  // D24 on Feather silkscreen (GPIO24, hardware SPI1 MISO)
 #define CS_PIN          9  // D9 on Feather silkscreen
-#define BUSY_PIN        7  // D7 on Feather silkscreen
+#define BUSY_PIN        7  // Pin "7" on Feather silkscreen (GPIO7)
 #define RESET_PIN       4  // Pin "4" on Feather silkscreen (GPIO4, digital output)
 #define DIO1_PIN        A2 // A2 on Feather silkscreen (GPIO28)
 
@@ -39,14 +43,16 @@
 #define SX1262_REG_VERSION  0x14
 #define SX1262_CMD_READ_REGISTER  0x1D
 
-SPIClassRP2040 spi1(spi1);
+// SPI1 is not pre-defined for Feather RP2350 HSTX (SPI_HOWMANY=1).
+// Create our own instance. Cannot name it "spi1" (conflicts with SDK macro).
+SPIClassRP2040 loraSPI(spi1_hw);
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
 
   Serial.println("============================================");
-  Serial.println("SHALLOT — SPI Bring-up Test (PRO-28)");
+  Serial.println("SHALLOT -- SPI Bring-up Test (PRO-28)");
   Serial.println("Hardware: Feather RP2350 + Core1262 on SPI1");
   Serial.println("============================================");
 
@@ -64,13 +70,11 @@ void setup() {
   digitalWrite(RESET_PIN, HIGH);
   delay(10);
 
-
-  // Ini
-tialize SPI1 with custom pins
-  spi1.setSCK(SPI1_SCK_PIN);
-  spi1.setTX(SPI1_MOSI_PIN);
-  spi1.setRX(SPI1_MISO_PIN);
-  spi1.begin();
+  // Initialize SPI1 with custom pins
+  loraSPI.setSCK(SPI1_SCK_PIN);
+  loraSPI.setTX(SPI1_MOSI_PIN);
+  loraSPI.setRX(SPI1_MISO_PIN);
+  loraSPI.begin();
 
   Serial.println();
   Serial.println("SPI1 initialized:");
@@ -78,6 +82,7 @@ tialize SPI1 with custom pins
   Serial.printf("  MOSI = D11 (GPIO%d)\n", SPI1_MOSI_PIN);
   Serial.printf("  MISO = D24 (GPIO%d)\n", SPI1_MISO_PIN);
   Serial.printf("  CS   = D9  (GPIO%d)\n", CS_PIN);
+  Serial.printf("  RESET= pin4(GPIO%d)\n", RESET_PIN);
   Serial.println();
   Serial.println("NOTE: MISO is on D24 (GPIO24, hardware SPI1 MISO)");
   Serial.println("      NOT on 'MI' silkscreen (GPIO20 = SPI0 MISO)");
@@ -94,24 +99,24 @@ tialize SPI1 with custom pins
       Serial.println("Possible causes:");
       Serial.println("  1. SX1262 not powered");
       Serial.println("  2. RESET pin not connected");
-      Serial.println("  3. BUSY pin not connected to D7");
+      Serial.println("  3. BUSY pin not connected to pin 7");
       Serial.println();
       Serial.println("=== SPI TEST: FAILED ===");
       return;
     }
   }
 
-  spi1.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+  loraSPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
   digitalWrite(CS_PIN, LOW);
 
-  spi1.transfer(SX1262_CMD_READ_REGISTER);
-  spi1.transfer(0x00);
-  spi1.transfer(SX1262_REG_VERSION);
+  loraSPI.transfer(SX1262_CMD_READ_REGISTER);
+  loraSPI.transfer(0x00);
+  loraSPI.transfer(SX1262_REG_VERSION);
 
-  uint8_t version = spi1.transfer(0x00);
+  uint8_t version = loraSPI.transfer(0x00);
 
   digitalWrite(CS_PIN, HIGH);
-  spi1.endTransaction();
+  loraSPI.endTransaction();
 
   Serial.printf("SX1262 version register: 0x%02X\n", version);
 
@@ -125,9 +130,7 @@ tialize SPI1 with custom pins
     Serial.println("  4. SX1262 not powered properly");
     Serial.println("  5. MISO and MOSI swapped");
     Serial.println();
-    Seria
-l.println("=== SPI
- TEST: FAILED ===");
+    Serial.println("=== SPI TEST: FAILED ===");
   } else {
     Serial.println();
     Serial.println("SPI1 communication verified!");
@@ -138,7 +141,7 @@ l.println("=== SPI
 
   Serial.println();
   Serial.println("--- Pin State Check ---");
-  Serial.printf("BUSY pin (D7/GPIO%d): %s\n", BUSY_PIN, digitalRead(BUSY_PIN) ? "HIGH" : "LOW");
+  Serial.printf("BUSY pin (pin7/GPIO%d): %s\n", BUSY_PIN, digitalRead(BUSY_PIN) ? "HIGH" : "LOW");
   Serial.printf("DIO1 pin (A2/GPIO%d): %s\n", DIO1_PIN, digitalRead(DIO1_PIN) ? "HIGH" : "LOW");
   Serial.printf("RESET pin (pin4/GPIO%d): %s\n", RESET_PIN, digitalRead(RESET_PIN) ? "HIGH" : "LOW");
 }
