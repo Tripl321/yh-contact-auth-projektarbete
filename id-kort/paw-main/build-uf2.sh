@@ -91,7 +91,7 @@ elif [ "$METHOD" = "arduino" ]; then
     # Build
     echo "Building for Adafruit Feather RP2350..."
     arduino-cli compile \
-        --fqbn rp2040:rp2040:generic_rp2350 \
+        --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
         --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
         --output-dir "$BUILD_DIR" \
         paw-main.ino
