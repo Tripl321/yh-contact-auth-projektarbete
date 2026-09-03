@@ -17,6 +17,7 @@ Detta är den tekniska dokumentationen för projektet SHALLOT (Secure-by-Design 
 | [09-integrationsbeskrivning.md](09-integrationsbeskrivning.md) | 4 | Ej påbörjad |
 | [10-resultat-och-reflektion.md](10-resultat-och-reflektion.md) | 4 | Ej påbörjad |
 | [11-framework-mappning.md](11-framework-mappning.md) | 4 | Ej påbörjad |
+| [12-sessionlog-2026-09-03.md](12-sessionlog-2026-09-03.md) | 2 | Genomförd |
 
 ## Konventioner
 
