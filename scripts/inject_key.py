@@ -1,123 +1,180 @@
 #!/usr/bin/env python3
 """
-SHALLOT — USB key injection helper
-Injects a single shared 16-byte AES key into both PLC and PAW over USB,
-then prints both fingerprints so you can verify they match before running
-the LoRa challenge-response.
+SHALLOT — UNO Q Key Authority Orchestration Script
+
+This script orchestrates key generation and distribution using the Arduino UNO Q
+as the single source of truth. It communicates with the UNO Q's STM32U585 MCU via
+Bridge RPC to trigger key operations without ever handling key material.
+
+Requirements:
+- Arduino UNO Q with proper key authority firmware
+- Physical UART connections between UNO Q and target devices (PLC/PAW)
+- For Bridge RPC: UNO Q connected to host computer via USB (optional for monitoring)
 
 Usage:
-  python3 inject_key.py [hexkey]
-    [hexkey]  optional 32-char hex key; if omitted, a random one is generated.
+  python3 inject_key.py [--monitor]
+    --monitor: Monitor UNO Q status via Bridge RPC (requires USB connection)
 
-Requires: pip3 install pyserial
+Security:
+- This script NEVER generates or handles key material
+- All key operations happen on UNO Q's STM32U585 using hardware TRNG
+- Key distribution requires physical UART connections and operator confirmation
+- Script only provides orchestration and status monitoring
 """
+
 import sys
-import re
 import time
-import secrets
-import hashlib
-
 import serial
+from typing import Optional, Dict, Any
 
-PLC_PORT = "/dev/cu.usbmodem11101"
-PAW_PORT = "/dev/cu.usbmodem101"
-BAUD = 115200
+# Configuration for monitoring UNO Q via Bridge RPC
+BRIDGE_BAUD = 115200
+UNOQ_SERIAL_PORT = None  # Will be auto-detected or specified
 
-
-def parse_hexkey(s):
-    s = s.strip()
-    if len(s) != 32:
-        raise ValueError("hex key must be exactly 32 hex chars (16 bytes)")
-    try:
-        return bytes.fromhex(s)
-    except ValueError:
-        raise ValueError("hex key contains non-hex characters")
+# UART connections for key distribution (physical connections required)
+UART_BAUD = 115200
 
 
-def sha256_fingerprint(key: bytes) -> str:
-    digest = hashlib.sha256(key).digest()
-    return digest[:4].hex().upper()
+def print_header():
+    print("=" * 60)
+    print("SHALLOT — UNO Q Key Authority Orchestration")
+    print("=" * 60)
+    print()
 
 
-def open_port(port, attempts=10):
-    for i in range(attempts):
+def print_airgapped_workflow():
+    print("AIR-GAPPED WORKFLOW:")
+    print("-" * 40)
+    print("1. Connect UNO Q to PLC via UART (D0->RX, D1->TX, GND->GND)")
+    print("2. Connect UNO Q to PAW via UART (D0->RX, D1->TX, GND->GND)") 
+    print("3. Power on all devices")
+    print("4. On UNO Q: Press button to generate key (hardware TRNG)")
+    print("5. For each target device:")
+    print("   a. Connect UART cable from UNO Q to target")
+    print("   b. On UNO Q: Press distribution button for that target")
+    print("   c. UNO Q distributes key via UART with physical confirmation")
+    print("6. Verify both devices show matching fingerprints")
+    print()
+
+
+def print_monitor_workflow():
+    print("MONITORED WORKFLOW (requires UNO Q USB connection):")
+    print("-" * 55)
+    print("1. Connect UNO Q to host computer via USB")
+    print("2. Connect UNO Q to PLC via UART (D0->RX, D1->TX, GND->GND)")
+    print("3. Connect UNO Q to PAW via UART (D0->RX, D1->TX, GND->GND)")
+    print("4. Power on all devices")
+    print("5. This script monitors UNO Q status and guides operator")
+    print("6. All key operations still happen on UNO Q with physical confirmation")
+    print()
+
+
+def find_unoq_port() -> Optional[str]:
+    """Attempt to find UNO Q serial port automatically."""
+    # Common port patterns for different operating systems
+    import os
+    if os.name == 'nt':  # Windows
+        patterns = ['COM*']
+    else:  # macOS/Linux
+        patterns = ['/dev/cu.usbmodem*', '/dev/ttyACM*', '/dev/ttyUSB*']
+    
+    for pattern in patterns:
+        import glob
+        ports = glob.glob(pattern)
+        for port in ports:
+            # UNO Q typically identifies with specific vendor/product IDs
+            # For now, we'll return the first available port
+            # In production, you'd want more specific detection
+            return port
+    return None
+
+
+def monitor_unoq_status():
+    """Monitor UNO Q status via Bridge RPC."""
+    port = find_unoq_port()
+    if not port:
+        print("UNO Q serial port not found. Please specify manually.")
+        print("Available ports:")
         try:
-            s = serial.Serial(port, BAUD, timeout=1.0)
-            s.reset_input_buffer()
-            return s
-        except Exception as e:
-            time.sleep(0.5)
-    raise RuntimeError(f"could not open {port}: {e}")
-
-
-def inject(port, keyhex: str, wait_banner: str = None) -> str:
-    s = open_port(port)
+            import serial.tools.list_ports
+            ports = serial.tools.list_ports.comports()
+            for p in ports:
+                print(f"  {p.device}")
+        except ImportError:
+            print("  (install pyserial[list-ports] to see available ports)")
+        return
+    
+    print(f"Connecting to UNO Q on {port}...")
+    
     try:
-        # Optionally wait briefly for the setup banner to land the key in the
-        # one-shot setup window; even if missed, loop-based injection accepts
-        # the key afterwards, so always send regardless.
-        if wait_banner:
-            deadline = time.time() + 2.0
-            buf = b""
-            while time.time() < deadline:
-                chunk = s.read(128)
-                if chunk:
-                    buf += chunk
-                    if wait_banner.encode() in buf:
-                        break
-                time.sleep(0.05)
-        line = ("K " + keyhex + "\n").encode()
-        s.write(line)
-        s.flush()
-        # Wait for the '[USB-KEY] Key stored. Fingerprint:' acknowledgment
-        deadline = time.time() + 15
-        buf = b""
-        fprint = None
-        while time.time() < deadline:
-            chunk = s.read(256)
-            if chunk:
-                buf += chunk
-                text = buf.decode(errors="replace")
-                # Fingerprint is 8 hex chars after the marker
-                m = re.search(r"\[USB-KEY\] Key stored\. Fingerprint: ([0-9A-Fa-f]{8})", text)
-                if m:
-                    fprint = m.group(1).upper()
-                    break
-        return fprint
+        # For Bridge RPC monitoring, we need to connect via the bridge socket
+        # This is a simplified version - actual Bridge RPC requires Arduino RouterBridge
+        ser = serial.Serial(port, BRIDGE_BAUD, timeout=1.0)
+        time.sleep(2)  # Allow connection to establish
+        
+        print("UNO Q Monitor Mode")
+        print("-" * 20)
+        print("Waiting for UNO Q status messages...")
+        print("Press Ctrl+C to exit")
+        print()
+        
+        while True:
+            if ser.in_waiting:
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                if line:
+                    print(f"[UNO Q] {line}")
+                    
+                    # Look for key status indicators
+                    if "Key generated successfully" in line:
+                        print("✓ Key generation complete on UNO Q")
+                    elif "distributed successfully" in line:
+                        print("✓ Key distribution complete")
+                    elif "fingerprint" in line.lower():
+                        print("✓ Key fingerprint available")
+                    elif "ERROR" in line.upper():
+                        print("✗ Error detected on UNO Q")
+            else:
+                time.sleep(0.1)
+                
+    except KeyboardInterrupt:
+        print("\nMonitoring stopped.")
+    except Exception as e:
+        print(f"Monitor error: {e}")
     finally:
-        try:
-            s.close()
-        except Exception:
-            pass
+        if 'ser' in locals():
+            ser.close()
 
 
 def main():
-    if len(sys.argv) > 1:
-        keyhex = parse_hexkey(sys.argv[1]).hex()
+    print_header()
+    
+    monitor_mode = '--monitor' in sys.argv or '-m' in sys.argv
+    
+    if monitor_mode:
+        print_monitor_workflow()
+        monitor_unoq_status()
     else:
-        key = secrets.token_bytes(16)
-        keyhex = key.hex()
-
-    keybytes = bytes.fromhex(keyhex)
-    print(f"Shared key: {keyhex}")
-    print(f"Fingerprint (SHA256[:4]): {sha256_fingerprint(keybytes)}")
-    print()
-
-    print(f"Injecting into PLC ({PLC_PORT})...")
-    plc_fp = inject(PLC_PORT, keyhex)
-    print(f"  PLC fingerprint: {plc_fp}")
-
-    print(f"Injecting into PAW ({PAW_PORT})...")
-    paw_fp = inject(PAW_PORT, keyhex,
-                    wait_banner="[USB-KEY] Waiting for key over USB...")
-    print(f"  PAW fingerprint: {paw_fp}")
-
-    print()
-    if plc_fp and paw_fp and plc_fp == paw_fp:
-        print("MATCH: both nodes hold the same key. Ready for LoRa test.")
-    else:
-        print("NOTE: fingerprints differ or missing — check that both nodes")
-        print("      were powered and listening, then re-run.")
+        print_airgapped_workflow()
+        
+        print("IMPORTANT SECURITY NOTES:")
+        print("-" * 30)
+        print("• UNO Q is the ONLY device that generates keys")
+        print("• Keys are generated using STM32U585 hardware TRNG")
+        print("• This script NEVER handles key material")
+        print("• Distribution requires physical button press on UNO Q")
+        print("• Key material never leaves UNO Q until UART distribution")
+        print("• USB connection to host is ONLY for monitoring, not key operations")
+        print()
+        
+        print("To monitor UNO Q status via USB connection:")
+        print(f"  {sys.argv[0]} --monitor")
+        print()
+        
+        print("For completely air-gapped operation:")
+        print("  1. Follow the workflow above without connecting to host computer")
+        print("  2. Use UNO Q's physical buttons for all operations")
+        print("  3. Verify key fingerprints match on all devices")
+        print()
 
 
 if __name__ == "__main__":

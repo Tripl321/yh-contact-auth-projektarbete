@@ -5,9 +5,10 @@ A complete solution for key generation and distribution using the Arduino UNO Q'
 ## 🎯 Overview
 
 This solution provides:
-- **Modified UNO Q firmware** with Bridge RPC methods for direct key distribution (bypassing physical button requirement for testing)
+- **UNO Q firmware** with Bridge RPC methods for key status monitoring
 - **Streamlit web app** for the UNO Q App Lab that allows key management via web interface
 - **Full key distribution protocol** implementation with hardware TRNG
+- **Physical button requirement** maintained for security - all distributions require operator confirmation
 
 ## 📁 Project Structure
 

@@ -286,81 +286,6 @@ void generateNonce(uint8_t* nonce, size_t size) {
 }
 
 // =============================================================
-// USB Key Injection (host pushes key over USB Serial @ 115200)
-// =============================================================
-// Host sends one ASCII line:
-//   K <32 hex chars>          (16-byte AES key)
-// Firmware parses the hex, stores the key, and prints the
-// fingerprint. No handshake needed — USB-C is the distribution port.
-// =============================================================
-
-static int hexval(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-static bool receiveKeyOverUSB() {
-  // Expect: "K" <space> <32 hex>
-  // Called only when a line starting with 'K' is available.
-
-  // Consume the 'K' already read by the caller, then read the rest of line.
-  static char line[64];
-  size_t n = 0;
-  // Read until newline or buffer full to consume the whole line.
-  while (Serial.available() && n < sizeof(line) - 1) {
-    char c = Serial.read();
-    if (c == '\n' || c == '\r') break;
-    line[n++] = c;
-  }
-  line[n] = '\0';
-
-  // line now = " <32 hex>"  (the 'K' was consumed by caller)
-  const char* p = line;
-  while (*p == ' ') p++;
-
-  size_t hexLen = strlen(p);
-  if (hexLen != AES_KEY_SIZE * 2) {
-    Serial.printf("[USB-KEY] Bad key length: %u hex chars (expected %u)\n",
-                  (unsigned)hexLen, AES_KEY_SIZE * 2);
-    return false;
-  }
-
-  uint8_t key[AES_KEY_SIZE];
-  for (size_t i = 0; i < AES_KEY_SIZE; i++) {
-    char hi = p[i * 2];
-    char lo = p[i * 2 + 1];
-    int h = hexval(hi);
-    int l = hexval(lo);
-    if (h < 0 || l < 0) {
-      Serial.println("[USB-KEY] Invalid hex digit.");
-      return false;
-    }
-    key[i] = (uint8_t)((h << 4) | l);
-  }
-
-  // Wipe any prior key before adopting the new one.
-  memset(aesKey, 0, AES_KEY_SIZE);
-  memcpy(aesKey, key, AES_KEY_SIZE);
-  memset(key, 0, AES_KEY_SIZE);
-  keyStored = true;
-
-  uint8_t fullHash[32];
-  sha256(aesKey, AES_KEY_SIZE, fullHash);
-  uint8_t keyHash[KEY_HASH_SIZE];
-  memcpy(keyHash, fullHash, KEY_HASH_SIZE);
-
-  Serial.print("[USB-KEY] Key stored. Fingerprint: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
-  Serial.println();
-
-  memset(fullHash, 0, 32);
-  memset(keyHash, 0, KEY_HASH_SIZE);
-  return true;
-}
-
-// =============================================================
 // Key Reception Protocol (PRO-47)
 // =============================================================
 
@@ -601,7 +526,6 @@ void setup() {
     digitalWrite(LED_BUILTIN, HIGH);
   } else {
     Serial.println("[PRO-47] Key distribution failed. No key stored.");
-    Serial.println("[USB-KEY] Waiting for key over USB...");
     for (int i = 0; i < 10; i++) {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
       delay(200);
@@ -688,23 +612,6 @@ void loop() {
   if (!keyStored) {
     if (Serial1.available() >= 2) {
       receiveKey();
-    }
-    // USB key injection: host sends "K <32 hex>" over USB Serial
-    if (Serial.available()) {
-      // Look for a leading 'K' followed by space = key line
-      if (Serial.peek() == 'K') {
-        Serial.read(); // consume 'K'
-        // consume optional spaces
-        while (Serial.available() && Serial.peek() == ' ') Serial.read();
-        if (receiveKeyOverUSB()) {
-          Serial.println("[USB-KEY] Key accepted over USB.");
-          initLoRa();
-        }
-      } else {
-        // Drain one byte so unrecognized output doesn't stall; debug bytestreams
-        // from RadioLib could interleave, so only swallow a single char.
-        Serial.read();
-      }
     }
   }
 

@@ -353,74 +353,6 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
 }
 
 // =============================================================
-// USB Key Injection (host pushes key over USB Serial @ 115200)
-// =============================================================
-// Host sends one ASCII line:
-//   K <32 hex chars>          (16-byte AES key)
-// Parses hex, stores key, prints fingerprint. USB-C is the
-// distribution port (no UART needed).
-// =============================================================
-
-static int hexval(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static bool receiveKeyOverUSB() {
-    if (keyStored) return false;
-
-    char line[64];
-    size_t n = 0;
-    while (Serial.available() && n < sizeof(line) - 1) {
-        char c = Serial.read();
-        if (c == '\n' || c == '\r') break;
-        line[n++] = c;
-    }
-    line[n] = '\0';
-
-    const char* p = line;
-    while (*p == ' ') p++;
-
-    size_t hexLen = strlen(p);
-    if (hexLen != AES_KEY_SIZE * 2) {
-        Serial.printf("[USB-KEY] Bad key length: %u hex chars (expected %u)\n",
-                      (unsigned)hexLen, AES_KEY_SIZE * 2);
-        return false;
-    }
-
-    uint8_t key[AES_KEY_SIZE];
-    for (size_t i = 0; i < AES_KEY_SIZE; i++) {
-        int h = hexval(p[i * 2]);
-        int l = hexval(p[i * 2 + 1]);
-        if (h < 0 || l < 0) {
-            Serial.println("[USB-KEY] Invalid hex digit.");
-            return false;
-        }
-        key[i] = (uint8_t)((h << 4) | l);
-    }
-
-    memset(aesKey, 0, AES_KEY_SIZE);
-    memcpy(aesKey, key, AES_KEY_SIZE);
-    memset(key, 0, AES_KEY_SIZE);
-    keyStored = true;
-
-    uint8_t fullHash[32];
-    sha256(aesKey, AES_KEY_SIZE, fullHash);
-    uint8_t keyHash[KEY_HASH_SIZE];
-    memcpy(keyHash, fullHash, KEY_HASH_SIZE);
-
-    Serial.print("[USB-KEY] Key stored. Fingerprint: ");
-    for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
-    Serial.println();
-
-    memset(fullHash, 0, 32);
-    memset(keyHash, 0, KEY_HASH_SIZE);
-    return true;
-}
-
-// =============================================================
 // Key Reception from UNO Q (PRO-48)
 // =============================================================
 
@@ -569,32 +501,7 @@ void setup() {
 
     Serial.println("[PRO-48] Starting key reception...");
 
-    // USB injection first: wait for "K <32 hex>" over USB Serial (~10s).
-    {
-        uint32_t t0 = millis();
-        bool usbKeyReceived = false;
-        Serial.println("[USB-KEY] Waiting for key over USB...");
-        while (millis() - t0 < KEY_DISTRIBUTION_TIMEOUT) {
-            if (Serial.available()) {
-                if (Serial.peek() == 'K') {
-                    Serial.read();
-                    while (Serial.available() && Serial.peek() == ' ') Serial.read();
-                    if (receiveKeyOverUSB()) {
-                        usbKeyReceived = true;
-                        break;
-                    }
-                } else {
-                    Serial.read();  // drain non-K input
-                }
-            }
-            delay(10);
-        }
-        if (usbKeyReceived) {
-            currentState = STATE_WAITING_FOR_CHALLENGE;
-            Serial.println("[USB-KEY] Key received successfully over USB.");
-            digitalWrite(LED_BUILTIN, HIGH);
-            epdShowStatus(EPD_STATUS_AUTHENTICATING);
-        } else if (receiveKeyFromUNOQ()) {
+    if (receiveKeyFromUNOQ()) {
             currentState = STATE_WAITING_FOR_CHALLENGE;
             Serial.println("[PRO-48] Key received successfully.");
             digitalWrite(LED_BUILTIN, HIGH);
@@ -616,22 +523,6 @@ void loop() {
     static uint8_t challenge[CHALLENGE_SIZE];
     static uint8_t response[HMAC_SIZE];
     static uint8_t rxBuffer[64];
-
-    // USB key injection: accept "K <32 hex>" over USB Serial at any time the
-    // node does not yet hold a key (mirrors the PLC, robust to boot timing).
-    if (!keyStored && Serial.available()) {
-        if (Serial.peek() == 'K') {
-            Serial.read();
-            while (Serial.available() && Serial.peek() == ' ') Serial.read();
-            if (receiveKeyOverUSB()) {
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                digitalWrite(LED_BUILTIN, HIGH);
-                epdShowStatus(EPD_STATUS_AUTHENTICATING);
-            }
-        } else {
-            Serial.read();
-        }
-    }
 
     if (loraInitialized && loraPacketReceived) {
         loraPacketReceived = false;

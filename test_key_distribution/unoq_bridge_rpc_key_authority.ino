@@ -468,38 +468,7 @@ static void setupBridgeRPC() {
     return generateKey();
   });
 
-  // NEW: Direct distribution methods for App Lab (bypass button requirement)
-  Bridge.provide_safe("distribute_key_to_plc", []() -> bool {
-    Serial.println("[APP LAB] MPU requested direct PLC distribution");
-    return distributeKey(TARGET_PLC);
-  });
-
-  Bridge.provide_safe("distribute_key_to_paw", []() -> bool {
-    Serial.println("[APP LAB] MPU requested direct PAW distribution");
-    return distributeKey(TARGET_PAW);
-  });
-
-  // NEW: Combined method to generate and distribute to both
-  Bridge.provide_safe("generate_and_distribute_all", []() -> String {
-    if (!generateKey()) {
-      return "{" + String("status") + ":\"failed\",\"error\":\"Key generation failed\"}";
-    }
-    
-    bool plcSuccess = distributeKey(TARGET_PLC);
-    bool pawSuccess = distributeKey(TARGET_PAW);
-    
-    String result = "{";
-    result += "\"status\":\"partial\"";
-    result += ",\"generated\":true";
-    result += ",\"plc_success\":" + String(plcSuccess ? "true" : "false");
-    result += ",\"paw_success\":" + String(pawSuccess ? "true" : "false");
-    result += ",\"fingerprint\":\"" + Bridge.call_safe("get_key_fingerprint") + "\"";
-    result += "}";
-    
-    return result;
-  });
-
-  // Existing pending distribution (still requires button press)
+  // Distribution requires physical button press for security
   Bridge.provide_safe("request_key_distribution", [](uint8_t targetId) -> bool {
     Serial.print("[PRO-46] MPU requested distribution to target ");
     Serial.print(targetId);
@@ -534,8 +503,7 @@ static void printStatus() {
     printHex(keyHash, KEY_HASH_SIZE);
     Serial.println();
   }
-  Serial.println("Bridge RPC: get_key_state, get_key_fingerprint, request_key_generation");
-  Serial.println("            distribute_key_to_plc, distribute_key_to_paw, generate_and_distribute_all");
+  Serial.println("Bridge RPC: get_key_state, get_key_fingerprint, request_key_generation, request_key_distribution");
   Serial.println("=====================================\n");
 }
 

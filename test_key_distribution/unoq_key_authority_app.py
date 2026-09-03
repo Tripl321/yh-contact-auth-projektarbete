@@ -41,9 +41,6 @@ BRIDGE_METHODS = {
     "get_key_state": "get_key_state",
     "get_key_fingerprint": "get_key_fingerprint", 
     "request_key_generation": "request_key_generation",
-    "distribute_key_to_plc": "distribute_key_to_plc",
-    "distribute_key_to_paw": "distribute_key_to_paw",
-    "generate_and_distribute_all": "generate_and_distribute_all",
     "request_key_distribution": "request_key_distribution"
 }
 
@@ -118,17 +115,7 @@ class BridgeRPC:
         elif method == "request_key_generation":
             st.success("🎲 Simulated key generation")
             return True
-        elif method in ["distribute_key_to_plc", "distribute_key_to_paw"]:
-            st.success(f"📤 Simulated distribution to {method.split('_')[-2]}")
-            return True
-        elif method == "generate_and_distribute_all":
-            return json.dumps({
-                "status": "success",
-                "generated": True,
-                "plc_success": True,
-                "paw_success": True,
-                "fingerprint": "DEADBEEF"
-            })
+
         return None
 
 # =============================================================
@@ -227,56 +214,35 @@ def main():
                     st.error("❌ **Key Generation Failed**")
                     st.caption("Check TRNG health or connection")
     
-    with action_col2:
-        if st.button("🔄 **Generate & Distribute to All**", use_container_width=True):
-            with st.spinner("Generating and distributing keys..."):
-                result = bridge.call("generate_and_distribute_all")
-                if result:
-                    try:
-                        result_dict = json.loads(result)
-                        st.success("✅ **Operation Complete**")
-                        
-                        # Display results
-                        status_col1, status_col2 = st.columns(2)
-                        with status_col1:
-                            st.markdown(f"**Generated:** {'✅ Yes' if result_dict.get('generated') else '❌ No'}")
-                            st.markdown(f"**PLC:** {'✅ Success' if result_dict.get('plc_success') else '❌ Failed'}")
-                        with status_col2:
-                            st.markdown(f"**PAW:** {'✅ Success' if result_dict.get('paw_success') else '❌ Failed'}")
-                            st.markdown(f"**Fingerprint:** `{result_dict.get('fingerprint', 'N/A')}`")
-                    except json.JSONDecodeError:
-                        st.error(f"❌ Unexpected response: {result}")
-                else:
-                    st.error("❌ **Operation Failed**")
-    
     st.markdown("---")
     
-    # Individual distribution
+    # Distribution requires physical button press on UNO Q
     st.header("📤 **Distribute Key**")
+    st.info("🔐 **Security Notice**: Distribution requires physical button press on UNO Q device. This ensures operator authorization and maintains the air-gap.")
     
     dist_col1, dist_col2 = st.columns(2)
     
     with dist_col1:
-        if st.button("🏭 **Distribute to PLC**", use_container_width=True):
-            with st.spinner("Distributing key to PLC..."):
-                success = bridge.call("distribute_key_to_plc")
+        if st.button("🏭 **Arm PLC Distribution**", use_container_width=True):
+            with st.spinner("Arming PLC distribution..."):
+                success = bridge.call("request_key_distribution", 1)  # 1 = PLC
                 if success:
-                    st.success("✅ **Key Distributed to PLC!**")
-                    st.json({"target": "PLC", "status": "success"})
+                    st.success("✅ **PLC Distribution Armed!**")
+                    st.info("Now press the physical button on UNO Q to complete distribution")
                 else:
-                    st.error("❌ **PLC Distribution Failed**")
-                    st.caption("Check UART connection to PLC")
+                    st.error("❌ **Failed to arm PLC Distribution**")
+                    st.caption("Check that a key is generated and PLC is connected")
     
     with dist_col2:
-        if st.button("🪪 **Distribute to PAW**", use_container_width=True):
-            with st.spinner("Distributing key to PAW..."):
-                success = bridge.call("distribute_key_to_paw")
+        if st.button("🪪 **Arm PAW Distribution**", use_container_width=True):
+            with st.spinner("Arming PAW distribution..."):
+                success = bridge.call("request_key_distribution", 2)  # 2 = PAW
                 if success:
-                    st.success("✅ **Key Distributed to PAW!**")
-                    st.json({"target": "PAW", "status": "success"})
+                    st.success("✅ **PAW Distribution Armed!**")
+                    st.info("Now press the physical button on UNO Q to complete distribution")
                 else:
-                    st.error("❌ **PAW Distribution Failed**")
-                    st.caption("Check UART connection to PAW")
+                    st.error("❌ **Failed to arm PAW Distribution**")
+                    st.caption("Check that a key is generated and PAW is connected")
     
     st.markdown("---")
     
