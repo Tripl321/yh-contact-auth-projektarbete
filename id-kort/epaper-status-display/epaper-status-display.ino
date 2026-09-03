@@ -44,9 +44,9 @@
 #define EPD_DIN_PIN   23   // GPIO23 — SPI0 MOSI
 #define EPD_CLK_PIN   22   // GPIO22 — SPI0 SCK
 #define EPD_CS_PIN     5   // GPIO5  — D5  — Chip Select
-#define EPD_DC_PIN    24   // GPIO24 — D24 — Data/Command
-#define EPD_RST_PIN   25   // GPIO25 — D25 — Reset
-#define EPD_BUSY_PIN   7   // GPIO7  — D7  — Busy
+#define EPD_DC_PIN    A0   // GPIO26 — A0  — Data/Command (moved from D24)
+#define EPD_RST_PIN   A1   // GPIO27 — A1  — Reset (moved from D25)
+#define EPD_BUSY_PIN  25   // GPIO25 — D25 — Busy (moved from D7/A3, D7 is LoRa BUSY, A3 not free)
 
 /* ===== Display Constants ===== */
 

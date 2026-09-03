@@ -46,6 +46,7 @@
 #define SHA256_HASH_SIZE   32
 #define DISTRIB_TIMEOUT_MS 5000
 #define UART_BAUD          115200
+#define SERIAL_BAUD        9600  // USB Serial via ttyGS0/socat must match service @ 9600
 
 #define CONFIRM_BUTTON_PIN A0
 #define STATUS_LED_PIN      LED_BUILTIN
@@ -569,7 +570,7 @@ static void printStatus() {
 // =============================================================
 
 void setup() {
-  Serial.begin(UART_BAUD);
+  Serial.begin(SERIAL_BAUD);
   Serial1.begin(UART_BAUD);
 
   pinMode(CONFIRM_BUTTON_PIN, INPUT_PULLUP);

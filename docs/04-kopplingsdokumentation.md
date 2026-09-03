@@ -1,6 +1,6 @@
 # Kopplingsdokumentation — SHALLOT
 
-> Status: Ej paabörjad | Vecka: 1 | Linear: PRO-33
+> Status: Uppdaterad 2026-09-03 — matchar kod (paw-main.ino / plc-key-receiver.ino) | Vecka: 1 | Linear: PRO-33
 
 ## 1. PAW (Portable Authentication Wearable)
 
@@ -8,19 +8,19 @@
 
 | Funktion | GPIO | Komponent | Notering |
 |----------|------|-----------|----------|
-| SPI0 MOSI | GPIO23 | e-Paper MO | |
-| SPI0 SCK | GPIO22 | e-Paper SCK | |
-| e-Paper DC | GPIO5 | e-Paper D5 | |
-| e-Paper CS | GPIO24 | e-Paper D24 | |
-| e-Paper RST | GPIO25 | e-Paper D25 | |
-| e-Paper BUSY | GPIO7 | e-Paper D7 | |
-| SPI1 CS | GPIO10 | Core1262 D10 | |
-| SPI1 MOSI | GPIO11 | Core1262 D11 | |
-| SPI1 MISO | GPIO28 (A2) | Core1262 A2 | |
-| SPI1 SCK | GPIO9 | Core1262 D9 | |
-| Core1262 BUSY | GPIO6 | Core1262 D6 | |
-| Core1262 RST | GPIO8 | Core1262 D8 | |
-| Core1262 DIO1 | GPIO21 | Core1262 D21 | |
+| SPI0 MOSI | GPIO23 | e-Paper MO | Feather MO, SPI0 MOSI |
+| SPI0 SCK | GPIO22 | e-Paper SCK | Feather SCK, SPI0 SCK |
+| e-Paper CS | GPIO5 | e-Paper CS | Feather pin 5 — **rätt, tidigare felaktigt D24 i doc** |
+| e-Paper DC | GPIO26 (A0) | e-Paper DC | Feather A0 — **rätt, tidigare GPIO5 i doc** |
+| e-Paper RST | GPIO27 (A1) | e-Paper RST | Feather A1 — **rätt, tidigare GPIO25 i doc** |
+| e-Paper BUSY | GPIO25 (D25) | e-Paper BUSY | Feather D25 — **flyttad 2026-09-03 från A3 (upptagen) till ledig pin 25 per breadboard** |
+| SPI1 CS | GPIO9 | Core1262 CS | Feather D9 |
+| SPI1 MOSI | GPIO11 | Core1262 MOSI | Feather D11 |
+| SPI1 MISO | GPIO24 (D24) | Core1262 MISO | Feather D24 — **hårdvaru-SPI1 MISO, tidigare felaktigt GPIO28/A2 i doc** |
+| SPI1 SCK | GPIO10 | Core1262 SCK | Feather D10 — **rätt, tidigare felaktigt GPIO9 i doc** |
+| Core1262 BUSY | GPIO7 | Core1262 BUSY | Feather pin 7 — **rätt, tidigare GPIO6 i doc** |
+| Core1262 RST | GPIO4 | Core1262 RESET | Feather pin 4 — **rätt, tidigare GPIO8 i doc** |
+| Core1262 DIO1 | GPIO28 (A2) | Core1262 DIO1 | Feather A2 — **rätt, tidigare GPIO21 i doc** |
 
 ### 1.2 SPI-bussar
 

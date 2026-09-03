@@ -31,9 +31,9 @@ COMPONENTS: List[Component] = [
     ),
     Component(
         key="plc",
-        name="PLC (Raspberry Pi Pico 2)",
+        name="PLC (Raspberry Pi Pico 2 W)",
         src_path="plc/plc-key-receiver/plc-key-receiver.ino",
-        fqbn="rp2040:rp2040:rpipico2",
+        fqbn="rp2040:rp2040:rpipico2w",
         core="rp2040:rp2040",
         board_name="Pico 2",
     ),

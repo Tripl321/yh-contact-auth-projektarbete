@@ -13,7 +13,7 @@
  *   SPI0 CS   -> D5  (GPIO5)
  *   DC        -> A0  (GPIO26)
  *   RST       -> A1  (GPIO27)
- *   BUSY      -> A3  (GPIO29)
+ *   BUSY      -> D25 (GPIO25) — moved from A3 (A3 not free per 2026-09-03)
  *
  * Core: arduino-pico (earlephilhower)
  */
@@ -25,7 +25,7 @@
 #define EPD_CS_PIN       5
 #define EPD_DC_PIN       A0
 #define EPD_RST_PIN      A1
-#define EPD_BUSY_PIN     A3
+#define EPD_BUSY_PIN     25  // D25 GPIO25 — moved from A3
 
 // --- e-Paper Constants ---
 #define EPD_WIDTH        200
@@ -62,7 +62,7 @@ void setup() {
   Serial.printf("  CS   = D5  (GPIO%d)\n", EPD_CS_PIN);
   Serial.printf("  DC   = A0  (GPIO26)\n");
   Serial.printf("  RST  = A1  (GPIO27)\n");
-  Serial.printf("  BUSY = A3  (GPIO29)\n");
+  Serial.printf("  BUSY = D25 (GPIO25)\n");
   Serial.println();
 
   // Reset the e-Paper
@@ -78,7 +78,7 @@ void setup() {
   Serial.println();
   Serial.println("--- Pin State Check ---");
   int busyState = digitalRead(EPD_BUSY_PIN);
-  Serial.printf("BUSY pin (A3/GPIO29): %s\n", busyState ? "HIGH (busy)" : "LOW (ready)");
+  Serial.printf("BUSY pin (D25/GPIO25): %s\n", busyState ? "HIGH (busy)" : "LOW (ready)");
 
   if (busyState == HIGH) {
     Serial.println("Waiting for e-Paper to become ready...");
@@ -115,7 +115,7 @@ void setup() {
         Serial.println("ERROR: BUSY stuck HIGH after reset!");
         Serial.println("Possible causes:");
         Serial.println("  1. RST pin not connected");
-        Serial.println("  2. BUSY pin not connected to A3");
+        Serial.println("  2. BUSY pin not connected to D25");
         Serial.println("  3. e-Paper not powered (3.3V)");
         Serial.println();
         Serial.println("=== SPI TEST: FAILED ===");

@@ -55,6 +55,7 @@
 // Timeouts
 #define KEY_DISTRIBUTION_TIMEOUT 10000  // ms
 #define CHALLENGE_INTERVAL        5000   // ms between challenges
+#define CHALLENGE_RESPONSE_TIMEOUT 30000 // ms before re-issuing a stale challenge
 #define UART_BAUD                115200
 
 // =============================================================
@@ -285,6 +286,81 @@ void generateNonce(uint8_t* nonce, size_t size) {
 }
 
 // =============================================================
+// USB Key Injection (host pushes key over USB Serial @ 115200)
+// =============================================================
+// Host sends one ASCII line:
+//   K <32 hex chars>          (16-byte AES key)
+// Firmware parses the hex, stores the key, and prints the
+// fingerprint. No handshake needed — USB-C is the distribution port.
+// =============================================================
+
+static int hexval(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static bool receiveKeyOverUSB() {
+  // Expect: "K" <space> <32 hex>
+  // Called only when a line starting with 'K' is available.
+
+  // Consume the 'K' already read by the caller, then read the rest of line.
+  static char line[64];
+  size_t n = 0;
+  // Read until newline or buffer full to consume the whole line.
+  while (Serial.available() && n < sizeof(line) - 1) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') break;
+    line[n++] = c;
+  }
+  line[n] = '\0';
+
+  // line now = " <32 hex>"  (the 'K' was consumed by caller)
+  const char* p = line;
+  while (*p == ' ') p++;
+
+  size_t hexLen = strlen(p);
+  if (hexLen != AES_KEY_SIZE * 2) {
+    Serial.printf("[USB-KEY] Bad key length: %u hex chars (expected %u)\n",
+                  (unsigned)hexLen, AES_KEY_SIZE * 2);
+    return false;
+  }
+
+  uint8_t key[AES_KEY_SIZE];
+  for (size_t i = 0; i < AES_KEY_SIZE; i++) {
+    char hi = p[i * 2];
+    char lo = p[i * 2 + 1];
+    int h = hexval(hi);
+    int l = hexval(lo);
+    if (h < 0 || l < 0) {
+      Serial.println("[USB-KEY] Invalid hex digit.");
+      return false;
+    }
+    key[i] = (uint8_t)((h << 4) | l);
+  }
+
+  // Wipe any prior key before adopting the new one.
+  memset(aesKey, 0, AES_KEY_SIZE);
+  memcpy(aesKey, key, AES_KEY_SIZE);
+  memset(key, 0, AES_KEY_SIZE);
+  keyStored = true;
+
+  uint8_t fullHash[32];
+  sha256(aesKey, AES_KEY_SIZE, fullHash);
+  uint8_t keyHash[KEY_HASH_SIZE];
+  memcpy(keyHash, fullHash, KEY_HASH_SIZE);
+
+  Serial.print("[USB-KEY] Key stored. Fingerprint: ");
+  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
+  Serial.println();
+
+  memset(fullHash, 0, 32);
+  memset(keyHash, 0, KEY_HASH_SIZE);
+  return true;
+}
+
+// =============================================================
 // Key Reception Protocol (PRO-47)
 // =============================================================
 
@@ -402,6 +478,7 @@ const uint8_t* getStoredKey() {
 static bool loraInitialized = false;
 static uint8_t currentNonce[CHALLENGE_SIZE];
 static uint32_t lastChallengeTime = 0;
+static bool awaitingResponse = false;
 
 bool sendChallenge() {
   if (!keyStored) {
@@ -426,6 +503,7 @@ bool sendChallenge() {
   int txState = radio.transmit(txPacket, sizeof(txPacket));
   if (txState == RADIOLIB_ERR_NONE) {
     Serial.println("[PRO-52] Challenge sent over LoRa to PAW.");
+    awaitingResponse = true;
     lastChallengeTime = millis();
     return true;
   } else {
@@ -434,7 +512,9 @@ bool sendChallenge() {
   }
 }
 
-bool verifyResponse(const uint8_t* response, size_t responseLen) {
+bool verifyResponse(const uint8_t* echoedNonce,
+                    const uint8_t* response,
+                    size_t responseLen) {
   if (!keyStored) {
     Serial.println("[PRO-49] Cannot verify: no key stored.");
     return false;
@@ -446,7 +526,12 @@ bool verifyResponse(const uint8_t* response, size_t responseLen) {
   }
 
   uint8_t expectedHmac[HMAC_SIZE];
-  hmac_sha256(aesKey, AES_KEY_SIZE, currentNonce, CHALLENGE_SIZE, expectedHmac);
+  hmac_sha256(aesKey, AES_KEY_SIZE, echoedNonce, CHALLENGE_SIZE, expectedHmac);
+
+  // Treat the echoed nonce as the authoritative challenge for this
+  // verification, so a delayed PAW response still verifies against the
+  // exact challenge it answered.
+  memcpy(currentNonce, echoedNonce, CHALLENGE_SIZE);
 
   volatile uint8_t diff = 0;
   for (size_t i = 0; i < HMAC_SIZE; i++) {
@@ -467,6 +552,25 @@ bool verifyResponse(const uint8_t* response, size_t responseLen) {
 // =============================================================
 // Setup and Loop
 // =============================================================
+
+// Initializes the LoRa radio. Safe to call once a key is available
+// (either at boot via UART key distribution, or later via USB injection).
+void initLoRa() {
+  if (loraInitialized) return;
+  Serial.println("[PRO-58] Initializing RadioLib SX1262 LoRa...");
+  int state = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
+                          LORA_CODING_RATE, LORA_SYNC_WORD, LORA_OUTPUT_POWER,
+                          LORA_PREAMBLE_LENGTH);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("[PRO-58] RadioLib SX1262 initialized successfully.");
+    loraInitialized = true;
+    radio.setDio1Action(setLoRaFlag);
+    radio.startReceive();
+  } else {
+    Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -497,6 +601,7 @@ void setup() {
     digitalWrite(LED_BUILTIN, HIGH);
   } else {
     Serial.println("[PRO-47] Key distribution failed. No key stored.");
+    Serial.println("[USB-KEY] Waiting for key over USB...");
     for (int i = 0; i < 10; i++) {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
       delay(200);
@@ -504,19 +609,7 @@ void setup() {
   }
 
   if (keyStored) {
-    Serial.println("[PRO-58] Initializing RadioLib SX1262 LoRa...");
-    int state = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
-                            LORA_CODING_RATE, LORA_SYNC_WORD, LORA_OUTPUT_POWER,
-                            LORA_PREAMBLE_LENGTH);
-
-    if (state == RADIOLIB_ERR_NONE) {
-      Serial.println("[PRO-58] RadioLib SX1262 initialized successfully.");
-      loraInitialized = true;
-      radio.setDio1Action(setLoRaFlag);
-      radio.startReceive();
-    } else {
-      Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
-    }
+    initLoRa();
   }
 }
 
@@ -535,10 +628,18 @@ void loop() {
       Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
                     msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
 
-      if (msgType == MSG_RESPONSE && rxLen >= (1 + HMAC_SIZE)) {
+      if (msgType == MSG_RESPONSE && rxLen >= (1 + CHALLENGE_SIZE + HMAC_SIZE)) {
         Serial.println("[PRO-52] Response received from PAW over LoRa");
 
-        bool verified = verifyResponse(rxBuffer + 1, rxLen - 1);
+        // Response carries the echoed nonce followed by the HMAC:
+        //   0xB2 || nonce(CHALLENGE_SIZE) || hmac(HMAC_SIZE)
+        const uint8_t* echoedNonce = rxBuffer + 1;
+        const uint8_t* responseHmac = rxBuffer + 1 + CHALLENGE_SIZE;
+
+        bool verified = verifyResponse(echoedNonce, responseHmac, HMAC_SIZE);
+
+        awaitingResponse = false;
+        lastChallengeTime = millis();
 
         uint8_t resultPacket[2];
         resultPacket[0] = MSG_RESULT;
@@ -573,7 +674,13 @@ void loop() {
   }
 
   if (keyStored && loraInitialized) {
-    if (millis() - lastChallengeTime >= CHALLENGE_INTERVAL) {
+    bool stale = awaitingResponse &&
+                 (millis() - lastChallengeTime >= CHALLENGE_RESPONSE_TIMEOUT);
+    if (stale) {
+      awaitingResponse = false;
+      Serial.println("[PRO-52] Challenge response timed out; re-issuing.");
+    }
+    if (!awaitingResponse && millis() - lastChallengeTime >= CHALLENGE_INTERVAL) {
       sendChallenge();
     }
   }
@@ -581,6 +688,23 @@ void loop() {
   if (!keyStored) {
     if (Serial1.available() >= 2) {
       receiveKey();
+    }
+    // USB key injection: host sends "K <32 hex>" over USB Serial
+    if (Serial.available()) {
+      // Look for a leading 'K' followed by space = key line
+      if (Serial.peek() == 'K') {
+        Serial.read(); // consume 'K'
+        // consume optional spaces
+        while (Serial.available() && Serial.peek() == ' ') Serial.read();
+        if (receiveKeyOverUSB()) {
+          Serial.println("[USB-KEY] Key accepted over USB.");
+          initLoRa();
+        }
+      } else {
+        // Drain one byte so unrecognized output doesn't stall; debug bytestreams
+        // from RadioLib could interleave, so only swallow a single char.
+        Serial.read();
+      }
     }
   }
 

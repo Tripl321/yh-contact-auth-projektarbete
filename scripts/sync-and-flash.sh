@@ -39,7 +39,7 @@ declare -A COMP_SRC=(
 )
 declare -A COMP_FQBN=(
   ["paw"]="rp2040:rp2040:adafruit_feather_rp2350_hstx"
-  ["plc"]="rp2040:rp2040:rpipico2"
+  ["plc"]="rp2040:rp2040:rpipico2w"
   ["unoq"]="arduino:zephyr:unoq"
 )
 declare -A COMP_CORE=(
