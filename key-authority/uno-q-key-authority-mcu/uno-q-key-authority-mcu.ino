@@ -534,6 +534,14 @@ static void setupBridgeRPC() {
     pendingDistributionTarget = targetId;
     return true;
   });
+
+  // FIDO2-enabled immediate distribution (no button press required)
+  Bridge.provide_safe("distribute_key_now", [](uint8_t targetId) -> bool {
+    Serial.print("[PRO-46] FIDO2 verified - immediate distribution to target ");
+    Serial.print(targetId);
+    Serial.println(".");
+    return distributeKey(targetId);
+  });
 }
 
 // =============================================================
