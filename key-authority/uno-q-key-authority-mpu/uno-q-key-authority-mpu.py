@@ -93,6 +93,27 @@ def check_fido2_device_present():
         return False
 
 
+def verify_fido2_presence(timeout=10):
+    """Verify FIDO2 device presence with user prompt.
+    
+    Prompts user to press button on FIDO2 device and verifies device is present.
+    Waits for timeout seconds for device to be detected.
+    
+    Returns True if FIDO2 device is detected within timeout.
+    """
+    print("[FIDO2] Please press the button on your FIDO2 device...")
+    
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if check_fido2_device_present():
+            print("[FIDO2] Device detected!")
+            return True
+        time.sleep(1)
+    
+    print("[FIDO2] No FIDO2 device detected within timeout")
+    return False
+
+
 # =============================================================
 # MessagePack RPC Client for Arduino Bridge
 # =============================================================
@@ -517,23 +538,24 @@ def request_key_distribution(target_id):
 
 
 def distribute_key_now(target_id):
-    """Immediately distribute the key to a target device (no button press).
+    """Distribute the key to a target device using FIDO2 verification.
     
-    This uses the distribute_key_now RPC method which directly calls distributeKey
-    without requiring a button press. Used when FIDO2 authentication is verified.
+    This uses FIDO2 device presence as verification, then calls distribute_key_now
+    RPC which directly sends the key without requiring UNO Q button press.
     
     Args:
         target_id: 1 for PLC (edge enforcement), 2 for PAW (ID-bricka).
     """
     target_name = TARGET_NAMES.get(target_id, f"Unknown({target_id})")
-    print(f"[ORCHESTRATION] Please provide your registered FIDO key and press the button on the device")
+    print(f"[ORCHESTRATION] Requesting key distribution to {target_name}.")
+    print(f"[FIDO2] Please provide your registered FIDO key and press the button on the device")
     
-    # Check for FIDO2 device
-    if not check_fido2_device_present():
-        print(f"[FIDO2] No FIDO2 device detected. Falling back to button press method.")
+    # Verify FIDO2 device is present (user has pressed button)
+    if not verify_fido2_presence(timeout=10):
+        print(f"[FIDO2] No FIDO2 device detected. Falling back to UNO Q button press method.")
         return request_key_distribution(target_id)
     
-    print(f"[FIDO2] FIDO2 device detected. Attempting immediate distribution...")
+    print(f"[FIDO2] FIDO2 device verified. Initiating immediate distribution to {target_name}...")
     
     # Call the immediate distribution RPC
     success = Bridge.call("distribute_key_now", target_id)
@@ -561,6 +583,7 @@ def distribute_key_now(target_id):
         return False
     else:
         print(f"[ORCHESTRATION] Failed to initiate immediate distribution to {target_name}.")
+        write_audit_log("distribution_fido2_failed", {"target": target_name})
         return False
 
 
