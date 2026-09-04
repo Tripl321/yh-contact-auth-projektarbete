@@ -205,6 +205,8 @@ class BridgeRPC:
                 encoded_elements += self._encode_integer(element)
             elif isinstance(element, bytes):
                 encoded_elements += self._encode_binary(element)
+            elif isinstance(element, list):
+                encoded_elements += self._encode_array(element)
             else:
                 raise ValueError(f"Unsupported type: {type(element)}")
         
@@ -220,12 +222,7 @@ class BridgeRPC:
     def _encode_rpc_request(self, method, args):
         """Encode an RPC request as MessagePack."""
         msg_id = self._next_message_id()
-        elements = [
-            0,  # message type: request
-            msg_id,  # message ID
-            method,  # method name
-            args  # arguments array
-        ]
+        elements = [0, msg_id, method, args]
         return self._encode_array(elements)
     
     def _decode_messagepack(self, data):
@@ -305,6 +302,12 @@ class BridgeRPC:
             return None, 0
         
         first_byte = data[0]
+        
+        # Boolean: false (0xC2), true (0xC3)
+        if first_byte == 0xC2:
+            return False, 1
+        if first_byte == 0xC3:
+            return True, 1
         
         # Fixint positive (0x00-0x7F)
         if first_byte <= 0x7F:
@@ -388,8 +391,6 @@ class BridgeRPC:
                 if not chunk:
                     break
                 response_data += chunk
-                if len(response_data) > 0:
-                    break
             
             if len(response_data) == 0:
                 print("[BRIDGE] Empty response")
