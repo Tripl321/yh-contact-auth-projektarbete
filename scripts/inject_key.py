@@ -8,7 +8,8 @@ Bridge RPC to trigger key operations without ever handling key material.
 
 Requirements:
 - Arduino UNO Q with proper key authority firmware
-- Physical UART connections between UNO Q and target devices (PLC/PAW)
+- USB connections between host/Mama Bear MPU and target devices (PLC/PAW) via USB hub
+  (UART via D0/D1 is DEPRECATED as of 2026-09-04 - do not use)
 - For Bridge RPC: UNO Q connected to host computer via USB (optional for monitoring)
 
 Usage:
@@ -18,7 +19,7 @@ Usage:
 Security:
 - This script NEVER generates or handles key material
 - All key operations happen on UNO Q's STM32U585 using hardware TRNG
-- Key distribution requires physical UART connections and operator confirmation
+- Key distribution requires USB connections and operator confirmation (button on Mama Bear)
 - Script only provides orchestration and status monitoring
 """
 
@@ -31,8 +32,10 @@ from typing import Optional, Dict, Any
 BRIDGE_BAUD = 115200
 UNOQ_SERIAL_PORT = None  # Will be auto-detected or specified
 
-# UART connections for key distribution (physical connections required)
-UART_BAUD = 115200
+# USB connections for key distribution (all devices via USB hub)
+# DEPRECATED: UART_BAUD and D0/D1 wiring - use USB CDC at 115200 baud instead
+UART_BAUD = 115200  # Kept for backwards compat, now maps to USB CDC baud
+USB_BAUD = 115200
 
 
 def print_header():
@@ -43,29 +46,34 @@ def print_header():
 
 
 def print_airgapped_workflow():
-    print("AIR-GAPPED WORKFLOW:")
+    print("AIR-GAPPED WORKFLOW (USB - UART DEPRECATED 2026-09-04):")
     print("-" * 40)
-    print("1. Connect UNO Q to PLC via UART (D0->RX, D1->TX, GND->GND)")
-    print("2. Connect UNO Q to PAW via UART (D0->RX, D1->TX, GND->GND)") 
-    print("3. Power on all devices")
-    print("4. On UNO Q: Press button to generate key (hardware TRNG)")
-    print("5. For each target device:")
-    print("   a. Connect UART cable from UNO Q to target")
+    print("1. Connect all devices via USB hub to host/Mama Bear MPU")
+    print("   - UNO Q via USB-C")
+    print("   - PLC (Pico 2W) via USB")
+    print("   - PAW (Feather RP2350) via USB")
+    print("2. Power on all devices")
+    print("3. On UNO Q: Press button to generate key (hardware TRNG)")
+    print("4. For each target device:")
+    print("   a. Ensure USB connection is active")
     print("   b. On UNO Q: Press distribution button for that target")
-    print("   c. UNO Q distributes key via UART with physical confirmation")
-    print("6. Verify both devices show matching fingerprints")
+    print("   c. UNO Q distributes key via USB with physical confirmation")
+    print("5. Verify both devices show matching fingerprints")
+    print("   NOTE: UART (D0/D1) is no longer used. Use USB only.")
     print()
 
 
 def print_monitor_workflow():
     print("MONITORED WORKFLOW (requires UNO Q USB connection):")
     print("-" * 55)
-    print("1. Connect UNO Q to host computer via USB")
-    print("2. Connect UNO Q to PLC via UART (D0->RX, D1->TX, GND->GND)")
-    print("3. Connect UNO Q to PAW via UART (D0->RX, D1->TX, GND->GND)")
-    print("4. Power on all devices")
-    print("5. This script monitors UNO Q status and guides operator")
-    print("6. All key operations still happen on UNO Q with physical confirmation")
+    print("1. Connect all devices via USB hub to host computer")
+    print("   - UNO Q via USB-C")
+    print("   - PLC via USB")
+    print("   - PAW via USB")
+    print("2. Power on all devices")
+    print("3. This script monitors UNO Q status and guides operator")
+    print("4. All key operations still happen on UNO Q with physical confirmation")
+    print("5. Distribution via USB (UART deprecated)")
     print()
 
 
@@ -162,8 +170,8 @@ def main():
         print("• Keys are generated using STM32U585 hardware TRNG")
         print("• This script NEVER handles key material")
         print("• Distribution requires physical button press on UNO Q")
-        print("• Key material never leaves UNO Q until UART distribution")
-        print("• USB connection to host is ONLY for monitoring, not key operations")
+        print("• Key material never leaves secure domain until USB distribution")
+        print("• USB is now used for distribution (UART deprecated 2026-09-04)")
         print()
         
         print("To monitor UNO Q status via USB connection:")

@@ -183,6 +183,27 @@ ensure_core_installed() {
   ok "Core $pkg redo"
 }
 
+ensure_libs_installed() {
+  local comp="$1"
+  if [[ "$comp" == "unoq" ]]; then
+    if ! arduino-cli lib list 2>/dev/null | grep -q "Arduino_RouterBridge"; then
+      log "Installerar bibliotek: Arduino_RouterBridge"
+      arduino-cli lib install Arduino_RouterBridge >/dev/null 2>&1 || \
+        warn "Kunde inte installera Arduino_RouterBridge (kanske redan installerat)"
+    fi
+    ok "Lib Arduino_RouterBridge redo"
+  fi
+  # PAW/PLC behöver RadioLib + GxEPD2 — redan i lib list men säkerställ
+  if [[ "$comp" == "paw" || "$comp" == "plc" ]]; then
+    for lib in RadioLib GxEPD2; do
+      if ! arduino-cli lib list 2>/dev/null | grep -q "$lib"; then
+        log "Installerar bibliotek: $lib"
+        arduino-cli lib install "$lib" >/dev/null 2>&1 || warn "Kunde inte installera $lib"
+      fi
+    done
+  fi
+}
+
 # RP2040 core requires the board index URL
 ensure_pico_index() {
   local cfg
@@ -397,6 +418,7 @@ main() {
     ensure_pico_index
   fi
   ensure_core_installed "$target"
+  ensure_libs_installed "$target"
 
   if ! compile_component "$target"; then
     err "Kompilering misslyckades — avbryter innan flashning."

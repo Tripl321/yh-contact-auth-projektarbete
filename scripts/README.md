@@ -61,12 +61,11 @@ SHALLOT_PORT=/dev/cu.usbmodem14301 \
 
 | Komponent | FQBN | Core |
 |-----------|------|------|
-| PAW | `arduino-pico:rp2040:adafruit_feather_rp2350_hstx` | arduino-pico:rp2040 |
-| PLC | `arduino-pico:rp2040:rpipico2` | arduino-pico:rp2040 |
-| UNO Q | `arduino:zephyr:arduino_uno_q_stm32u585xx` | arduino:zephyr@0.90.0 |
+| PAW | `rp2040:rp2040:adafruit_feather_rp2350_hstx` | rp2040:rp2040 |
+| PLC | `rp2040:rp2040:rpipico2w` (Pico 2 W, CYW43 LED) / `rpipico2` (plain Pico 2) | rp2040:rp2040 |
+| UNO Q | `arduino:zephyr:unoq` | arduino:zephyr |
 
-FQBN-värdena är verifierade mot arduino-pico-corens variant-mappar och
-Arduino Zephyr-corens UNO Q-variant.
+FQBN-värdena är verifierade: UNO Q via `arduino-cli board list` på `MamaBear.local` (`arduino:zephyr:unoq`), RP2350 via Earle Philhower `rp2040:rp2040` core. PLC noterad som Pico 2 W därför `rpipico2w` (LED CYW43 pin 64) annars `rpipico2`.
 
 ## Felsökning
 
@@ -86,11 +85,10 @@ Installera från https://brew.sh, kör sedan skriptet igen.
   från Arduino IDE-installationen gör att boarden syns som serial-port
 
 ### UNO Q — "Please install Arduino_RouterBridge library"
-Skriptet installerar cores, men bibliotek hanteras separat. Kör:
+Skriptet installerar nu `Arduino_RouterBridge` automatiskt. Om manuellt behövs:
 ```bash
 arduino-cli lib install Arduino_RouterBridge
 ```
-Sen försök igen.
 
 ### Jag vill bara synka, inte flasha
 ```bash

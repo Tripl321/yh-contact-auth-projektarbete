@@ -9,7 +9,7 @@
  *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
- *   UART (UNO Q):  TX->1, RX->0 (Serial1)
+ *   USB (Mama Bear/host): via USB-C hub (UART TX->1, RX->0 deprecated 2026-09-04)
  *   LoRa (SPI1):   SCK=D10, MOSI=D11, MISO=D24, CS=D9, BUSY=pin7, RESET=pin4, DIO1=A2
  *   e-Paper (SPI0):CS=5, DC=A0(GPIO26), RST=A1(GPIO27), BUSY=D25(GPIO25)
  *                   SPI0 MO(GP23) -> DIN, SPI0 SCK(GP22) -> CLK
@@ -18,8 +18,8 @@
  * Korrekt drivare är GxEPD2_3C/GxEPD2_154_Z90c; B/W-drivaren (D67) lämnar
  * röda planet oskrivet -> röd bakgrund. Full refresh ~14 s.
  *
- * Architecture:
- *   1. Wait for key from UNO Q at startup via Serial1
+ * Architecture (USB - UART deprecated 2026-09-04):
+ *   1. Wait for key from UNO Q at startup via USB (was Serial1)
  *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
  *   3. Listen for challenge (nonce) from PLC over LoRa
  *   4. Compute HMAC-SHA256(key, nonce) and transmit response
@@ -502,15 +502,14 @@ void setup() {
     Serial.println("[PRO-48] Starting key reception...");
 
     if (receiveKeyFromUNOQ()) {
-            currentState = STATE_WAITING_FOR_CHALLENGE;
-            Serial.println("[PRO-48] Key received successfully.");
-            digitalWrite(LED_BUILTIN, HIGH);
-            epdShowStatus(EPD_STATUS_AUTHENTICATING);
-        } else {
-            Serial.println("[PRO-48] Key reception FAILED / Waiting...");
-            currentState = STATE_WAITING_FOR_KEY;
-            epdShowStatus(EPD_STATUS_FAILED);
-        }
+        currentState = STATE_WAITING_FOR_CHALLENGE;
+        Serial.println("[PRO-48] Key received successfully.");
+        digitalWrite(LED_BUILTIN, HIGH);
+        epdShowStatus(EPD_STATUS_AUTHENTICATING);
+    } else {
+        Serial.println("[PRO-48] Key reception FAILED / Waiting...");
+        currentState = STATE_WAITING_FOR_KEY;
+        epdShowStatus(EPD_STATUS_FAILED);
     }
 }
 

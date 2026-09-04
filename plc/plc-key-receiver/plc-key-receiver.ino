@@ -3,16 +3,16 @@
  * Edge enforcement node: Raspberry Pi Pico 2 (RP2350A) + Core1262-868M
  *
  * Complete implementation:
- *   - PRO-47: Key reception from UNO Q via UART
+ *   - PRO-47: Key reception from UNO Q via USB (was UART, deprecated 2026-09-04)
  *   - PRO-51: Nonce generation (16-byte random)
  *   - PRO-52: Challenge-response protocol over LoRa P2P
  *   - PRO-49: HMAC-SHA256 verification of PAW responses
  *
- * Distribution protocol (matches UNO Q MCU firmware):
- *   UNO Q -> PLC:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
- *   PLC -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)
- *   UNO Q -> PLC:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4)
- *   PLC -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)
+ * Distribution protocol (matches UNO Q MCU firmware) - now via USB CDC:
+ *   UNO Q -> PLC:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
+ *   PLC -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)     [USB]
+ *   UNO Q -> PLC:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) [USB]
+ *   PLC -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)  [USB]
  *
  * Authentication protocol (LoRa P2P with PAW):
  *   PLC -> PAW:   MSG_CHALLENGE (0xB1) + nonce (16 bytes)
@@ -25,7 +25,7 @@
  *
  * Hardware:
  *   Raspberry Pi Pico 2 (RP2350A)
- *   UART: Serial1 (GP0=TX, GP1=RX) — connected to UNO Q Serial1
+ *   USB: Serial (USB CDC) — connected via USB hub to host/Mama Bear (UART GP0/GP1 deprecated)
  *   Core1262-868M: SPI1 (GP10=CLK, GP11=MOSI, GP12=MISO, GP9=CS,
  *                  GP6=BUSY, GP8=RESET, GP21=DIO1) — for LoRa
  *

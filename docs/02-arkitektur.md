@@ -1,6 +1,6 @@
 # Systemarkitektur — SHALLOT
 
-> Status: Ej paabörjad | Vecka: 1 | Linear: PRO-31
+> Status: Uppdaterad 2026-09-04 | Vecka: 1 | Linear: PRO-31
 
 ## 1. Oeversikt
 
@@ -10,7 +10,9 @@ Systemet bestaar av tre noder:
 |-----|---------|------|
 | PAW (Portable Authentication Wearable) | Adafruit Feather RP2350 + Core1262 + e-Paper | Baerbar ID-bricka, skickar autentiseringsbegaran |
 | Edge enforcement-nod | Raspberry Pi Pico 2 (RP2350A) + Core1262 | Verifierar autentisering, fattar fail-closed-beslut |
-| Air-gapped provisioneringshubb (Mama Bear) | Arduino UNO Q | Genererar och distribuerar AES-128-nycklar via UART (single source of truth) |
+| Air-gapped provisioneringshubb (Mama Bear) | Arduino UNO Q | Genererar och distribuerar AES-128-nycklar via USB (single source of truth) |
+
+> **Beslut 2026-09-04 - USB istället för UART:** Alla tidigare referenser till UART (Serial1, D0/D1) för nyckeldistribution är föråldrade. Nyckeldistribution sker nu **enbart via USB** (USB CDC). Alla tre noder ansluts via USB-hubb. Detta beslut ersätter UART-arkitekturen fullständigt.
 
 ## 2. Databussdiagram
 

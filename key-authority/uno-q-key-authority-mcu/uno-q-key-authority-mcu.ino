@@ -2,27 +2,29 @@
  * SHALLOT — UNO Q Key Authority Firmware (PRO-45 + PRO-46)
  * MCU side: STM32U585 via Arduino IDE + ArduinoCore-zephyr
  *
- * Architecture (three-layer model):
- *   Layer 1 (MCU/STM32U585): TRNG key generation, secure storage,
- *           UART key distribution. No MPU involvement with key material.
- *   Layer 2 (MPU/QRB2210/Linux): Orchestration UI, audit log, validation.
- *           Communicates with MCU via Bridge RPC. Never touches key material.
+ * Architecture (three-layer model) - UPDATED 2026-09-04: USB instead of UART:
+ *   Layer 1 (MCU/STM32U585): TRNG key generation, secure storage.
+ *           Key handling via USB distribution (UART deprecated 2026-09-04).
+ *           No MPU involvement with key material in clear.
+ *   Layer 2 (MPU/QRB2210/Linux): Orchestration UI, audit log, validation,
+ *           USB host for distribution. Communicates with MCU via Bridge RPC.
+ *           Never touches key material in clear.
  *   Layer 3 (Bridge RPC): Status and confirmation messages only.
  *           Uses Arduino_RouterBridge.h (MessagePack RPC over internal socket).
  *
  * Security principles:
  *   - Key generated with hardware TRNG (analog noise entropy)
- *   - Key never leaves MCU domain until UART distribution
- *   - Key never exposed to Linux/MPU side
+ *   - Key never leaves secure domain until USB distribution
+ *   - Key never exposed to Linux/MPU side in clear
  *   - Distribution requires operator confirmation (physical button)
  *   - Fail-closed: if TRNG health check fails, no key is generated
  *
  * Hardware: Arduino UNO Q (Qualcomm QRB2210 + STM32U585)
- * Target devices for distribution:
+ * Target devices for distribution (via USB hub):
  *   - Edge enforcement node: Raspberry Pi Pico 2 (RP2350A)
  *   - PAW: Adafruit Feather RP2350
  *
- * Linear: PRO-45 (key generation), PRO-46 (key distribution via UART)
+ * Linear: PRO-45 (key generation), PRO-46 (key distribution via USB - was UART)
  *
  * CRITICAL — prj.conf override required:
  *   The UNO Q variant config ships with CONFIG_TEST_RANDOM_GENERATOR=y

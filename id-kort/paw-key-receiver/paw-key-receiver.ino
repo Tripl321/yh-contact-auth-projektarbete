@@ -3,21 +3,21 @@
  * ID-bricka: Adafruit Feather RP2350
  *
  * Role in key distribution:
- *   Receives AES-128 key from UNO Q via UART, stores in RP2350 SRAM,
- *   returns SHA-256 hash for verification.
+ *   Receives AES-128 key from UNO Q via USB (was UART, deprecated 2026-09-04),
+ *   stores in RP2350 SRAM, returns SHA-256 hash for verification.
  *
- * Distribution protocol (matches UNO Q MCU firmware):
- *   UNO Q -> PAW:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
- *   PAW -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)
- *   UNO Q -> PAW:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4)
- *   PAW -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)
+ * Distribution protocol (matches UNO Q MCU firmware) - now via USB CDC:
+ *   UNO Q -> PAW:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
+ *   PAW -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)     [USB]
+ *   UNO Q -> PAW:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) [USB]
+ *   PAW -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)  [USB]
  *
  * Key storage:
  *   Volatile SRAM (same approach as PLC). Key lost on power cycle.
  *
  * Hardware:
  *   Adafruit Feather RP2350
- *   UART: Serial1 (GP0=TX, GP1=RX) — connected to UNO Q Serial1
+ *   USB: Serial (USB CDC) — connected via USB hub to host/Mama Bear (UART GP0/GP1 deprecated)
  *   Core1262-868M: SPI1 (D10/GP10=CLK, D11/GP11=MOSI, A2/GP28=MISO,
  *                  D9/GP9=CS, D6/GP6=BUSY, D8/GP8=RESET, D21/GP21=DIO1)
  *   e-Paper: SPI0 (MO/GP23=DIN, SCK/GP22=CLK, D5/GP5=CS,

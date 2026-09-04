@@ -46,12 +46,16 @@ id-kort/
 | D8 (GPIO8) | RESET |
 | D21 (GPIO21) | DIO1 |
 
-## Pin-tilldelning -- UART till UNO Q
+## Pin-tilldelning -- USB till UNO Q / Host (UART föråldrad)
 
-| Feather | UNO Q |
+> **2026-09-04:** Nyckeldistribution sker via **USB** (USB CDC). UART-koppling (GP0/GP1, Serial1) är föråldrad och ska inte användas. Tabell nedan är historisk referens.
+
+| Feather | UNO Q (historisk UART) |
 |---|---|
 | GP0 (TX) | Serial1 RX |
 | GP1 (RX) | Serial1 TX |
+
+**Aktuell koppling:** Alla enheter ansluts via USB-hubb (USB-C) till host/Mama Bear MPU. Ingen UART-kabel krävs.
 
 ## Bibliotek
 
