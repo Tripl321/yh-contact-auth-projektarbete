@@ -61,6 +61,8 @@
 #define MSG_KEY_DATA  0xA3
 #define MSG_STORED    0xA4
 #define MSG_ERROR     0xA5
+#define MSG_COMMIT    0xA6
+#define MSG_CANCEL    0xA7
 
 // =============================================================
 // Key state machine
@@ -236,10 +238,10 @@ static void initDeviceAllowlist() {
   
   Serial.println("[PRO-48] Device allowlist initialized");
   Serial.print("[PRO-48] PLC expected hash: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", deviceAllowlist[0][i]);
+  printHex(deviceAllowlist[0], KEY_HASH_SIZE);
   Serial.println();
   Serial.print("[PRO-48] PAW expected hash: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", deviceAllowlist[1][i]);
+  printHex(deviceAllowlist[1], KEY_HASH_SIZE);
   Serial.println();
 }
 
@@ -253,7 +255,8 @@ static bool isDeviceAllowed(const uint8_t* deviceHash) {
       diff |= deviceHash[j] ^ deviceAllowlist[i][j];
     }
     if (diff == 0) {
-      Serial.printf("[PRO-48] Device hash match: allowlist entry %d\n", i);
+      Serial.print("[PRO-48] Device hash match: allowlist entry ");
+      Serial.println(i);
       return true;
     }
   }
@@ -382,8 +385,10 @@ static bool challengeDeviceIdentity(uint8_t targetId, uint8_t operation, uint32_
     if (Serial.available() >= 1 + P256_SIGNATURE_SIZE + KEY_HASH_SIZE) {
       uint8_t responseType = Serial.read();
       if (responseType != 0xB5) {  // MSG_ID_RESPONSE
-        Serial.printf("[PRO-48] Expected ID_RESPONSE (0xB5), got 0x%02X from %s\n", 
-                      responseType, targetName);
+        Serial.print("[PRO-48] Expected ID_RESPONSE (0xB5), got 0x");
+        Serial.print(responseType, HEX);
+        Serial.print(" from ");
+        Serial.println(targetName);
         // Continue waiting
         continue;
       }
@@ -392,13 +397,15 @@ static bool challengeDeviceIdentity(uint8_t targetId, uint8_t operation, uint32_
       uint8_t signature[P256_SIGNATURE_SIZE];
       uint8_t deviceHash[KEY_HASH_SIZE];
       
-      if (!Serial.readBytes((char*)signature, P256_SIGNATURE_SIZE) == P256_SIGNATURE_SIZE) {
-        Serial.printf("[PRO-48] Failed to read full signature from %s\n", targetName);
+      if (!(Serial.readBytes((char*)signature, P256_SIGNATURE_SIZE) == P256_SIGNATURE_SIZE)) {
+        Serial.print("[PRO-48] Failed to read full signature from ");
+        Serial.println(targetName);
         continue;
       }
       
-      if (!Serial.readBytes((char*)deviceHash, KEY_HASH_SIZE) == KEY_HASH_SIZE) {
-        Serial.printf("[PRO-48] Failed to read device hash from %s\n", targetName);
+      if (!(Serial.readBytes((char*)deviceHash, KEY_HASH_SIZE) == KEY_HASH_SIZE)) {
+        Serial.print("[PRO-48] Failed to read device hash from ");
+        Serial.println(targetName);
         continue;
       }
       
@@ -407,17 +414,20 @@ static bool challengeDeviceIdentity(uint8_t targetId, uint8_t operation, uint32_
                                             signature, deviceHash);
       
       if (verified) {
-        Serial.printf("[PRO-48] Device identity verified for %s\n", targetName);
+        Serial.print("[PRO-48] Device identity verified for ");
+        Serial.println(targetName);
         return true;
       } else {
-        Serial.printf("[PRO-48] Device identity verification FAILED for %s\n", targetName);
+        Serial.print("[PRO-48] Device identity verification FAILED for ");
+        Serial.println(targetName);
         return false;
       }
     }
     delay(10);
   }
   
-  Serial.printf("[PRO-48] Timeout waiting for identity response from %s\n", targetName);
+  Serial.print("[PRO-48] Timeout waiting for identity response from ");
+  Serial.println(targetName);
   return false;
 }
 
@@ -774,15 +784,19 @@ static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
   // Device responds with MSG_STORED + hash + epoch (same format as key storage ack)
   uint8_t response;
   if (!waitForByte(&response, DISTRIB_TIMEOUT_MS)) {
-    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK from %s\n", targetName);
+    Serial.print("[PRO-46] Timeout waiting for COMMIT ACK from ");
+    Serial.println(targetName);
     Bridge.notify("key_authority_event", "commit_timeout", 
                  String(targetName) + " did not acknowledge COMMIT");
     return false;
   }
   
   if (response != MSG_STORED) {
-    Serial.printf("[PRO-46] Unexpected response 0x%02X from %s (expected MSG_STORED 0xA4)\n", 
-                 response, targetName);
+    Serial.print("[PRO-46] Unexpected response 0x");
+    Serial.print(response, HEX);
+    Serial.print(" from ");
+    Serial.print(targetName);
+    Serial.println(" (expected MSG_STORED 0xA4)");
     Bridge.notify("key_authority_event", "commit_failed", 
                  String(targetName) + " unexpected COMMIT response");
     return false;
@@ -791,7 +805,8 @@ static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
   // Read acknowledgment hash and epoch
   uint8_t ackHash[KEY_HASH_SIZE];
   if (!waitForBytes(ackHash, KEY_HASH_SIZE, DISTRIB_TIMEOUT_MS)) {
-    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK hash from %s\n", targetName);
+    Serial.print("[PRO-46] Timeout waiting for COMMIT ACK hash from ");
+    Serial.println(targetName);
     Bridge.notify("key_authority_event", "commit_timeout", 
                  String(targetName) + " incomplete COMMIT acknowledgment");
     return false;
@@ -799,7 +814,8 @@ static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
   
   uint8_t ackEpochBytes[4];
   if (!waitForBytes(ackEpochBytes, 4, DISTRIB_TIMEOUT_MS)) {
-    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK epoch from %s\n", targetName);
+    Serial.print("[PRO-46] Timeout waiting for COMMIT ACK epoch from ");
+    Serial.println(targetName);
     Bridge.notify("key_authority_event", "commit_timeout", 
                  String(targetName) + " incomplete COMMIT acknowledgment");
     return false;
@@ -810,14 +826,21 @@ static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
   
   // Verify epoch in acknowledgment
   if (ackEpoch != epoch) {
-    Serial.printf("[PRO-46] COMMIT ACK epoch mismatch from %s: expected %lu, got %lu\n", 
-                 targetName, (unsigned long)epoch, (unsigned long)ackEpoch);
+    Serial.print("[PRO-46] COMMIT ACK epoch mismatch from ");
+    Serial.print(targetName);
+    Serial.print(": expected ");
+    Serial.print((unsigned long)epoch);
+    Serial.print(", got ");
+    Serial.println((unsigned long)ackEpoch);
     Bridge.notify("key_authority_event", "commit_failed", 
                  String(targetName) + " COMMIT ACK epoch mismatch");
     return false;
   }
   
-  Serial.printf("[PRO-46] %s acknowledged COMMIT for epoch %lu\n", targetName, (unsigned long)epoch);
+  Serial.print("[PRO-46] ");
+  Serial.print(targetName);
+  Serial.print(" acknowledged COMMIT for epoch ");
+  Serial.println((unsigned long)epoch);
   return true;
 }
 
@@ -913,7 +936,10 @@ static bool distributeKey(uint8_t targetId) {
 
   // Verify device echoed the correct epoch
   if (echoedEpoch != pendingEpoch) {
-    Serial.printf("[PRO-46] Epoch mismatch: expected %lu, got %lu\n", (unsigned long)pendingEpoch, (unsigned long)echoedEpoch);
+    Serial.print("[PRO-46] Epoch mismatch: expected ");
+    Serial.print((unsigned long)pendingEpoch);
+    Serial.print(", got ");
+    Serial.println((unsigned long)echoedEpoch);
     Bridge.notify("key_authority_event", "distribution_failed",
                  String(targetName) + " epoch mismatch");
     return false;
@@ -927,12 +953,16 @@ static bool distributeKey(uint8_t targetId) {
   
   uint8_t operationForIdentity = (targetId == TARGET_PLC) ? OP_STAGE_PLC : OP_STAGE_PAW;
   if (!challengeDeviceIdentity(targetId, operationForIdentity, pendingEpoch)) {
-    Serial.printf("[PRO-46] Device identity verification FAILED for %s - aborting key distribution\n", targetName);
+    Serial.print("[PRO-46] Device identity verification FAILED for ");
+    Serial.print(targetName);
+    Serial.println(" - aborting key distribution");
     Bridge.notify("key_authority_event", "identity_verification_failed",
                  String(targetName) + " device identity verification failed");
     return false;
   }
-  Serial.printf("[PRO-46] Device identity verified for %s - proceeding with key distribution\n", targetName);
+  Serial.print("[PRO-46] Device identity verified for ");
+  Serial.print(targetName);
+  Serial.println(" - proceeding with key distribution");
 
   // Step 3: Send pending key + CRC32 + epoch (26 bytes)
   // Format: MSG_KEY_DATA(1) + key_len(1) + key(16) + crc32(4) + epoch(4) = 26 bytes
@@ -985,7 +1015,10 @@ static bool distributeKey(uint8_t targetId) {
   
   // Verify epoch in STORED response
   if (storedEpoch != pendingEpoch) {
-    Serial.printf("[PRO-46] STORED epoch mismatch: expected %lu, got %lu\n", (unsigned long)pendingEpoch, (unsigned long)storedEpoch);
+    Serial.print("[PRO-46] STORED epoch mismatch: expected ");
+    Serial.print((unsigned long)pendingEpoch);
+    Serial.print(", got ");
+    Serial.println((unsigned long)storedEpoch);
     Bridge.notify("key_authority_event", "distribution_failed",
                  String(targetName) + " STORED epoch mismatch");
     return false;
