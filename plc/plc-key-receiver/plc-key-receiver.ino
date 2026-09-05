@@ -148,9 +148,10 @@ static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
 // P-256 curve parameters (secp256r1 / prime256v1)
 // Using compressed public key format for storage (33 bytes: 0x02/0x03 + x[32])
 #define P256_PRIVATE_KEY_SIZE  32
-#define P256_PUBLIC_KEY_SIZE   64  // Uncompressed: 0x04 + x[32] + y[32]
+#define P256_PUBLIC_KEY_SIZE   65  // Uncompressed: 0x04 + x[32] + y[32] = 65 bytes
 #define P256_COMPRESSED_PUB_SIZE 33  // Compressed: 0x02/0x03 + x[32]
 #define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
+#define SHA256_HASH_SIZE      32  // SHA-256 produces 32-byte hash
 
 // Device identity storage
 static uint8_t devicePrivateKey[P256_PRIVATE_KEY_SIZE];

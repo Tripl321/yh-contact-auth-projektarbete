@@ -226,7 +226,7 @@ static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // P-256 curve parameters (secp256r1 / prime256v1)
 #define P256_PRIVATE_KEY_SIZE  32
-#define P256_PUBLIC_KEY_SIZE   64  // Uncompressed: 0x04 + x[32] + y[32]
+#define P256_PUBLIC_KEY_SIZE   65  // Uncompressed: 0x04 + x[32] + y[32] = 65 bytes
 #define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
 #define SHA256_HASH_SIZE      32
 

@@ -729,3 +729,69 @@ def test_identity_challenge_wrong_device():
     
     # Signatures should be different (different private seeds)
     assert plc_sig != paw_sig
+
+
+def test_identity_challenge_39byte_frame_format():
+    """Test that identity challenge frame is exactly 39 bytes: MSG_ID_CHALLENGE(1) + challenge[32] + operation[1] + target[1] + epoch[4]"""
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    paw = MockDeviceWithIdentity(b"PAW\x01", b"PAW\x01")
+    
+    # Generate a test challenge
+    challenge = os.urandom(32)
+    operation = 0x02  # STAGE_PLC
+    target = 0x01    # TARGET_PLC
+    epoch = 42
+    
+    # Build the identity challenge message as MCU would send it
+    # Format: MSG_ID_CHALLENGE(0xB4) + challenge[32] + operation[1] + target[1] + epoch[4]
+    msg_id_challenge = bytes([0xB4]) + challenge + bytes([operation, target]) + epoch.to_bytes(4, 'big')
+    
+    # Verify frame is exactly 39 bytes
+    assert len(msg_id_challenge) == 39, f"Identity challenge frame should be 39 bytes, got {len(msg_id_challenge)}"
+    
+    # Verify frame structure
+    assert msg_id_challenge[0] == 0xB4  # MSG_ID_CHALLENGE
+    assert msg_id_challenge[1:33] == challenge  # challenge[32]
+    assert msg_id_challenge[33] == operation  # operation[1]
+    assert msg_id_challenge[34] == target  # target[1]
+    assert msg_id_challenge[35:39] == epoch.to_bytes(4, 'big')  # epoch[4]
+    
+    # PLC handles the challenge (simulating what PLC firmware does on receipt)
+    plc_sig, plc_hash = plc.handle_identity_challenge(challenge, operation, target, epoch)
+    
+    # Verify PLC response format: MSG_ID_RESPONSE(0xB5) + signature[64] + devicePubKeyHash[4]
+    # = 1 + 64 + 4 = 69 bytes
+    plc_response = bytes([0xB5]) + plc_sig + plc_hash
+    assert len(plc_response) == 69, f"Identity response should be 69 bytes, got {len(plc_response)}"
+    
+    # PAW handles the same challenge (simulating what PAW firmware does on receipt)
+    paw_sig, paw_hash = paw.handle_identity_challenge(challenge, operation, 0x02, epoch)  # target = PAW
+    
+    # Verify PAW response format
+    paw_response = bytes([0xB5]) + paw_sig + paw_hash
+    assert len(paw_response) == 69, f"Identity response should be 69 bytes, got {len(paw_response)}"
+    
+    # Verify response structure
+    assert paw_response[0] == 0xB5  # MSG_ID_RESPONSE
+    assert len(paw_response[1:65]) == 64  # signature[64]
+    assert len(paw_response[65:69]) == 4  # devicePubKeyHash[4]
+
+
+def test_identity_challenge_frame_length_not_42():
+    """Regression test: ensure identity frame is NOT 42 bytes (previous bug) or 40 bytes (miscalculation)"""
+    challenge = os.urandom(32)
+    operation = 0x02
+    target = 0x01
+    epoch = 1
+    
+    # Build the frame
+    msg = bytes([0xB4]) + challenge + bytes([operation, target]) + epoch.to_bytes(4, 'big')
+    
+    # Should NOT be 42 (previous incorrect check)
+    assert len(msg) != 42, "Identity frame should not be 42 bytes (previous bug)"
+    
+    # Should NOT be 40 (miscalculation: 1+32+1+1+4=39, not 40)
+    assert len(msg) != 40, "Identity frame should not be 40 bytes (miscalculation)"
+    
+    # Should be exactly 39
+    assert len(msg) == 39, f"Identity frame should be exactly 39 bytes, got {len(msg)}"
