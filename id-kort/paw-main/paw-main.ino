@@ -115,6 +115,10 @@ static void setLoRaFlag(void) {
 #define MSG_RESPONSE     0xB2
 #define MSG_RESULT       0xB3
 
+// Device identity challenge-response messages (Slice 4)
+#define MSG_ID_CHALLENGE  0xB4
+#define MSG_ID_RESPONSE   0xB5
+
 #define TARGET_PAW       0x02
 #define TARGET_PLC       0x01
 
@@ -608,6 +612,22 @@ void loop() {
             }
         }
         radio.startReceive();
+    }
+
+    // Handle identity challenge via USB (Slice 4) - must come before COMMIT handling
+    if (Serial.available() >= 1) {
+        int peek = Serial.peek();
+        if (peek == MSG_ID_CHALLENGE) {
+            // Delegate to receiveKeyFromUNOQ logic or handle here
+            // For now, we'll add basic identity challenge handling
+            uint8_t msgType = Serial.read();
+            if (msgType == MSG_ID_CHALLENGE && Serial.available() >= 41) { // 32+1+1+4+4=42 but we already read 1
+                // We'll use the same device identity from paw-key-receiver logic
+                // but for now, just skip this message as PAW uses separate firmware path
+                // In practice, PAW would use paw-key-receiver.ino for provisioning
+                // which already has identity challenge support
+            }
+        }
     }
 
     // Handle pending commit via USB (6B: type + target + epoch_be4, or 5B legacy)

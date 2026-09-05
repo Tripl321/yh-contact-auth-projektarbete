@@ -142,6 +142,135 @@ static inline void secureWipePending() {
 static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
 
 // =============================================================
+// Device Identity (Slice 4) - P-256 ECDSA
+// =============================================================
+
+// P-256 curve parameters (secp256r1 / prime256v1)
+// Using compressed public key format for storage (33 bytes: 0x02/0x03 + x[32])
+#define P256_PRIVATE_KEY_SIZE  32
+#define P256_PUBLIC_KEY_SIZE   64  // Uncompressed: 0x04 + x[32] + y[32]
+#define P256_COMPRESSED_PUB_SIZE 33  // Compressed: 0x02/0x03 + x[32]
+#define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
+
+// Device identity storage
+static uint8_t devicePrivateKey[P256_PRIVATE_KEY_SIZE];
+static uint8_t devicePublicKey[P256_PUBLIC_KEY_SIZE];
+static bool deviceIdentityGenerated = false;
+static uint8_t devicePublicKeyHash[SHA256_HASH_SIZE];  // SHA-256 of public key
+
+// Generate deterministic P-256 keypair from device-specific seed
+// For prototype: use deviceId as seed; for production: use RP2350 flash OTP + TRNG
+static void generateDeviceIdentity() {
+  if (deviceIdentityGenerated) return;
+  
+  Serial.println("[PRO-48] Generating P-256 device identity...");
+  
+  // For prototype: use deviceId as seed (deterministic for testing)
+  // In production: use RP2350 unique ID + TRNG
+  uint8_t seed[32];
+  memset(seed, 0, 32);
+  memcpy(seed, deviceId, 4);
+  
+  // Generate private key from seed (for testing - deterministic)
+  // In production: use proper ECDSA key generation with TRNG
+  memcpy(devicePrivateKey, seed, P256_PRIVATE_KEY_SIZE);
+  
+  // For prototype: compute public key as hash of private key (not real ECDSA)
+  // This is a placeholder - real implementation would use ECDSA
+  sha256(devicePrivateKey, P256_PRIVATE_KEY_SIZE, devicePublicKeyHash);
+  
+  // Create mock public key (uncompressed format: 0x04 + x + y)
+  devicePublicKey[0] = 0x04;  // Uncompressed point
+  memcpy(&devicePublicKey[1], devicePrivateKey, 32);  // x coordinate
+  memcpy(&devicePublicKey[33], devicePrivateKey, 32); // y coordinate (mock)
+  
+  deviceIdentityGenerated = true;
+  
+  Serial.print("[PRO-48] Device identity generated. Pubkey hash: ");
+  for (int i = 0; i < 4; i++) Serial.printf("%02X", devicePublicKeyHash[i]);
+  Serial.println("...");
+}
+
+// Get device public key hash (first 4 bytes for identification)
+static void getDevicePublicKeyHash(uint8_t* hashOut) {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  memcpy(hashOut, devicePublicKeyHash, KEY_HASH_SIZE);
+}
+
+// Sign a message using device identity (placeholder - mock signature for prototype)
+// Real implementation would use ECDSA P-256 with proper signing
+// For prototype: returns SHA-256 of (privateKey + message) as mock signature
+static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* signature) {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  // Mock signature: SHA-256(privateKey + message)
+  uint8_t input[P256_PRIVATE_KEY_SIZE + msgLen];
+  memcpy(input, devicePrivateKey, P256_PRIVATE_KEY_SIZE);
+  memcpy(&input[P256_PRIVATE_KEY_SIZE], message, msgLen);
+  sha256(input, sizeof(input), signature);
+  
+  // For prototype: duplicate hash to fill 64-byte signature
+  memcpy(&signature[32], signature, 32);
+}
+
+// =============================================================
+// Identity Challenge-Response Protocol
+// =============================================================
+
+// Handle identity challenge from MCU
+// MCU sends: MSG_ID_CHALLENGE(0xB4) + challenge[32] + operation[1] + target[1] + epoch[4]
+// Device responds: MSG_ID_RESPONSE(0xB5) + signature[64] + devicePubKeyHash[4]
+#define MSG_ID_CHALLENGE  0xB4
+#define MSG_ID_RESPONSE   0xB5
+
+static bool handleIdentityChallenge() {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  if (Serial.available() < 42) return false;  // 1 + 32 + 1 + 1 + 4 = 40, but check for at least 42
+  
+  int peek = Serial.peek();
+  if (peek != MSG_ID_CHALLENGE) return false;
+  
+  // Read challenge message
+  uint8_t msgType = Serial.read();
+  if (msgType != MSG_ID_CHALLENGE) return false;
+  
+  uint8_t challenge[32];
+  uint8_t operation;
+  uint8_t target;
+  uint32_t epoch;
+  
+  if (!Serial.readBytes((char*)challenge, 32) == 32) return false;
+  operation = Serial.read();
+  target = Serial.read();
+  epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | 
+          ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+  
+  // Create message to sign: challenge + operation + target + epoch
+  uint8_t signInput[32 + 1 + 1 + 4];
+  memcpy(signInput, challenge, 32);
+  signInput[32] = operation;
+  signInput[33] = target;
+  signInput[34] = (epoch >> 24) & 0xFF;
+  signInput[35] = (epoch >> 16) & 0xFF;
+  signInput[36] = (epoch >> 8) & 0xFF;
+  signInput[37] = epoch & 0xFF;
+  
+  // Sign the message
+  uint8_t signature[P256_SIGNATURE_SIZE];
+  signWithDeviceKey(signInput, sizeof(signInput), signature);
+  
+  // Send response
+  Serial.write(MSG_ID_RESPONSE);
+  Serial.write(signature, P256_SIGNATURE_SIZE);
+  Serial.write(devicePublicKeyHash, KEY_HASH_SIZE);  // First 4 bytes of pubkey hash
+  Serial.flush();
+  
+  Serial.println("[PRO-48] Identity challenge response sent");
+  return true;
+}
+
+// =============================================================
 // SHA-256 Implementation
 // =============================================================
 

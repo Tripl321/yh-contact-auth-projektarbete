@@ -195,6 +195,232 @@ static bool verifyGrant(const uint8_t* grant, uint8_t op, uint32_t epoch, uint32
 }
 
 // =============================================================
+// Device Identity Verification (Slice 4)
+// =============================================================
+
+// Allowlist of expected device public key hashes (SHA-256 of public key, first 4 bytes)
+// For prototype: these are computed from the deviceId-based deterministic keys
+// PLC: "PLC\x01" -> SHA256 hash first 4 bytes
+// PAW: "PAW\x01" -> SHA256 hash first 4 bytes
+#define ALLOWLIST_SIZE 2
+static uint8_t deviceAllowlist[ALLOWLIST_SIZE][KEY_HASH_SIZE];
+static bool allowlistInitialized = false;
+
+// P-256 signature size (64 bytes: r[32] + s[32])
+#define P256_SIGNATURE_SIZE 64
+
+// Initialize allowlist with expected device public key hashes
+static void initDeviceAllowlist() {
+  if (allowlistInitialized) return;
+  
+  // For prototype: compute expected hashes from known device IDs
+  // PLC device ID: {0x50, 0x4C, 0x43, 0x01} ("PLC\x01")
+  // PAW device ID: {0x50, 0x41, 0x57, 0x01} ("PAW\x01")
+  
+  uint8_t plcSeed[32] = {0};
+  uint8_t pawSeed[32] = {0};
+  memcpy(plcSeed, "PLC\x01", 4);
+  memcpy(pawSeed, "PAW\x01", 4);
+  
+  // Compute expected hashes (same way devices do: SHA-256 of the seed)
+  uint8_t plcHash[SHA256_HASH_SIZE];
+  uint8_t pawHash[SHA256_HASH_SIZE];
+  sha256(plcSeed, sizeof(plcSeed), plcHash);
+  sha256(pawSeed, sizeof(pawSeed), pawHash);
+  
+  // Store first 4 bytes of each hash in allowlist
+  memcpy(deviceAllowlist[0], plcHash, KEY_HASH_SIZE);  // PLC
+  memcpy(deviceAllowlist[1], pawHash, KEY_HASH_SIZE);  // PAW
+  
+  allowlistInitialized = true;
+  
+  Serial.println("[PRO-48] Device allowlist initialized");
+  Serial.print("[PRO-48] PLC expected hash: ");
+  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", deviceAllowlist[0][i]);
+  Serial.println();
+  Serial.print("[PRO-48] PAW expected hash: ");
+  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", deviceAllowlist[1][i]);
+  Serial.println();
+}
+
+// Check if a device public key hash is in the allowlist
+static bool isDeviceAllowed(const uint8_t* deviceHash) {
+  if (!allowlistInitialized) initDeviceAllowlist();
+  
+  for (int i = 0; i < ALLOWLIST_SIZE; i++) {
+    volatile uint8_t diff = 0;
+    for (int j = 0; j < KEY_HASH_SIZE; j++) {
+      diff |= deviceHash[j] ^ deviceAllowlist[i][j];
+    }
+    if (diff == 0) {
+      Serial.printf("[PRO-48] Device hash match: allowlist entry %d\n", i);
+      return true;
+    }
+  }
+  
+  Serial.println("[PRO-48] Device hash NOT in allowlist");
+  return false;
+}
+
+// Generate a random challenge for device identity verification
+static void generateIdentityChallenge(uint8_t* challenge) {
+  if (!generateSecureRandomBytes(challenge, 32)) {
+    // Fallback to deterministic challenge if TRNG fails
+    memset(challenge, 0, 32);
+    challenge[0] = 0xDE;
+    challenge[1] = 0xAD;
+    challenge[2] = 0xBE;
+    challenge[3] = 0xEF;
+    Serial.println("[PRO-48] TRNG fallback for identity challenge");
+  }
+}
+
+// Verify a device's signature response to an identity challenge
+// For prototype: verifies SHA-256(privateKeySeed + challenge + op + target + epoch)
+static bool verifyIdentityResponse(const uint8_t* challenge, uint8_t operation, 
+                                  uint8_t target, uint32_t epoch,
+                                  const uint8_t* signature, const uint8_t* deviceHash) {
+  if (!isDeviceAllowed(deviceHash)) {
+    Serial.println("[PRO-48] Device not in allowlist");
+    return false;
+  }
+  
+  // For prototype: we can't verify real ECDSA, but we can verify the mock signature
+  // The mock signature is SHA-256(devicePrivateKey + message) duplicated to 64 bytes
+  // We compute what the signature should be based on the known device seed
+  
+  uint8_t expectedSeed[32] = {0};
+  
+  // Determine expected seed based on device hash (find which allowlist entry matches)
+  for (int i = 0; i < ALLOWLIST_SIZE; i++) {
+    volatile uint8_t diff = 0;
+    for (int j = 0; j < KEY_HASH_SIZE; j++) {
+      diff |= deviceHash[j] ^ deviceAllowlist[i][j];
+    }
+    if (diff == 0) {
+      // This device matches allowlist entry i
+      if (i == 0) memcpy(expectedSeed, "PLC\x01", 4);  // PLC
+      else if (i == 1) memcpy(expectedSeed, "PAW\x01", 4);  // PAW
+      break;
+    }
+  }
+  
+  // Recreate the message that was signed: challenge + operation + target + epoch
+  uint8_t message[32 + 1 + 1 + 4];
+  memcpy(message, challenge, 32);
+  message[32] = operation;
+  message[33] = target;
+  message[34] = (epoch >> 24) & 0xFF;
+  message[35] = (epoch >> 16) & 0xFF;
+  message[36] = (epoch >> 8) & 0xFF;
+  message[37] = epoch & 0xFF;
+  
+  // Compute expected mock signature: SHA-256(expectedSeed + message)
+  uint8_t input[32 + sizeof(message)];
+  memcpy(input, expectedSeed, 32);
+  memcpy(&input[32], message, sizeof(message));
+  
+  uint8_t expectedSignature[P256_SIGNATURE_SIZE];
+  sha256(input, sizeof(input), expectedSignature);
+  // Duplicate to fill 64 bytes (same as device does)
+  memcpy(&expectedSignature[32], expectedSignature, 32);
+  
+  // Compare signatures (first 32 bytes are sufficient for mock verification)
+  volatile uint8_t sigDiff = 0;
+  for (int i = 0; i < 32; i++) {  // Only need to check first 32 bytes
+    sigDiff |= signature[i] ^ expectedSignature[i];
+  }
+  
+  // Clean up
+  memset(input, 0, sizeof(input));
+  memset(expectedSignature, 0, sizeof(expectedSignature));
+  memset(message, 0, sizeof(message));
+  
+  if (sigDiff == 0) {
+    Serial.println("[PRO-48] Identity signature verified");
+    return true;
+  } else {
+    Serial.println("[PRO-48] Identity signature verification FAILED");
+    return false;
+  }
+}
+
+// Send identity challenge to a device and wait for response
+// Returns true if device responds with valid signature
+static bool challengeDeviceIdentity(uint8_t targetId, uint8_t operation, uint32_t epoch) {
+  const char* targetName = (targetId == TARGET_PLC) ? "PLC" : "PAW";
+  
+  Serial.print("[PRO-48] Sending identity challenge to ");
+  Serial.print(targetName);
+  Serial.print(" for op=0x"); Serial.print(operation, HEX);
+  Serial.print(" epoch="); Serial.println(epoch);
+  
+  // Generate random challenge
+  uint8_t challenge[32];
+  generateIdentityChallenge(challenge);
+  
+  // Send challenge: MSG_ID_CHALLENGE + challenge[32] + operation + target + epoch
+  uint8_t challengeMsg[1 + 32 + 1 + 1 + 4];  // 40 bytes total
+  challengeMsg[0] = 0xB4;  // MSG_ID_CHALLENGE
+  memcpy(&challengeMsg[1], challenge, 32);
+  challengeMsg[33] = operation;
+  challengeMsg[34] = targetId;  // target should be the device we're challenging
+  challengeMsg[35] = (epoch >> 24) & 0xFF;
+  challengeMsg[36] = (epoch >> 16) & 0xFF;
+  challengeMsg[37] = (epoch >> 8) & 0xFF;
+  challengeMsg[38] = epoch & 0xFF;
+  
+  Serial.write(challengeMsg, sizeof(challengeMsg));
+  Serial.flush();
+  
+  // Wait for response: MSG_ID_RESPONSE + signature[64] + deviceHash[4]
+  uint32_t startTime = millis();
+  const uint32_t RESPONSE_TIMEOUT_MS = 5000;
+  
+  while (millis() - startTime < RESPONSE_TIMEOUT_MS) {
+    if (Serial.available() >= 1 + P256_SIGNATURE_SIZE + KEY_HASH_SIZE) {
+      uint8_t responseType = Serial.read();
+      if (responseType != 0xB5) {  // MSG_ID_RESPONSE
+        Serial.printf("[PRO-48] Expected ID_RESPONSE (0xB5), got 0x%02X from %s\n", 
+                      responseType, targetName);
+        // Continue waiting
+        continue;
+      }
+      
+      // Read signature and device hash
+      uint8_t signature[P256_SIGNATURE_SIZE];
+      uint8_t deviceHash[KEY_HASH_SIZE];
+      
+      if (!Serial.readBytes((char*)signature, P256_SIGNATURE_SIZE) == P256_SIGNATURE_SIZE) {
+        Serial.printf("[PRO-48] Failed to read full signature from %s\n", targetName);
+        continue;
+      }
+      
+      if (!Serial.readBytes((char*)deviceHash, KEY_HASH_SIZE) == KEY_HASH_SIZE) {
+        Serial.printf("[PRO-48] Failed to read device hash from %s\n", targetName);
+        continue;
+      }
+      
+      // Verify the response
+      bool verified = verifyIdentityResponse(challenge, operation, targetId, epoch, 
+                                            signature, deviceHash);
+      
+      if (verified) {
+        Serial.printf("[PRO-48] Device identity verified for %s\n", targetName);
+        return true;
+      } else {
+        Serial.printf("[PRO-48] Device identity verification FAILED for %s\n", targetName);
+        return false;
+      }
+    }
+    delay(10);
+  }
+  
+  Serial.printf("[PRO-48] Timeout waiting for identity response from %s\n", targetName);
+  return false;
+}
+
+// =============================================================
 // TRNG — STM32U585 Hardware True Random Number Generator
 // =============================================================
 //
@@ -692,7 +918,22 @@ static bool distributeKey(uint8_t targetId) {
     return false;
   }
 
-  // Step 2: Send pending key + CRC32 + epoch (26 bytes)
+  // Step 2: Device identity verification (Slice 4)
+  // Send identity challenge and verify device signature before releasing key
+  Serial.print("[PRO-46] Verifying device identity for ");
+  Serial.print(targetName);
+  Serial.println("...");
+  
+  uint8_t operationForIdentity = (targetId == TARGET_PLC) ? OP_STAGE_PLC : OP_STAGE_PAW;
+  if (!challengeDeviceIdentity(targetId, operationForIdentity, pendingEpoch)) {
+    Serial.printf("[PRO-46] Device identity verification FAILED for %s - aborting key distribution\n", targetName);
+    Bridge.notify("key_authority_event", "identity_verification_failed",
+                 String(targetName) + " device identity verification failed");
+    return false;
+  }
+  Serial.printf("[PRO-46] Device identity verified for %s - proceeding with key distribution\n", targetName);
+
+  // Step 3: Send pending key + CRC32 + epoch (26 bytes)
   // Format: MSG_KEY_DATA(1) + key_len(1) + key(16) + crc32(4) + epoch(4) = 26 bytes
   Serial.print("[PRO-46] Sending pending key epoch "); Serial.print(pendingEpoch); Serial.print(" ... ");
   uint8_t keyPacket[26];

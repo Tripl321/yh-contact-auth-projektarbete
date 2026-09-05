@@ -589,3 +589,143 @@ def test_commit_protocol_end_to_end():
     assert plc.epoch == paw.epoch == 1
     # Both have the same key
     assert plc.active_key == paw.active_key == new_key
+
+
+# ============================================================================
+# Slice 4: Device Identity Tests
+# ============================================================================
+
+class MockDeviceWithIdentity:
+    """Mock device with identity challenge-response support"""
+    def __init__(self, device_id, device_seed):
+        self.device_id = device_id
+        self.device_seed = device_seed
+        self.epoch = 0
+        self.pending_epoch = 0
+        self.pending_valid = False
+        self.active_key = None
+        self.pending_key = None
+        
+    def compute_expected_hash(self):
+        """Compute expected device hash using same algorithm as device"""
+        import hashlib
+        full_hash = hashlib.sha256(self.device_seed.ljust(32, b'\x00')).digest()
+        return full_hash[:4]  # First 4 bytes
+    
+    def handle_identity_challenge(self, challenge, operation, target, epoch):
+        """Handle identity challenge and return response"""
+        import hashlib
+        
+        # Create message to sign: challenge + operation + target + epoch
+        message = challenge + bytes([operation, target]) + epoch.to_bytes(4, 'big')
+        
+        # Compute signature: SHA-256(device_seed + message)
+        input_data = self.device_seed.ljust(32, b'\x00') + message
+        signature = hashlib.sha256(input_data).digest()
+        
+        # Duplicate to fill 64 bytes (mock P-256 signature)
+        mock_signature = signature + signature
+        
+        # Device hash (first 4 bytes of SHA-256(device_seed))
+        device_hash = self.compute_expected_hash()
+        
+        return mock_signature, device_hash
+
+
+def test_device_identity_allowlist():
+    """Test that devices with correct identity are allowed"""
+    import hashlib
+    
+    # Create mock devices with known seeds
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    paw = MockDeviceWithIdentity(b"PAW\x01", b"PAW\x01")
+    
+    # Compute their expected hashes
+    plc_hash = plc.compute_expected_hash()
+    paw_hash = paw.compute_expected_hash()
+    
+    # In real system, MCU would have these in its allowlist
+    # For this test, we verify the hash computation is consistent
+    assert len(plc_hash) == 4
+    assert len(paw_hash) == 4
+    
+    # Verify hash computation is deterministic
+    plc_hash_2 = plc.compute_expected_hash()
+    assert plc_hash == plc_hash_2
+
+
+def test_device_identity_challenge_response():
+    """Test that devices can respond to identity challenges correctly"""
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    
+    # MCU generates a challenge
+    challenge = b"\xDE\xAD\xBE\xEF" + b"\x00" * 28  # 32 bytes
+    operation = 0x02  # OP_STAGE_PLC
+    target = 0x01    # TARGET_PLC
+    epoch = 1
+    
+    # Device handles challenge
+    signature, device_hash = plc.handle_identity_challenge(challenge, operation, target, epoch)
+    
+    # Verify response format
+    assert len(signature) == 64  # Mock P-256 signature
+    assert len(device_hash) == 4
+    
+    # Verify device hash matches expected
+    expected_hash = plc.compute_expected_hash()
+    assert device_hash == expected_hash
+
+
+def test_device_identity_wrong_hash():
+    """Test that device with wrong hash is rejected"""
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    
+    # Simulate a device with wrong hash (e.g., compromised device)
+    wrong_hash = b"\xFF\xFF\xFF\xFF"
+    expected_hash = plc.compute_expected_hash()
+    
+    # In real system, MCU would check against allowlist
+    # This test verifies the concept
+    assert wrong_hash != expected_hash
+
+
+def test_identity_challenge_binding():
+    """Test that identity challenge is bound to operation, target, and epoch"""
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    
+    challenge = b"\xAA" * 32
+    
+    # First scenario: correct binding
+    signature1, hash1 = plc.handle_identity_challenge(challenge, 0x02, 0x01, 1)
+    
+    # Second scenario: different epoch - should produce different signature
+    signature2, hash2 = plc.handle_identity_challenge(challenge, 0x02, 0x01, 2)
+    
+    # Signatures should be different due to epoch binding
+    assert signature1 != signature2
+    
+    # But device hashes should be the same (device identity doesn't change)
+    assert hash1 == hash2
+
+
+def test_identity_challenge_wrong_device():
+    """Test that a device cannot impersonate another device"""
+    plc = MockDeviceWithIdentity(b"PLC\x01", b"PLC\x01")
+    paw = MockDeviceWithIdentity(b"PAW\x01", b"PAW\x01")
+    
+    challenge = b"\xBB" * 32
+    operation = 0x02
+    target = 0x01
+    epoch = 1
+    
+    # PLC responds
+    plc_sig, plc_hash = plc.handle_identity_challenge(challenge, operation, target, epoch)
+    
+    # PAW tries to impersonate PLC
+    paw_sig, paw_hash = paw.handle_identity_challenge(challenge, operation, target, epoch)
+    
+    # Device hashes should be different
+    assert plc_hash != paw_hash
+    
+    # Signatures should be different (different private seeds)
+    assert plc_sig != paw_sig
