@@ -226,7 +226,8 @@ static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* si
 static bool handleIdentityChallenge() {
   if (!deviceIdentityGenerated) generateDeviceIdentity();
   
-  if (Serial.available() < 42) return false;  // 1 + 32 + 1 + 1 + 4 = 40, but check for at least 42
+  // Total message: 1 (msgType) + 32 (challenge) + 1 (operation) + 1 (target) + 4 (epoch) = 39 bytes
+  if (Serial.available() < 39) return false;
   
   int peek = Serial.peek();
   if (peek != MSG_ID_CHALLENGE) return false;
@@ -240,7 +241,9 @@ static bool handleIdentityChallenge() {
   uint8_t target;
   uint32_t epoch;
   
-  if (!Serial.readBytes((char*)challenge, 32) == 32) return false;
+  // Read exactly 32 bytes for challenge
+  size_t bytesRead = Serial.readBytes((char*)challenge, 32);
+  if (bytesRead != 32) return false;
   operation = Serial.read();
   target = Serial.read();
   epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | 

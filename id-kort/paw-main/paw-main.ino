@@ -221,6 +221,59 @@ static uint32_t pendingDeadlineMs = 0;
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
+// Device Identity (Slice 4) - P-256 ECDSA
+// =============================================================
+
+// P-256 curve parameters (secp256r1 / prime256v1)
+#define P256_PRIVATE_KEY_SIZE  32
+#define P256_PUBLIC_KEY_SIZE   64  // Uncompressed: 0x04 + x[32] + y[32]
+#define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
+#define SHA256_HASH_SIZE      32
+
+// Device identity storage
+static uint8_t devicePrivateKey[P256_PRIVATE_KEY_SIZE];
+static uint8_t devicePublicKey[P256_PUBLIC_KEY_SIZE];
+static bool deviceIdentityGenerated = false;
+static uint8_t devicePublicKeyHash[SHA256_HASH_SIZE];
+
+// Generate deterministic P-256 keypair from device-specific seed
+static void generateDeviceIdentity() {
+  if (deviceIdentityGenerated) return;
+  
+  // For prototype: use deviceId as seed (deterministic for testing)
+  uint8_t seed[32];
+  memset(seed, 0, 32);
+  memcpy(seed, deviceId, 4);
+  
+  // Generate private key from seed
+  memcpy(devicePrivateKey, seed, P256_PRIVATE_KEY_SIZE);
+  
+  // Compute public key hash
+  sha256(devicePrivateKey, P256_PRIVATE_KEY_SIZE, devicePublicKeyHash);
+  
+  // Create mock public key (uncompressed format: 0x04 + x + y)
+  devicePublicKey[0] = 0x04;
+  memcpy(&devicePublicKey[1], devicePrivateKey, 32);
+  memcpy(&devicePublicKey[33], devicePrivateKey, 32);
+  
+  deviceIdentityGenerated = true;
+}
+
+// Sign a message using device identity (mock for prototype)
+static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* signature) {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  // Mock signature: SHA-256(privateKey + message)
+  uint8_t input[P256_PRIVATE_KEY_SIZE + msgLen];
+  memcpy(input, devicePrivateKey, P256_PRIVATE_KEY_SIZE);
+  memcpy(&input[P256_PRIVATE_KEY_SIZE], message, msgLen);
+  sha256(input, sizeof(input), signature);
+  
+  // Duplicate hash to fill 64-byte signature
+  memcpy(&signature[32], signature, 32);
+}
+
+// =============================================================
 // SHA-256 Implementation
 // =============================================================
 
@@ -317,6 +370,64 @@ uint32_t crc32(const uint8_t* data, size_t len) {
         }
     }
     return crc ^ 0xFFFFFFFF;
+}
+
+// =============================================================
+// Identity Challenge-Response Protocol (Slice 4)
+// =============================================================
+
+// Handle identity challenge from MCU
+// MCU sends: MSG_ID_CHALLENGE(0xB4) + challenge[32] + operation[1] + target[1] + epoch[4]
+// Device responds: MSG_ID_RESPONSE(0xB5) + signature[64] + devicePubKeyHash[4]
+static bool handleIdentityChallenge() {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  // Total message: 1 (msgType) + 32 (challenge) + 1 (operation) + 1 (target) + 4 (epoch) = 39 bytes
+  if (Serial.available() < 39) return false;
+  
+  int peek = Serial.peek();
+  if (peek != MSG_ID_CHALLENGE) return false;
+  
+  // Read challenge message
+  uint8_t msgType = Serial.read();
+  if (msgType != MSG_ID_CHALLENGE) return false;
+  
+  uint8_t challenge[32];
+  uint8_t operation;
+  uint8_t target;
+  uint32_t epoch;
+  
+  // Read exactly 32 bytes for challenge
+  size_t bytesRead = Serial.readBytes((char*)challenge, 32);
+  if (bytesRead != 32) return false;
+  
+  operation = Serial.read();
+  target = Serial.read();
+  epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) |
+          ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+  
+  // Create message to sign: challenge + operation + target + epoch
+  uint8_t signInput[32 + 1 + 1 + 4];
+  memcpy(signInput, challenge, 32);
+  signInput[32] = operation;
+  signInput[33] = target;
+  signInput[34] = (epoch >> 24) & 0xFF;
+  signInput[35] = (epoch >> 16) & 0xFF;
+  signInput[36] = (epoch >> 8) & 0xFF;
+  signInput[37] = epoch & 0xFF;
+  
+  // Sign the message
+  uint8_t signature[P256_SIGNATURE_SIZE];
+  signWithDeviceKey(signInput, sizeof(signInput), signature);
+  
+  // Send response
+  Serial.write(MSG_ID_RESPONSE);
+  Serial.write(signature, P256_SIGNATURE_SIZE);
+  Serial.write(devicePublicKeyHash, KEY_HASH_SIZE);
+  Serial.flush();
+  
+  Serial.println("[PRO-48] Identity challenge response sent");
+  return true;
 }
 
 // =============================================================
@@ -618,15 +729,7 @@ void loop() {
     if (Serial.available() >= 1) {
         int peek = Serial.peek();
         if (peek == MSG_ID_CHALLENGE) {
-            // Delegate to receiveKeyFromUNOQ logic or handle here
-            // For now, we'll add basic identity challenge handling
-            uint8_t msgType = Serial.read();
-            if (msgType == MSG_ID_CHALLENGE && Serial.available() >= 41) { // 32+1+1+4+4=42 but we already read 1
-                // We'll use the same device identity from paw-key-receiver logic
-                // but for now, just skip this message as PAW uses separate firmware path
-                // In practice, PAW would use paw-key-receiver.ino for provisioning
-                // which already has identity challenge support
-            }
+            handleIdentityChallenge();
         }
     }
 

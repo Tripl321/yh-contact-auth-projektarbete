@@ -263,16 +263,14 @@ static bool isDeviceAllowed(const uint8_t* deviceHash) {
 }
 
 // Generate a random challenge for device identity verification
-static void generateIdentityChallenge(uint8_t* challenge) {
+static bool generateIdentityChallenge(uint8_t* challenge) {
   if (!generateSecureRandomBytes(challenge, 32)) {
-    // Fallback to deterministic challenge if TRNG fails
+    // Fail closed: do not use predictable fallback challenge
+    Serial.println("[PRO-48] TRNG failed for identity challenge - fail closed");
     memset(challenge, 0, 32);
-    challenge[0] = 0xDE;
-    challenge[1] = 0xAD;
-    challenge[2] = 0xBE;
-    challenge[3] = 0xEF;
-    Serial.println("[PRO-48] TRNG fallback for identity challenge");
+    return false;
   }
+  return true;
 }
 
 // Verify a device's signature response to an identity challenge
@@ -357,7 +355,10 @@ static bool challengeDeviceIdentity(uint8_t targetId, uint8_t operation, uint32_
   
   // Generate random challenge
   uint8_t challenge[32];
-  generateIdentityChallenge(challenge);
+  if (!generateIdentityChallenge(challenge)) {
+    Serial.println("[PRO-48] Failed to generate identity challenge - fail closed");
+    return false;
+  }
   
   // Send challenge: MSG_ID_CHALLENGE + challenge[32] + operation + target + epoch
   uint8_t challengeMsg[1 + 32 + 1 + 1 + 4];  // 40 bytes total
