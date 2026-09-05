@@ -741,6 +741,21 @@ void loop() {
       if (msg == MSG_COMMIT) {
         if (commitPending(epoch)) {
           Serial.print("[PRO-47] Committed pending epoch "); Serial.println(epoch);
+          // Send acknowledgment back to MCU
+          uint8_t fullHash[32];
+          sha256(aesKey, AES_KEY_SIZE, fullHash);
+          uint8_t ackHash[KEY_HASH_SIZE];
+          memcpy(ackHash, fullHash, KEY_HASH_SIZE);
+          Serial.write(MSG_STORED);
+          Serial.write(ackHash, KEY_HASH_SIZE);
+          Serial.write((activeEpoch >> 24) & 0xFF);
+          Serial.write((activeEpoch >> 16) & 0xFF);
+          Serial.write((activeEpoch >> 8) & 0xFF);
+          Serial.write(activeEpoch & 0xFF);
+          Serial.flush();
+          // Clear the hash to prevent memory leakage
+          memset(fullHash, 0, 32);
+          Serial.println("[PRO-47] Sent COMMIT acknowledgment");
         } else {
           Serial.println("[PRO-47] Commit failed");
         }

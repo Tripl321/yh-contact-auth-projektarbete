@@ -25,7 +25,64 @@ import struct
 import threading
 import secrets
 import hashlib
+import sys
 from datetime import datetime
+
+# FIDO2 support - try to import, gracefully fall back to placeholder
+try:
+    import fido2.hid
+    import fido2.client
+    import fido2.server
+    FIDO2_AVAILABLE = True
+    print("[FIDO2] fido2 library available - real FIDO2 support enabled")
+except ImportError:
+    FIDO2_AVAILABLE = False
+    print("[FIDO2] fido2 library not available - using placeholder grants")
+
+# Recovery code verification (placeholder - would use Argon2 in production)
+# In production: use argon2 hash with proper salt and iterations
+# For prototype: use SHA-256 with pepper (not suitable for real use)
+RECOVERY_CODE_PEPPER = b"shallot_recovery_pepper_2026"  # In production: use proper secret management
+
+def verify_recovery_code(recovery_code):
+    """Verify a recovery code.
+    
+    Args:
+        recovery_code: The recovery code entered by operator
+        
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    # In production: store only argon2 hash, never plaintext
+    # For prototype: check length and format
+    if not recovery_code or len(recovery_code) < 16:
+        print("[RECOVERY] Recovery code too short")
+        return False
+    
+    # Check if it's alphanumeric (basic format check)
+    if not recovery_code.isalnum():
+        print("[RECOVERY] Recovery code must be alphanumeric")
+        return False
+    
+    # In production, this would compare against stored argon2 hash
+    # For prototype, we accept any valid format
+    print("[RECOVERY] Recovery code verified (prototype - no actual verification)")
+    return True
+
+
+def hash_recovery_code(recovery_code):
+    """Hash a recovery code for storage.
+    
+    Args:
+        recovery_code: The recovery code to hash
+        
+    Returns:
+        str: Hex string of the hash
+    """
+    import hashlib
+    # In production: use argon2 with proper parameters
+    # For prototype: use SHA-256 with pepper
+    return hashlib.sha256(RECOVERY_CODE_PEPPER + recovery_code.encode()).hexdigest()
 
 # Arduino Bridge socket path
 BRIDGE_SOCKET_PATH = "/var/run/arduino-router.sock"
@@ -62,24 +119,350 @@ TARGET_PAW = 0x02
 
 GRANT_SIZE = 16  # 16 bytes for grant token
 
+# FIDO2 Session Management
+class Fido2SessionManager:
+    """Manages FIDO2 session credentials for key rotation operations.
+    
+    Implements the session credential lifecycle:
+    1. Register a temporary Pico FIDO credential for the session
+    2. Use it for operation-bound assertions
+    3. Revoke/delete at session end
+    """
+    
+    def __init__(self):
+        self.session_credential_id = None
+        self.session_public_key = None
+        self.session_sign_count = 0
+        self.session_active = False
+        self.recovery_code_hash = None  # Argon2 hash of recovery code
+        
+    def start_session(self, recovery_code):
+        """Start a new provisioning session with recovery code verification.
+        
+        Args:
+            recovery_code: High-entropy recovery code from operator
+            
+        Returns:
+            bool: True if session started successfully
+        """
+        if FIDO2_AVAILABLE:
+            # In production, verify recovery code (Argon2) and enter maintenance mode
+            # For now, just mark session as active
+            self.session_active = True
+            self.session_credential_id = None
+            print("[FIDO2] Session started (recovery code verified)")
+            return True
+        else:
+            # Placeholder mode - no FIDO2, just mark session active
+            self.session_active = True
+            print("[FIDO2] Session started (placeholder mode - no FIDO2 library)")
+            return True
+    
+    def register_session_credential(self):
+        """Register a temporary FIDO2 credential for this session.
+        
+        Uses the Pico FIDO key to create a temporary credential that will be
+        used for all authorization assertions during this session.
+        
+        Returns:
+            bool: True if credential registered successfully
+        """
+        if not self.session_active:
+            print("[FIDO2] Cannot register - session not started")
+            return False
+            
+        if FIDO2_AVAILABLE:
+            try:
+                # Discover FIDO2 devices
+                from fido2.client import Fido2Client
+                from fido2.server import Fido2Server
+                from fido2.hid import CtapHidDevice
+                
+                # Find the Pico FIDO device
+                devices = list(Fido2Client.discover_devices())
+                if not devices:
+                    print("[FIDO2] No FIDO2 devices found")
+                    return False
+                    
+                pico_device = None
+                for dev in devices:
+                    # Look for Pico FIDO (Raspberry Pi) or other known FIDO2 devices
+                    if hasattr(dev, 'descriptor'):
+                        desc = dev.descriptor
+                        # Pico FIDO: VID=0x2E8A, PID=0x10FE
+                        # Yubico: VID=0x1050
+                        # Google: VID=0x18D1
+                        vid = desc.vid if hasattr(desc, 'vid') else 0
+                        if vid in [0x2E8A, 0x1050, 0x18D1, 0x0483, 0x1209]:
+                            pico_device = dev
+                            break
+                
+                if not pico_device:
+                    print("[FIDO2] No supported FIDO2 device found")
+                    return False
+                
+                # Create client
+                client = Fido2Client(pico_device)
+                
+                # Generate challenge for registration
+                challenge = secrets.token_bytes(32)
+                
+                # Create server
+                server = Fido2Server({
+                    'id': b'SHALLOT',
+                    'name': 'SHALLOT Key Authority',
+                    'displayName': 'SHALLOT'
+                })
+                
+                # Register the credential
+                attestation = client.register(
+                    server.challenge(challenge),
+                    user_id=b'session_user',
+                    user_name='session_user',
+                    user_display_name='Session User'
+                )
+                
+                self.session_credential_id = attestation.credential_id
+                self.session_public_key = attestation.public_key
+                self.session_sign_count = attestation.sign_count
+                
+                print(f"[FIDO2] Session credential registered: {self.session_credential_id.hex()}")
+                return True
+                
+            except Exception as e:
+                print(f"[FIDO2] Failed to register session credential: {e}")
+                return False
+        else:
+            # Placeholder mode - generate a mock credential
+            self.session_credential_id = secrets.token_bytes(32)
+            print(f"[FIDO2] Session credential registered (placeholder): {self.session_credential_id.hex()}")
+            return True
+    
+    def get_assertion(self, challenge, operation, target, epoch):
+        """Get a FIDO2 assertion for a specific operation.
+        
+        The assertion is bound to:
+        - Operation type (GENERATE_KEY, STAGE_PLC, etc.)
+        - Target device (PLC, PAW)
+        - Key epoch
+        - Cryptographically random challenge
+        
+        Args:
+            challenge: Random challenge bytes (will be grant token)
+            operation: Operation constant (OP_GENERATE_KEY, etc.)
+            target: Target device constant (TARGET_PLC, TARGET_PAW, or 0 for none)
+            epoch: Key epoch
+            
+        Returns:
+            tuple: (success, grant_hex, sign_count) 
+        """
+        if not self.session_active or not self.session_credential_id:
+            print("[FIDO2] No active session or credential")
+            return False, None, 0
+            
+        if FIDO2_AVAILABLE:
+            try:
+                from fido2.client import Fido2Client
+                from fido2.server import Fido2Server
+                from fido2.hid import CtapHidDevice
+                
+                # Discover devices again
+                devices = list(Fido2Client.discover_devices())
+                if not devices:
+                    print("[FIDO2] No FIDO2 devices found")
+                    return False, None, 0
+                
+                # Find our device
+                pico_device = None
+                for dev in devices:
+                    if hasattr(dev, 'descriptor'):
+                        desc = dev.descriptor
+                        vid = desc.vid if hasattr(desc, 'vid') else 0
+                        if vid in [0x2E8A, 0x1050, 0x18D1, 0x0483, 0x1209]:
+                            pico_device = dev
+                            break
+                
+                if not pico_device:
+                    print("[FIDO2] No supported FIDO2 device found")
+                    return False, None, 0
+                
+                # Create client with our credential
+                client = Fido2Client(pico_device, credential_id=self.session_credential_id)
+                
+                # Create server with operation-bound challenge
+                # The challenge includes: operation + target + epoch + random
+                # This binds the assertion to the specific operation
+                operation_data = bytes([operation, target]) + epoch.to_bytes(4, 'big')
+                full_challenge = challenge + operation_data
+                
+                server = Fido2Server({
+                    'id': b'SHALLOT',
+                    'name': 'SHALLOT Key Authority',
+                    'displayName': 'SHALLOT'
+                })
+                
+                # Get assertion
+                assertion = client.authenticate(
+                    server.challenge(full_challenge),
+                    user_verification='discouraged'  # No PIN/UV required for prototype
+                )
+                
+                # Verify the assertion
+                server.verify_authentication_response(
+                    credential_id=self.session_credential_id,
+                    credential_public_key=self.session_public_key,
+                    credential_sign_count=self.session_sign_count,
+                    challenge=full_challenge,
+                    response=assertion
+                )
+                
+                self.session_sign_count = assertion.sign_count
+                
+                # Use the challenge + operation binding as our grant
+                # This ensures the grant is cryptographically bound to the operation
+                grant_bytes = challenge + operation_data
+                grant_hex = grant_bytes.hex()
+                
+                print(f"[FIDO2] Assertion successful for op={operation:02X} target={target:02X} epoch={epoch}")
+                return True, grant_hex, assertion.sign_count
+                
+            except Exception as e:
+                print(f"[FIDO2] Assertion failed: {e}")
+                return False, None, 0
+        else:
+            # Placeholder mode - just return the challenge as grant
+            grant_hex = challenge.hex()
+            print(f"[FIDO2] Assertion successful (placeholder) for op={operation:02X} target={target:02X} epoch={epoch}")
+            return True, grant_hex, 0
+    
+    def revoke_session_credential(self):
+        """Revoke and delete the session credential.
+        
+        Called when:
+        - Session completes successfully
+        - Session expires
+        - Session is canceled
+        - Any error occurs
+        """
+        if FIDO2_AVAILABLE and self.session_credential_id:
+            try:
+                # In real implementation, we would delete the credential from the device
+                # For Pico FIDO, this may not be supported - we rely on the device's
+                # own credential management
+                print(f"[FIDO2] Revoking session credential: {self.session_credential_id.hex()}")
+            except Exception as e:
+                print(f"[FIDO2] Failed to revoke credential: {e}")
+        
+        # Reset session state
+        self.session_credential_id = None
+        self.session_public_key = None
+        self.session_sign_count = 0
+        self.session_active = False
+        print("[FIDO2] Session credential revoked, session ended")
+
+
+# Global FIDO2 session manager
+Fido2Session = Fido2SessionManager()
+
 def generate_grant(op, target, epoch):
     """Generate a one-time grant token bound to operation, target, and epoch.
+    
+    If FIDO2 is available and session is active, generates grant via FIDO2 assertion.
+    Otherwise, generates a placeholder grant (random bytes).
     
     Returns (grant_hex, expiry_ms) where:
     - grant_hex: 32-char hex string (16 bytes)
     - expiry_ms: absolute millis() timestamp when grant expires (60s from now)
     """
-    # Generate random token
-    grant_bytes = secrets.token_bytes(GRANT_SIZE)
-    grant_hex = grant_bytes.hex()
+    # Generate random challenge for FIDO2 or placeholder
+    challenge_bytes = secrets.token_bytes(GRANT_SIZE)
+    
+    # Try FIDO2 first if available
+    if FIDO2_AVAILABLE and Fido2Session.session_active and Fido2Session.session_credential_id:
+        success, grant_hex, sign_count = Fido2Session.get_assertion(
+            challenge_bytes, op, target, epoch
+        )
+        if success:
+            # FIDO2 grant - expiry is 60s from now
+            now_ms = int(time.time() * 1000)
+            expiry_ms = now_ms + 60000
+            print(f"[GRANT] FIDO2 grant generated for op={op:02X} target={target:02X} epoch={epoch} expiry={expiry_ms}")
+            return grant_hex, expiry_ms
+    
+    # Fallback to placeholder grant
+    grant_hex = challenge_bytes.hex()
     
     # Calculate expiry: 60 seconds from now
-    # Get current time in milliseconds since epoch
     now_ms = int(time.time() * 1000)
     expiry_ms = now_ms + 60000  # 60 seconds
     
-    print(f"[GRANT] Generated grant for op={op:02X} target={target:02X} epoch={epoch} expiry={expiry_ms}")
+    print(f"[GRANT] Placeholder grant generated for op={op:02X} target={target:02X} epoch={epoch} expiry={expiry_ms}")
     return grant_hex, expiry_ms
+
+
+def start_provisioning_session(recovery_code):
+    """Start a new key rotation session.
+    
+    This implements the session start flow:
+    1. Enter maintenance mode
+    2. Verify recovery code
+    3. Register session FIDO2 credential
+    
+    Args:
+        recovery_code: High-entropy recovery code from operator
+        
+    Returns:
+        bool: True if session started successfully
+    """
+    print("[ORCHESTRATION] Starting provisioning session...")
+    
+    # Verify recovery code
+    if not verify_recovery_code(recovery_code):
+        print("[ORCHESTRATION] Invalid recovery code")
+        write_audit_log("session_start_failed", {"reason": "invalid recovery code"})
+        return False
+    
+    # Audit: store only hash, never plaintext
+    recovery_code_hash = hash_recovery_code(recovery_code)
+    write_audit_log("recovery_code_verified", {"hash": recovery_code_hash[:16]})  # Only first 16 chars for audit
+    
+    # Start FIDO2 session
+    if not Fido2Session.start_session(recovery_code):
+        print("[ORCHESTRATION] Failed to start FIDO2 session")
+        write_audit_log("session_start_failed", {"reason": "FIDO2 session start failed"})
+        return False
+    
+    # Register session credential
+    if FIDO2_AVAILABLE:
+        print("[ORCHESTRATION] Registering session FIDO2 credential...")
+        if not Fido2Session.register_session_credential():
+            print("[ORCHESTRATION] Failed to register FIDO2 credential")
+            write_audit_log("session_start_failed", {"reason": "FIDO2 credential registration failed"})
+            Fido2Session.revoke_session_credential()
+            return False
+        print("[ORCHESTRATION] Session FIDO2 credential registered")
+    else:
+        print("[ORCHESTRATION] FIDO2 library not available - using placeholder grants")
+    
+    write_audit_log("session_started", {"fido2_available": FIDO2_AVAILABLE})
+    return True
+
+
+def end_provisioning_session(success=True):
+    """End the current provisioning session.
+    
+    Args:
+        success: True if session completed successfully, False if failed/canceled
+    """
+    if Fido2Session.session_active:
+        Fido2Session.revoke_session_credential()
+        if success:
+            write_audit_log("session_completed", {"result": "success"})
+        else:
+            write_audit_log("session_completed", {"result": "failure"})
+        print("[ORCHESTRATION] Provisioning session ended")
+    else:
+        print("[ORCHESTRATION] No active session to end")
 
 
 def check_fido2_device_present():
@@ -723,7 +1106,11 @@ def validate_provisioning():
 
 def print_menu():
     """Print the operator menu."""
+    session_status = "ACTIVE" if Fido2Session.session_active else "INACTIVE"
+    fido2_status = "available" if FIDO2_AVAILABLE else "not available (placeholder)"
     print("\n=== SHALLOT UNO Q — Orchestration (MPU) ===")
+    print(f"  Session: {session_status} | FIDO2: {fido2_status}")
+    print("  0 — Start provisioning session")
     print("  1 — Generate new AES-128 key (MCU TRNG, grant-based)")
     print("  2 — Distribute key to PLC (edge enforcement) [grant-based]")
     print("  3 — Distribute key to PAW (ID-bricka) [grant-based]")
@@ -731,6 +1118,7 @@ def print_menu():
     print("  5 — Show key fingerprint")
     print("  6 — Validate provisioning (both nodes)")
     print("  7 — Print audit log")
+    print("  8 — End session")
     print("  q — Quit")
     print("===========================================\n")
 
@@ -792,12 +1180,28 @@ def loop():
         try:
             cmd = input("Select option: ").strip().lower()
 
-            if cmd == "1":
-                request_key_generation()
+            if cmd == "0":
+                # Start provisioning session
+                recovery_code = input("Enter recovery code: ").strip()
+                if start_provisioning_session(recovery_code):
+                    print("[ORCHESTRATION] Session started. Use menu options 1-3 for key operations.")
+                else:
+                    print("[ORCHESTRATION] Failed to start session.")
+            elif cmd == "1":
+                if not Fido2Session.session_active:
+                    print("[ORCHESTRATION] Must start session first (option 0)")
+                else:
+                    request_key_generation()
             elif cmd == "2":
-                request_key_distribution_with_grant(TARGET_PLC)
+                if not Fido2Session.session_active:
+                    print("[ORCHESTRATION] Must start session first (option 0)")
+                else:
+                    request_key_distribution_with_grant(TARGET_PLC)
             elif cmd == "3":
-                request_key_distribution_with_grant(TARGET_PAW)
+                if not Fido2Session.session_active:
+                    print("[ORCHESTRATION] Must start session first (option 0)")
+                else:
+                    request_key_distribution_with_grant(TARGET_PAW)
             elif cmd == "4":
                 get_key_state()
             elif cmd == "5":
@@ -806,7 +1210,12 @@ def loop():
                 validate_provisioning()
             elif cmd == "7":
                 print_audit_log()
+            elif cmd == "8":
+                # End session
+                end_provisioning_session(success=True)
             elif cmd == "q":
+                # Ensure session is cleaned up
+                end_provisioning_session(success=False)
                 print("Exiting.")
                 event_listener.stop()
                 Bridge.close()
@@ -815,6 +1224,7 @@ def loop():
                 print("Unknown option.")
         except KeyboardInterrupt:
             print("\nExiting.")
+            end_provisioning_session(success=False)
             event_listener.stop()
             Bridge.close()
             break

@@ -523,11 +523,13 @@ static inline bool waitForBytes(uint8_t* buffer, size_t count, uint32_t timeoutM
   return (received == count);
 }
 
-// Send COMMIT message to a specific device via USB
+// Send COMMIT message to a specific device via USB and wait for ACK
 // Format: MSG_COMMIT(1) + target_id(1) + epoch_be4[4] = 6 bytes
+// Device responds: MSG_STORED(0xA4) + hash[4] + epoch_be4[4] = 9B as acknowledgment
 static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
+  const char* targetName = (targetId == TARGET_PLC) ? "PLC" : "PAW";
   Serial.print("[PRO-46] Sending COMMIT to ");
-  Serial.print(targetId == TARGET_PLC ? "PLC" : "PAW");
+  Serial.print(targetName);
   Serial.print(" epoch "); Serial.println(epoch);
   
   uint8_t commitMsg[6];
@@ -541,18 +543,78 @@ static bool sendCommitToDevice(uint8_t targetId, uint32_t epoch) {
   Serial.write(commitMsg, 6);
   Serial.flush();
   
-  return true; // We assume success - device will handle commit internally
+  // Wait for device to acknowledge commit
+  // Device responds with MSG_STORED + hash + epoch (same format as key storage ack)
+  uint8_t response;
+  if (!waitForByte(&response, DISTRIB_TIMEOUT_MS)) {
+    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK from %s\n", targetName);
+    Bridge.notify("key_authority_event", "commit_timeout", 
+                 String(targetName) + " did not acknowledge COMMIT");
+    return false;
+  }
+  
+  if (response != MSG_STORED) {
+    Serial.printf("[PRO-46] Unexpected response 0x%02X from %s (expected MSG_STORED 0xA4)\n", 
+                 response, targetName);
+    Bridge.notify("key_authority_event", "commit_failed", 
+                 String(targetName) + " unexpected COMMIT response");
+    return false;
+  }
+  
+  // Read acknowledgment hash and epoch
+  uint8_t ackHash[KEY_HASH_SIZE];
+  if (!waitForBytes(ackHash, KEY_HASH_SIZE, DISTRIB_TIMEOUT_MS)) {
+    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK hash from %s\n", targetName);
+    Bridge.notify("key_authority_event", "commit_timeout", 
+                 String(targetName) + " incomplete COMMIT acknowledgment");
+    return false;
+  }
+  
+  uint8_t ackEpochBytes[4];
+  if (!waitForBytes(ackEpochBytes, 4, DISTRIB_TIMEOUT_MS)) {
+    Serial.printf("[PRO-46] Timeout waiting for COMMIT ACK epoch from %s\n", targetName);
+    Bridge.notify("key_authority_event", "commit_timeout", 
+                 String(targetName) + " incomplete COMMIT acknowledgment");
+    return false;
+  }
+  
+  uint32_t ackEpoch = ((uint32_t)ackEpochBytes[0] << 24) | ((uint32_t)ackEpochBytes[1] << 16) | 
+                     ((uint32_t)ackEpochBytes[2] << 8) | ((uint32_t)ackEpochBytes[3]);
+  
+  // Verify epoch in acknowledgment
+  if (ackEpoch != epoch) {
+    Serial.printf("[PRO-46] COMMIT ACK epoch mismatch from %s: expected %lu, got %lu\n", 
+                 targetName, (unsigned long)epoch, (unsigned long)ackEpoch);
+    Bridge.notify("key_authority_event", "commit_failed", 
+                 String(targetName) + " COMMIT ACK epoch mismatch");
+    return false;
+  }
+  
+  Serial.printf("[PRO-46] %s acknowledged COMMIT for epoch %lu\n", targetName, (unsigned long)epoch);
+  return true;
 }
 
-// Send COMMIT to both devices
+// Send COMMIT to both devices and verify both acknowledge
 static bool sendCommitToDevices() {
   Serial.println("[PRO-46] Sending COMMIT to both devices...");
   
-  bool plcOk = sendCommitToDevice(TARGET_PLC, pendingEpoch);
+  // Send to PLC first
+  if (!sendCommitToDevice(TARGET_PLC, pendingEpoch)) {
+    Serial.println("[PRO-46] PLC COMMIT failed - aborting commit");
+    Bridge.notify("key_authority_event", "commit_aborted", "PLC did not acknowledge COMMIT");
+    return false;
+  }
   delay(50); // Allow time for processing
-  bool pawOk = sendCommitToDevice(TARGET_PAW, pendingEpoch);
   
-  return plcOk && pawOk;
+  // Send to PAW
+  if (!sendCommitToDevice(TARGET_PAW, pendingEpoch)) {
+    Serial.println("[PRO-46] PAW COMMIT failed - aborting commit");
+    Bridge.notify("key_authority_event", "commit_aborted", "PAW did not acknowledge COMMIT");
+    return false;
+  }
+  
+  Serial.println("[PRO-46] Both devices acknowledged COMMIT successfully");
+  return true;
 }
 
 static bool distributeKey(uint8_t targetId) {
