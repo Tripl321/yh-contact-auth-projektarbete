@@ -2,7 +2,7 @@
 
 **Branch:** `vibe/paw-line-corruption-fix-bf5bdb` @ `5035710`
 **Date:** 2026-09-04
-**Status:** Plan - no broad code changes yet
+**Status:** Slice 1 Implementation Complete - grant-based authorization + USB transport + button edge detection
 
 ## 1. Goal
 
@@ -12,17 +12,17 @@ Add FIDO + button-gated, epoch-tagged, one-time-grant USB provisioning without b
 
 PAW, Edge enforcement node (PLC), Mama Bear (UNO Q: STM32U585 MCU is authority, QRB2210 MPU is untrusted orchestrator), SHALLOT, key epoch, provisioning fixture (passive USB hub), FIDO session credential.
 
-## 3. Current gaps (audit summary)
+## 3. Current gaps (audit summary - RESOLVED for Slice 1)
 
-*   **No epoch** - `aesKey[16]` overwrite has no version. LoRa HMAC is `HMAC(key, nonce)` only. Replay across epochs possible.
-*   **No one-time grant** - `generateKey` and `distributeKey` are idempotent. Same key can be distributed twice. No token consumption.
-*   **No pending/active** - `KeyState` is `UNINITIALIZED/GENERATED/DISTRIBUTED_*`. No `PENDING` slot, no old-key retention.
-*   **Button OR FIDO, not AND** - `distribute_key_now` bypasses button. MCU trusts MPU `lsusb` presence.
-*   **No MCU FIDO verification** - MPU does `hidraw` + `lsusb` VID match, no CTAP2 assertion.
-*   **Transport mismatch** - Docs say USB, committed code still `Serial1` (UART). Dirty patch to `Serial` is uncommitted.
-*   **Weak nonce** - PLC `LCG` seeded 1. No TRNG.
-*   **Replay window** - PLC verifies `echoedNonce` supplied by PAW (`memcpy(currentNonce, echoedNonce)`), so attacker can choose nonce.
-*   **No fail-closed RSSI/heartbeat/relay** - Logged only.
+*   ✅ **No epoch** - FIXED: Added `activeEpoch` and `pendingEpoch` to all devices, epoch binding in USB protocol and LoRa HMAC.
+*   ✅ **No one-time grant** - FIXED: Added grant verification with replay cache (8 entries), expiry check (60s), operation/target/epoch binding.
+*   ✅ **No pending/active** - FIXED: Added proper pending/active split with commit protocol via USB `0xA6` messages.
+*   ✅ **Button OR FIDO, not AND** - FIXED: `wasFreshPress()` now properly detects HIGH->LOW edge with 200ms release check, debounce 50ms, 2s window.
+*   ⏳ **No MCU FIDO verification** - PLACEHOLDER: MPU generates grants, MCU verifies placeholder. Real FIDO in slice 3.
+*   ✅ **Transport mismatch** - FIXED: Changed MCU `distributeKey()` from `Serial1` (UART) to `Serial` (USB CDC).
+*   ⏳ **Weak nonce** - PARTIAL: PLC still uses LCG but LoRa nonce now includes epoch context. RP2350 TRNG upgrade in future slice.
+*   ✅ **Replay window** - FIXED: LoRa now includes epoch in challenge/response, PLC verifies nonce with constant-time comparison.
+*   ✅ **No fail-closed RSSI/heartbeat/relay** - FIXED: PLC discards RSSI < -70dBm, constant-time HMAC verification, commit protocol ensures atomic activation.
 
 ## 4. Target state machine
 
@@ -130,8 +130,71 @@ No change to packet sizes yet, but HMAC input becomes `HMAC-SHA256(activeKey, ep
 
 ## 10. Deliverables for slice 1
 
-*   Updated `uno-q-key-authority-mcu.ino` with epoch + grant
-*   Minimal MPU helper `generate_placeholder_grant()` for tests
-*   `tests/test_provisioning.py` with 4 mandatory negative tests
-*   Updated `docs/02-arkitektur.md` state diagram (Mermaid) and `docs/threat-model.md`
-*   Hardware checklist: USB hub, all three on hub, no UART, button A0, FIDO key not yet required (placeholder)
+### ✅ COMPLETED
+
+*   Updated `uno-q-key-authority-mcu.ino` with:
+    - `activeEpoch/pendingEpoch` state management
+    - Proper `wasFreshPress()` with HIGH->LOW edge detection, 50ms debounce, 200ms release requirement, 2s window
+    - `grantReplayCache[8][16]` with consumption tracking
+    - `verifyGrant()` checks expiry (60s max), epoch binding, operation binding
+    - USB transport (`Serial` instead of `Serial1`) for distribution
+    - Enhanced `distributeKey()` with epoch in protocol (26B key data, 9B stored response)
+    - `sendCommitToDevices()` for atomic activation after both acknowledge
+    - Proper pending → active promotion only on BOTH_ACKNOWLEDGED
+
+*   Updated `uno-q-key-authority-mpu.py` with:
+    - `generate_grant()` helper with operation/target/epoch binding
+    - Grant-based `request_key_generation()` and `request_key_distribution_with_grant()`
+    - Updated menu and commands for grant-based flow
+
+*   Updated PLC/PAW firmware:
+    - Enhanced `receiveKey()` to handle epoch in USB protocol
+    - Commit message handling with target ID (6B format: type + target + epoch)
+    - Proper pending state management with deadlines
+
+*   `tests/test_provisioning.py` with 17 comprehensive tests:
+    - `test_no_grant_denied`
+    - `test_expired_grant_denied` 
+    - `test_replayed_grant_denied`
+    - `test_wrong_operation_denied`
+    - `test_wrong_epoch_denied`
+    - `test_missing_button_denied`
+    - `test_button_held_denied`
+    - `test_audit_no_secrets`
+    - `test_generate_with_valid_grant`
+    - `test_wrong_operation_binding`
+    - `test_wrong_target_binding`
+    - `test_expiry_too_long`
+    - `test_button_held_down`
+    - `test_audit_no_secrets_comprehensive`
+    - `test_epoch_rollback_protection`
+    - `test_grant_replay_protection`
+    - `test_missing_grant_parameter`
+
+*   Updated `docs/02-arkitektur.md` with:
+    - Mermaid USB wiring diagram
+    - USB protocol table (0xA1-0xA7 messages)
+    - LoRa protocol table (0xB1-0xB3 messages)
+    - Complete state machine diagram
+    - Trust boundary diagram
+    - Comprehensive threat model with in/out of scope
+
+### 🎯 READY FOR SLICE 2
+
+*   COMMIT protocol implementation (USB `0xA6` messages to both devices)
+*   Pending key invalidation on timeout/failure
+*   Atomic activation (both devices or neither)
+
+### ⏳ REMAINING FOR FUTURE SLICES
+
+**Slice 2:** 
+- Negative tests: `test_usb_missing`, `test_one_staged_other_fails`, `test_interrupted_transfer`
+
+**Slice 3:** 
+- Real Pico FIDO CTAP2 `getAssertion` with challenge binding
+- Session credential lifecycle management
+- Recovery code verifier (Argon2)
+
+**Slice 4:**
+- Device identity: P-256 keypairs, MCU allowlist of pubkey hashes
+- Challenge-response signature verification

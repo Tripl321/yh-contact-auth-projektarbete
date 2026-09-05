@@ -40,6 +40,8 @@
 #define MSG_KEY_DATA     0xA3
 #define MSG_STORED       0xA4
 #define MSG_ERROR        0xA5
+#define MSG_COMMIT       0xA6
+#define MSG_CANCEL       0xA7
 
 // --- Target IDs ---
 #define TARGET_PAW  0x02
@@ -47,6 +49,17 @@
 // --- Key storage ---
 static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
+static uint32_t activeEpoch = 0;
+static uint32_t pendingEpoch = 0;
+static uint8_t pendingKey[AES_KEY_SIZE];
+static bool pendingValid = false;
+static uint32_t pendingDeadlineMs = 0;
+static inline void secureWipePending() {
+  memset(pendingKey, 0, AES_KEY_SIZE);
+  pendingValid = false;
+  pendingEpoch = 0;
+  pendingDeadlineMs = 0;
+}
 
 // --- Device ID (unique identifier for this PAW node) ---
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 };  // "PAW\x01"
@@ -157,43 +170,50 @@ bool receiveKey() {
   uint32_t timeoutStart = millis();
   const uint32_t TIMEOUT_MS = 10000;
 
-  Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
+  Serial.println("[PRO-48] Waiting for key distribution from UNO Q (USB epoch-tagged)...");
 
-  // Step 1: Wait for handshake
+  // Step 1: Wait for handshake 0xA1 target[1] epoch[4] (6B)
+  uint32_t stagedEpoch = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    if (Serial.available() >= 2) {
+    if (Serial.available() >= 6) {
       uint8_t msgType = Serial.read();
       uint8_t targetId = Serial.read();
-
+      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
-        Serial.println("[PRO-48] Handshake received.");
+        Serial.print("[PRO-48] Handshake received epoch "); Serial.println(epoch);
+        if (epoch <= activeEpoch) {
+          Serial.println("[PRO-48] Epoch not newer - reject");
+          return false;
+        }
+        stagedEpoch = epoch;
         break;
       } else {
-        Serial.printf("[PRO-48] Unexpected message: 0x%02X target: 0x%02X\n", msgType, targetId);
+        Serial.printf("[PRO-48] Unexpected message: 0x%02X target: 0x%02X epoch %lu\n", msgType, targetId, (unsigned long)epoch);
         return false;
       }
     }
   }
-  if (millis() - timeoutStart >= TIMEOUT_MS) {
+  if (stagedEpoch == 0) {
     Serial.println("[PRO-48] Timeout waiting for handshake.");
     return false;
   }
 
-  // Step 2: Send READY + device ID
-  Serial.print("[PRO-48] Sending READY with device ID: ");
-  for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-  Serial.println();
-
+  // Step 2: Send READY + device ID + epoch (9B)
+  Serial.print("[PRO-48] Sending READY epoch "); Serial.println(stagedEpoch);
   Serial.write(MSG_READY);
   Serial.write(deviceId, 4);
+  Serial.write((stagedEpoch >> 24) & 0xFF);
+  Serial.write((stagedEpoch >> 16) & 0xFF);
+  Serial.write((stagedEpoch >> 8) & 0xFF);
+  Serial.write(stagedEpoch & 0xFF);
   Serial.flush();
 
-  // Step 3: Wait for key data (22 bytes: msg + len + key + crc)
+  // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
   timeoutStart = millis();
-  while (Serial.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
+  while (Serial.available() < 26 && millis() - timeoutStart < TIMEOUT_MS) {
     delay(1);
   }
-  if (Serial.available() < 22) {
+  if (Serial.available() < 26) {
     Serial.println("[PRO-48] Timeout waiting for key data.");
     return false;
   }
@@ -214,11 +234,20 @@ bool receiveKey() {
   uint8_t receivedKey[AES_KEY_SIZE];
   Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
-  // Read CRC32 (big-endian)
+  // Read CRC32 and epoch (big-endian)
   uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
                        | ((uint32_t)Serial.read() << 16)
                        | ((uint32_t)Serial.read() << 8)
                        | ((uint32_t)Serial.read());
+  uint32_t receivedEpoch = ((uint32_t)Serial.read() << 24)
+                         | ((uint32_t)Serial.read() << 16)
+                         | ((uint32_t)Serial.read() << 8)
+                         | ((uint32_t)Serial.read());
+  if (receivedEpoch != stagedEpoch) {
+    Serial.printf("[PRO-48] Epoch mismatch staged %lu got %lu\n", (unsigned long)stagedEpoch, (unsigned long)receivedEpoch);
+    Serial.write(MSG_ERROR);
+    return false;
+  }
 
   // Verify CRC32
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
@@ -230,24 +259,30 @@ bool receiveKey() {
   }
   Serial.println("[PRO-48] CRC verified OK.");
 
-  // Step 4: Store key in SRAM
-  memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-  keyStored = true;
+  // Step 4: Store as pending (not active) for second slice
+  memcpy(pendingKey, receivedKey, AES_KEY_SIZE);
+  pendingEpoch = stagedEpoch;
+  pendingValid = true;
+  pendingDeadlineMs = millis() + 600000;
 
   // Clear receivedKey buffer
   memset(receivedKey, 0, AES_KEY_SIZE);
 
-  // Step 5: Compute SHA-256 hash of stored key and send confirmation
+  // Step 5: Compute hash of pending key and send confirmation with epoch
   uint8_t fullHash[32];
-  sha256(aesKey, AES_KEY_SIZE, fullHash);
+  sha256(pendingKey, AES_KEY_SIZE, fullHash);
   uint8_t keyHash[KEY_HASH_SIZE];
   memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
   Serial.write(MSG_STORED);
   Serial.write(keyHash, KEY_HASH_SIZE);
+  Serial.write((pendingEpoch >> 24) & 0xFF);
+  Serial.write((pendingEpoch >> 16) & 0xFF);
+  Serial.write((pendingEpoch >> 8) & 0xFF);
+  Serial.write(pendingEpoch & 0xFF);
   Serial.flush();
 
-  Serial.print("[PRO-48] Key stored. Hash sent: ");
+  Serial.print("[PRO-48] Pending key stored epoch "); Serial.print(pendingEpoch); Serial.print(" hash ");
   for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
   Serial.println();
 
@@ -266,6 +301,34 @@ bool isKeyStored() {
 
 const uint8_t* getStoredKey() {
   return keyStored ? aesKey : nullptr;
+}
+
+bool isPendingValid() {
+  return pendingValid && pendingEpoch != 0 && millis() < pendingDeadlineMs;
+}
+
+bool commitPending(uint32_t epoch) {
+  if (!pendingValid || pendingEpoch != epoch) {
+    Serial.println("[PRO-48] Commit failed: no pending or epoch mismatch");
+    return false;
+  }
+  if (millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-48] Commit failed: deadline expired");
+    secureWipePending();
+    return false;
+  }
+  memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+  activeEpoch = pendingEpoch;
+  keyStored = true;
+  Serial.print("[PRO-48] Committed epoch "); Serial.println(activeEpoch);
+  return true;
+}
+
+void checkPendingExpiry() {
+  if (pendingValid && millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-48] Pending expired, wiping");
+    secureWipePending();
+  }
 }
 
 // =============================================================
@@ -307,9 +370,29 @@ void loop() {
   // PRO-50 (HMAC-SHA256 on PAW), PRO-57 (e-Paper driver),
   // PRO-58-60 (status display).
 
+  if (pendingValid && Serial.available() >= 5) {
+    int peek = Serial.peek();
+    if (peek == MSG_COMMIT || peek == MSG_CANCEL) {
+      uint8_t msg = Serial.read();
+      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+      if (msg == MSG_COMMIT) {
+        if (commitPending(epoch)) Serial.println("[PRO-48] Committed via USB");
+      } else {
+        secureWipePending();
+        Serial.println("[PRO-48] Pending canceled");
+      }
+    }
+  }
+  checkPendingExpiry();
   if (keyStored) {
     digitalWrite(LED_BUILTIN, (millis() / 2000) % 2);
   } else {
+    if (Serial.available() >= 2) {
+      receiveKey();
+    }
+  }
+  if (pendingValid && !keyStored) {
+    // Also allow key reception when pending but not yet committed
     if (Serial.available() >= 2) {
       receiveKey();
     }

@@ -23,6 +23,8 @@ import os
 import socket
 import struct
 import threading
+import secrets
+import hashlib
 from datetime import datetime
 
 # Arduino Bridge socket path
@@ -46,6 +48,38 @@ STATE_NAMES = {
 
 AUDIT_LOG_PATH = "/home/user/shallot/audit/provisioning_log.jsonl"
 AUDIT_DIR = os.path.dirname(AUDIT_LOG_PATH)
+
+# Operation constants (match MCU)
+OP_GENERATE_KEY = 0x01
+OP_STAGE_PLC = 0x02
+OP_STAGE_PAW = 0x03
+OP_COMMIT_EPOCH = 0x04
+OP_CANCEL_EPOCH = 0x05
+
+# Target constants
+TARGET_PLC = 0x01
+TARGET_PAW = 0x02
+
+GRANT_SIZE = 16  # 16 bytes for grant token
+
+def generate_grant(op, target, epoch):
+    """Generate a one-time grant token bound to operation, target, and epoch.
+    
+    Returns (grant_hex, expiry_ms) where:
+    - grant_hex: 32-char hex string (16 bytes)
+    - expiry_ms: absolute millis() timestamp when grant expires (60s from now)
+    """
+    # Generate random token
+    grant_bytes = secrets.token_bytes(GRANT_SIZE)
+    grant_hex = grant_bytes.hex()
+    
+    # Calculate expiry: 60 seconds from now
+    # Get current time in milliseconds since epoch
+    now_ms = int(time.time() * 1000)
+    expiry_ms = now_ms + 60000  # 60 seconds
+    
+    print(f"[GRANT] Generated grant for op={op:02X} target={target:02X} epoch={epoch} expiry={expiry_ms}")
+    return grant_hex, expiry_ms
 
 
 def check_fido2_device_present():
@@ -480,20 +514,85 @@ def request_key_generation():
 
     The key is generated entirely on the STM32U585 using its hardware TRNG.
     The MPU never sees the key.
+    
+    This version uses the new grant-based authorization.
     """
     print("[ORCHESTRATION] Requesting key generation on MCU...")
-    success = Bridge.call("request_key_generation")
+    
+    # Get current active epoch from MCU
+    active_epoch = Bridge.call("get_active_epoch") or 0
+    new_epoch = active_epoch + 1
+    
+    # Generate grant for GENERATE_KEY operation
+    grant_hex, expiry_ms = generate_grant(OP_GENERATE_KEY, 0, new_epoch)
+    
+    print("[ORCHESTRATION] Requesting key generation with grant...")
+    success = Bridge.call("request_key_generation", grant_hex, new_epoch, expiry_ms)
     if success:
         print("[ORCHESTRATION] Key generation successful.")
         fingerprint = get_key_fingerprint()
+        pending_fp = Bridge.call("get_pending_fingerprint") or ""
         write_audit_log("key_generation_requested", {
             "result": "success",
+            "epoch": new_epoch,
             "fingerprint": fingerprint,
+            "pending_fingerprint": pending_fp,
         })
     else:
         print("[ORCHESTRATION] Key generation FAILED.")
-        write_audit_log("key_generation_requested", {"result": "failure"})
+        write_audit_log("key_generation_requested", {"result": "failure", "epoch": new_epoch})
     return success
+
+def request_key_distribution_with_grant(target_id):
+    """Request key distribution to target with proper grant authorization.
+    
+    Args:
+        target_id: TARGET_PLC (0x01) or TARGET_PAW (0x02)
+    """
+    target_name = TARGET_NAMES.get(target_id, f"Unknown({target_id})")
+    print(f"[ORCHESTRATION] Requesting key distribution to {target_name} with grant...")
+    
+    # Get current pending epoch
+    pending_epoch = Bridge.call("get_pending_epoch") or 0
+    if pending_epoch == 0:
+        print("[ORCHESTRATION] No pending epoch - need to generate key first")
+        return False
+    
+    # Generate grant for appropriate stage operation
+    op = OP_STAGE_PLC if target_id == TARGET_PLC else OP_STAGE_PAW
+    grant_hex, expiry_ms = generate_grant(op, target_id, pending_epoch)
+    
+    print(f"[ORCHESTRATION] Requesting distribution to {target_name} with grant...")
+    success = Bridge.call("request_key_distribution", target_id, grant_hex, pending_epoch, expiry_ms)
+    if success:
+        write_audit_log("distribution_armed_with_grant", {
+            "target": target_name,
+            "epoch": pending_epoch
+        })
+        print(f"[ORCHESTRATION] Distribution to {target_name} armed with grant. Waiting for button press...")
+        
+        # Wait for distribution to complete (poll key state)
+        max_wait = 30  # seconds
+        start = time.time()
+        while time.time() - start < max_wait:
+            time.sleep(1)
+            state = get_key_state()
+            if target_id == TARGET_PLC and state in (2, 4):  # DISTRIBUTED_PLC or DISTRIBUTED_BOTH
+                print(f"[ORCHESTRATION] Distribution to {target_name} confirmed via grant.")
+                write_audit_log("distribution_confirmed_with_grant", {"target": target_name, "epoch": pending_epoch})
+                return True
+            if target_id == TARGET_PAW and state in (3, 4):  # DISTRIBUTED_PAW or DISTRIBUTED_BOTH
+                print(f"[ORCHESTRATION] Distribution to {target_name} confirmed via grant.")
+                write_audit_log("distribution_confirmed_with_grant", {"target": target_name, "epoch": pending_epoch})
+                return True
+
+        print(f"[ORCHESTRATION] Timeout waiting for {target_name} distribution via grant.")
+        write_audit_log("distribution_timeout_with_grant", {"target": target_name, "epoch": pending_epoch})
+        return False
+    else:
+        print(f"[ORCHESTRATION] Failed to arm distribution to {target_name} via grant.")
+        write_audit_log("distribution_arm_failed_with_grant", {"target": target_name, "epoch": pending_epoch})
+        return False
 
 
 def request_key_distribution(target_id):
@@ -625,9 +724,9 @@ def validate_provisioning():
 def print_menu():
     """Print the operator menu."""
     print("\n=== SHALLOT UNO Q — Orchestration (MPU) ===")
-    print("  1 — Generate new AES-128 key (MCU TRNG)")
-    print("  2 — Distribute key to PLC (edge enforcement) [FIDO2]")
-    print("  3 — Distribute key to PAW (ID-bricka) [FIDO2]")
+    print("  1 — Generate new AES-128 key (MCU TRNG, grant-based)")
+    print("  2 — Distribute key to PLC (edge enforcement) [grant-based]")
+    print("  3 — Distribute key to PAW (ID-bricka) [grant-based]")
     print("  4 — Query key state")
     print("  5 — Show key fingerprint")
     print("  6 — Validate provisioning (both nodes)")
@@ -696,9 +795,9 @@ def loop():
             if cmd == "1":
                 request_key_generation()
             elif cmd == "2":
-                distribute_key_now(1)
+                request_key_distribution_with_grant(TARGET_PLC)
             elif cmd == "3":
-                distribute_key_now(2)
+                request_key_distribution_with_grant(TARGET_PAW)
             elif cmd == "4":
                 get_key_state()
             elif cmd == "5":

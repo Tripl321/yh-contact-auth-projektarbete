@@ -77,6 +77,8 @@
 #define MSG_KEY_DATA     0xA3
 #define MSG_STORED       0xA4
 #define MSG_ERROR        0xA5
+#define MSG_COMMIT       0xA6
+#define MSG_CANCEL       0xA7
 
 // Authentication protocol (LoRa)
 #define MSG_CHALLENGE    0xB1
@@ -126,6 +128,17 @@ static void setLoRaFlag(void) {
 
 static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
+static uint32_t activeEpoch = 0;
+static uint32_t pendingEpoch = 0;
+static uint8_t pendingKey[AES_KEY_SIZE];
+static bool pendingValid = false;
+static uint32_t pendingDeadlineMs = 0;
+static inline void secureWipePending() {
+  memset(pendingKey, 0, AES_KEY_SIZE);
+  pendingValid = false;
+  pendingEpoch = 0;
+  pendingDeadlineMs = 0;
+}
 static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
 
 // =============================================================
@@ -293,43 +306,51 @@ bool receiveKey() {
   uint32_t timeoutStart = millis();
   const uint32_t TIMEOUT_MS = 10000;
 
-  Serial.println("[PRO-47] Waiting for key distribution from UNO Q...");
+  Serial.println("[PRO-47] Waiting for key distribution from UNO Q (USB, epoch-tagged)...");
 
-  // Step 1: Wait for handshake
+  // Step 1: Wait for handshake 0xA1 target[1] epoch_be4[4] (6B)
+  uint32_t stagedEpoch = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    if (Serial.available() >= 2) {
+    if (Serial.available() >= 6) {
       uint8_t msgType = Serial.read();
       uint8_t targetId = Serial.read();
-
+      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PLC) {
-        Serial.println("[PRO-47] Handshake received.");
+        Serial.print("[PRO-47] Handshake received epoch "); Serial.println(epoch);
+        stagedEpoch = epoch;
+        // Reject if epoch not newer than active
+        if (stagedEpoch <= activeEpoch) {
+          Serial.println("[PRO-47] Epoch not newer than active - reject");
+          return false;
+        }
         break;
       } else {
-        Serial.printf("[PRO-47] Unexpected message: 0x%02X target: 0x%02X\n", msgType, targetId);
+        Serial.printf("[PRO-47] Unexpected message: 0x%02X target: 0x%02X epoch %lu\n", msgType, targetId, (unsigned long)epoch);
         return false;
       }
     }
   }
-  if (millis() - timeoutStart >= TIMEOUT_MS) {
+  if (stagedEpoch == 0) {
     Serial.println("[PRO-47] Timeout waiting for handshake.");
     return false;
   }
 
-  // Step 2: Send READY + device ID
-  Serial.print("[PRO-47] Sending READY with device ID: ");
-  for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-  Serial.println();
-
+  // Step 2: Send READY + device ID + epoch (9B)
+  Serial.print("[PRO-47] Sending READY epoch "); Serial.println(stagedEpoch);
   Serial.write(MSG_READY);
   Serial.write(deviceId, 4);
+  Serial.write((stagedEpoch >> 24) & 0xFF);
+  Serial.write((stagedEpoch >> 16) & 0xFF);
+  Serial.write((stagedEpoch >> 8) & 0xFF);
+  Serial.write(stagedEpoch & 0xFF);
   Serial.flush();
 
-  // Step 3: Wait for key data
+  // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
   timeoutStart = millis();
-  while (Serial.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
+  while (Serial.available() < 26 && millis() - timeoutStart < TIMEOUT_MS) {
     delay(1);
   }
-  if (Serial.available() < 22) {
+  if (Serial.available() < 26) {
     Serial.println("[PRO-47] Timeout waiting for key data.");
     return false;
   }
@@ -353,6 +374,15 @@ bool receiveKey() {
                        | ((uint32_t)Serial.read() << 16)
                        | ((uint32_t)Serial.read() << 8)
                        | ((uint32_t)Serial.read());
+  uint32_t receivedEpoch = ((uint32_t)Serial.read() << 24)
+                         | ((uint32_t)Serial.read() << 16)
+                         | ((uint32_t)Serial.read() << 8)
+                         | ((uint32_t)Serial.read());
+  if (receivedEpoch != stagedEpoch) {
+    Serial.printf("[PRO-47] Epoch mismatch staged %lu got %lu\n", (unsigned long)stagedEpoch, (unsigned long)receivedEpoch);
+    Serial.write(MSG_ERROR);
+    return false;
+  }
 
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
@@ -363,21 +393,28 @@ bool receiveKey() {
   }
   Serial.println("[PRO-47] CRC verified OK.");
 
-  memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-  keyStored = true;
+  // Store as pending, not active (second slice)
+  memcpy(pendingKey, receivedKey, AES_KEY_SIZE);
+  pendingEpoch = stagedEpoch;
+  pendingValid = true;
+  pendingDeadlineMs = millis() + 600000;
   memset(receivedKey, 0, AES_KEY_SIZE);
 
   uint8_t fullHash[32];
-  sha256(aesKey, AES_KEY_SIZE, fullHash);
-  uint8_t keyHash[KEY_HASH_SIZE];
-  memcpy(keyHash, fullHash, KEY_HASH_SIZE);
+  sha256(pendingKey, AES_KEY_SIZE, fullHash);
+  uint8_t pendingHashLocal[KEY_HASH_SIZE];
+  memcpy(pendingHashLocal, fullHash, KEY_HASH_SIZE);
 
   Serial.write(MSG_STORED);
-  Serial.write(keyHash, KEY_HASH_SIZE);
+  Serial.write(pendingHashLocal, KEY_HASH_SIZE);
+  Serial.write((pendingEpoch >> 24) & 0xFF);
+  Serial.write((pendingEpoch >> 16) & 0xFF);
+  Serial.write((pendingEpoch >> 8) & 0xFF);
+  Serial.write(pendingEpoch & 0xFF);
   Serial.flush();
 
-  Serial.print("[PRO-47] Key stored. Hash sent: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
+  Serial.print("[PRO-47] Pending hash sent: ");
+  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", pendingHashLocal[i]);
   Serial.println();
 
   memset(fullHash, 0, 32);
@@ -394,6 +431,38 @@ bool isKeyStored() {
 
 const uint8_t* getStoredKey() {
   return keyStored ? aesKey : nullptr;
+}
+
+bool isPendingValid() {
+  return pendingValid && pendingEpoch != 0 && millis() < pendingDeadlineMs;
+}
+
+bool commitPending(uint32_t epoch) {
+  if (!pendingValid || pendingEpoch != epoch) {
+    Serial.println("[PRO-47] Commit failed: no pending or epoch mismatch");
+    return false;
+  }
+  if (millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-47] Commit failed: deadline expired");
+    secureWipePending();
+    pendingValid = false;
+    return false;
+  }
+  memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+  activeEpoch = pendingEpoch;
+  keyStored = true;
+  // Keep pending for audit but mark as committed
+  Serial.print("[PRO-47] Committed epoch "); Serial.println(activeEpoch);
+  return true;
+}
+
+void checkPendingExpiry() {
+  if (pendingValid && millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-47] Pending expired, wiping");
+    memset(pendingKey, 0, AES_KEY_SIZE);
+    pendingValid = false;
+    pendingEpoch = 0;
+  }
 }
 
 // =============================================================
@@ -419,11 +488,16 @@ bool sendChallenge() {
 
   Serial.print("[PRO-51] Generated nonce: ");
   for (int i = 0; i < CHALLENGE_SIZE; i++) Serial.printf("%02X", currentNonce[i]);
+  Serial.print(" epoch "); Serial.println(activeEpoch);
   Serial.println();
 
-  uint8_t txPacket[1 + CHALLENGE_SIZE];
+  uint8_t txPacket[1 + CHALLENGE_SIZE + 4];
   txPacket[0] = MSG_CHALLENGE;
   memcpy(txPacket + 1, currentNonce, CHALLENGE_SIZE);
+  txPacket[1+CHALLENGE_SIZE] = (activeEpoch >> 24) & 0xFF;
+  txPacket[1+CHALLENGE_SIZE+1] = (activeEpoch >> 16) & 0xFF;
+  txPacket[1+CHALLENGE_SIZE+2] = (activeEpoch >> 8) & 0xFF;
+  txPacket[1+CHALLENGE_SIZE+3] = activeEpoch & 0xFF;
 
   int txState = radio.transmit(txPacket, sizeof(txPacket));
   if (txState == RADIOLIB_ERR_NONE) {
@@ -437,7 +511,7 @@ bool sendChallenge() {
   }
 }
 
-bool verifyResponse(const uint8_t* echoedNonce,
+bool verifyResponse(const uint8_t* echoedNonce, uint32_t echoedEpoch,
                     const uint8_t* response,
                     size_t responseLen) {
   if (!keyStored) {
@@ -449,14 +523,26 @@ bool verifyResponse(const uint8_t* echoedNonce,
                   responseLen, HMAC_SIZE);
     return false;
   }
+  if (echoedEpoch != activeEpoch) {
+    Serial.printf("[PRO-49] Epoch mismatch expected %lu got %lu\n", (unsigned long)activeEpoch, (unsigned long)echoedEpoch);
+    return false;
+  }
+  // Constant-time nonce check (prevent attacker-chosen nonce)
+  volatile uint8_t nonceDiff = 0;
+  for (int i=0;i<CHALLENGE_SIZE;i++) nonceDiff |= echoedNonce[i] ^ currentNonce[i];
+  if (nonceDiff != 0) {
+    Serial.println("[PRO-49] Nonce mismatch (replay or wrong challenge)");
+    return false;
+  }
 
+  uint8_t hmacInput[4 + CHALLENGE_SIZE];
+  hmacInput[0] = (activeEpoch >> 24) & 0xFF;
+  hmacInput[1] = (activeEpoch >> 16) & 0xFF;
+  hmacInput[2] = (activeEpoch >> 8) & 0xFF;
+  hmacInput[3] = activeEpoch & 0xFF;
+  memcpy(hmacInput+4, echoedNonce, CHALLENGE_SIZE);
   uint8_t expectedHmac[HMAC_SIZE];
-  hmac_sha256(aesKey, AES_KEY_SIZE, echoedNonce, CHALLENGE_SIZE, expectedHmac);
-
-  // Treat the echoed nonce as the authoritative challenge for this
-  // verification, so a delayed PAW response still verifies against the
-  // exact challenge it answered.
-  memcpy(currentNonce, echoedNonce, CHALLENGE_SIZE);
+  hmac_sha256(aesKey, AES_KEY_SIZE, hmacInput, 4+CHALLENGE_SIZE, expectedHmac);
 
   volatile uint8_t diff = 0;
   for (size_t i = 0; i < HMAC_SIZE; i++) {
@@ -464,6 +550,7 @@ bool verifyResponse(const uint8_t* echoedNonce,
   }
 
   memset(expectedHmac, 0, HMAC_SIZE);
+  memset(hmacInput, 0, sizeof(hmacInput));
 
   if (diff != 0) {
     Serial.println("[PRO-49] HMAC verification FAILED.");
@@ -550,15 +637,22 @@ void loop() {
       Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
                     msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
 
-      if (msgType == MSG_RESPONSE && rxLen >= (1 + CHALLENGE_SIZE + HMAC_SIZE)) {
+      // RSSI fail-closed gate
+      float rssi = radio.getRSSI();
+      if (rssi < -70.0) {
+        Serial.printf("[PRO-52] RSSI %.1f dBm too weak, discard\n", rssi);
+        radio.startReceive();
+        return;
+      }
+      if (msgType == MSG_RESPONSE && rxLen >= (1 + CHALLENGE_SIZE + 4 + HMAC_SIZE)) {
         Serial.println("[PRO-52] Response received from PAW over LoRa");
 
-        // Response carries the echoed nonce followed by the HMAC:
-        //   0xB2 || nonce(CHALLENGE_SIZE) || hmac(HMAC_SIZE)
+        // Response: 0xB2 || nonce[16] || epoch_be4[4] || hmac[32] = 53B
         const uint8_t* echoedNonce = rxBuffer + 1;
-        const uint8_t* responseHmac = rxBuffer + 1 + CHALLENGE_SIZE;
+        uint32_t echoedEpoch = ((uint32_t)rxBuffer[1+CHALLENGE_SIZE] << 24) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+1] << 16) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+2] << 8) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+3]);
+        const uint8_t* responseHmac = rxBuffer + 1 + CHALLENGE_SIZE + 4;
 
-        bool verified = verifyResponse(echoedNonce, responseHmac, HMAC_SIZE);
+        bool verified = verifyResponse(echoedNonce, echoedEpoch, responseHmac, HMAC_SIZE);
 
         awaitingResponse = false;
         lastChallengeTime = millis();
@@ -617,6 +711,46 @@ void loop() {
   } else if (keyStored && !loraInitialized) {
     initLoRa();
   }
+
+  // Handle pending commit/cancel via USB (6B: type + target + epoch_be4, or 5B legacy)
+  if (pendingValid && Serial.available() >= 5) {
+    int peek = Serial.peek();
+    if (peek == MSG_COMMIT || peek == MSG_CANCEL) {
+      uint8_t msg = Serial.read();
+      uint32_t epoch = 0;
+      
+      // Check if there's a target ID byte (6-byte format)
+      if (Serial.available() >= 5) { // At least 5 more bytes = target + epoch
+        uint8_t targetId = Serial.read();
+        // Only process if this message is for us or broadcast
+        if (targetId != TARGET_PLC && targetId != 0xFF) {
+          // Not for us, skip the rest
+          while (Serial.available() > 0 && Serial.peek() != MSG_COMMIT && Serial.peek() != MSG_CANCEL) {
+            Serial.read();
+          }
+          return; // Wait for next message
+        }
+        epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+      } else if (Serial.available() >= 4) { // Legacy 5-byte format
+        epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+      } else {
+        // Not enough bytes, wait
+        return;
+      }
+      
+      if (msg == MSG_COMMIT) {
+        if (commitPending(epoch)) {
+          Serial.print("[PRO-47] Committed pending epoch "); Serial.println(epoch);
+        } else {
+          Serial.println("[PRO-47] Commit failed");
+        }
+      } else {
+        secureWipePending();
+        Serial.println("[PRO-47] Pending canceled");
+      }
+    }
+  }
+  checkPendingExpiry();
 
   static uint32_t lastHeartbeat = 0;
   if (millis() - lastHeartbeat > 1000) {

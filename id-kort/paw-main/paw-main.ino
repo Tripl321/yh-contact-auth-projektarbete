@@ -108,6 +108,8 @@ static void setLoRaFlag(void) {
 #define MSG_KEY_DATA     0xA3
 #define MSG_STORED       0xA4
 #define MSG_ERROR        0xA5
+#define MSG_COMMIT       0xA6
+#define MSG_CANCEL       0xA7
 
 #define MSG_CHALLENGE    0xB1
 #define MSG_RESPONSE     0xB2
@@ -207,6 +209,11 @@ void epdShowStatus(EpdStatus status) {
 
 static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
+static uint32_t activeEpoch = 0;
+static uint32_t pendingEpoch = 0;
+static uint8_t pendingKey[AES_KEY_SIZE];
+static bool pendingValid = false;
+static uint32_t pendingDeadlineMs = 0;
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
@@ -359,37 +366,41 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
 bool receiveKeyFromUNOQ() {
     uint32_t timeoutStart = millis();
 
-    Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
+    Serial.println("[PRO-48] Waiting for key distribution from UNO Q (USB epoch-tagged)...");
 
+    uint32_t stagedEpoch = 0;
     while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        if (Serial.available() >= 2) {
+        if (Serial.available() >= 6) {
             uint8_t msgType = Serial.read();
             uint8_t targetId = Serial.read();
-
+            uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
-                Serial.println("[PRO-48] Handshake received.");
+                Serial.print("[PRO-48] Handshake received epoch "); Serial.println(epoch);
+                if (epoch <= activeEpoch) { Serial.println("[PRO-48] Epoch not newer - reject"); return false; }
+                stagedEpoch = epoch;
                 break;
             }
         }
     }
-    if (millis() - timeoutStart >= KEY_DISTRIBUTION_TIMEOUT) {
+    if (stagedEpoch == 0) {
         Serial.println("[PRO-48] Timeout waiting for handshake.");
         return false;
     }
 
-    Serial.print("[PRO-48] Sending READY with device ID: ");
-    for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-    Serial.println();
-
+    Serial.print("[PRO-48] Sending READY epoch "); Serial.println(stagedEpoch);
     Serial.write(MSG_READY);
     Serial.write(deviceId, 4);
+    Serial.write((stagedEpoch >> 24) & 0xFF);
+    Serial.write((stagedEpoch >> 16) & 0xFF);
+    Serial.write((stagedEpoch >> 8) & 0xFF);
+    Serial.write(stagedEpoch & 0xFF);
     Serial.flush();
 
     timeoutStart = millis();
-    while (Serial.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+    while (Serial.available() < 26 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
         delay(1);
     }
-    if (Serial.available() < 22) {
+    if (Serial.available() < 26) {
         Serial.println("[PRO-48] Timeout waiting for key data.");
         return false;
     }
@@ -413,6 +424,15 @@ bool receiveKeyFromUNOQ() {
                          | ((uint32_t)Serial.read() << 16)
                          | ((uint32_t)Serial.read() << 8)
                          | ((uint32_t)Serial.read());
+    uint32_t receivedEpoch = ((uint32_t)Serial.read() << 24)
+                           | ((uint32_t)Serial.read() << 16)
+                           | ((uint32_t)Serial.read() << 8)
+                           | ((uint32_t)Serial.read());
+    if (receivedEpoch != stagedEpoch) {
+        Serial.printf("[PRO-48] Epoch mismatch staged %lu got %lu\n", (unsigned long)stagedEpoch, (unsigned long)receivedEpoch);
+        Serial.write(MSG_ERROR);
+        return false;
+    }
 
     uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
     if (computedCrc != receivedCrc) {
@@ -423,20 +443,26 @@ bool receiveKeyFromUNOQ() {
     }
     Serial.println("[PRO-48] CRC verified OK.");
 
-    memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-    keyStored = true;
+    memcpy(pendingKey, receivedKey, AES_KEY_SIZE);
+    pendingEpoch = stagedEpoch;
+    pendingValid = true;
+    pendingDeadlineMs = millis() + 600000;
     memset(receivedKey, 0, AES_KEY_SIZE);
 
     uint8_t fullHash[32];
-    sha256(aesKey, AES_KEY_SIZE, fullHash);
+    sha256(pendingKey, AES_KEY_SIZE, fullHash);
     uint8_t keyHash[KEY_HASH_SIZE];
     memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
     Serial.write(MSG_STORED);
     Serial.write(keyHash, KEY_HASH_SIZE);
+    Serial.write((pendingEpoch >> 24) & 0xFF);
+    Serial.write((pendingEpoch >> 16) & 0xFF);
+    Serial.write((pendingEpoch >> 8) & 0xFF);
+    Serial.write(pendingEpoch & 0xFF);
     Serial.flush();
 
-    Serial.print("[PRO-48] Key stored. Hash sent: ");
+    Serial.print("[PRO-48] Pending key stored epoch "); Serial.print(pendingEpoch); Serial.print(" hash ");
     for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
     Serial.println();
 
@@ -519,6 +545,7 @@ void setup() {
 void loop() {
     static uint32_t lastChallengeTime = 0;
     static uint8_t challenge[CHALLENGE_SIZE];
+    static uint32_t challengeEpoch = 0;
     static uint8_t response[HMAC_SIZE];
     static uint8_t rxBuffer[64];
 
@@ -534,9 +561,23 @@ void loop() {
             Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
                           msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
 
-            if (msgType == MSG_CHALLENGE && rxLen >= (1 + CHALLENGE_SIZE)) {
+            // RSSI gate and epoch check
+            if (msgType == MSG_CHALLENGE && rxLen >= (1 + CHALLENGE_SIZE + 4)) {
+                float rssi = radio.getRSSI();
+                if (rssi < -70.0) {
+                    Serial.printf("[PRO-50] RSSI %.1f too weak, discard\n", rssi);
+                    radio.startReceive();
+                    return;
+                }
+                uint32_t epoch = ((uint32_t)rxBuffer[1+CHALLENGE_SIZE] << 24) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+1] << 16) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+2] << 8) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+3]);
+                if (epoch != activeEpoch) {
+                    Serial.printf("[PRO-50] Epoch mismatch got %lu expected %lu\n", (unsigned long)epoch, (unsigned long)activeEpoch);
+                    radio.startReceive();
+                    return;
+                }
                 Serial.println("[PRO-50] Challenge received from PLC over LoRa");
                 memcpy(challenge, rxBuffer + 1, CHALLENGE_SIZE);
+                challengeEpoch = epoch;
                 lastChallengeTime = millis();
                 currentState = STATE_COMPUTING_RESPONSE;
                 epdShowStatus(EPD_STATUS_AUTHENTICATING);
@@ -569,11 +610,64 @@ void loop() {
         radio.startReceive();
     }
 
+    // Handle pending commit via USB (6B: type + target + epoch_be4, or 5B legacy)
+    if (pendingValid && Serial.available() >= 5) {
+        int peek = Serial.peek();
+        if (peek == MSG_COMMIT || peek == MSG_CANCEL) {
+            uint8_t msg = Serial.read();
+            uint32_t epoch = 0;
+            
+            // Check if there's a target ID byte (6-byte format)
+            if (Serial.available() >= 5) { // At least 5 more bytes = target + epoch
+                uint8_t targetId = Serial.read();
+                // Only process if this message is for us or broadcast
+                if (targetId != TARGET_PAW && targetId != 0xFF) {
+                    // Not for us, skip the rest
+                    while (Serial.available() > 0 && Serial.peek() != MSG_COMMIT && Serial.peek() != MSG_CANCEL) {
+                        Serial.read();
+                    }
+                    return; // Wait for next message
+                }
+                epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+            } else if (Serial.available() >= 4) { // Legacy 5-byte format
+                epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+            } else {
+                // Not enough bytes, wait
+                return;
+            }
+            
+            if (msg == MSG_COMMIT) {
+                if (pendingValid && pendingEpoch == epoch && millis() < pendingDeadlineMs) {
+                    memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+                    activeEpoch = pendingEpoch;
+                    keyStored = true;
+                    Serial.print("[PRO-48] Committed epoch "); Serial.println(activeEpoch);
+                    currentState = STATE_WAITING_FOR_CHALLENGE;
+                    digitalWrite(LED_BUILTIN, HIGH);
+                    epdShowStatus(EPD_STATUS_AUTHENTICATING);
+                } else {
+                    Serial.println("[PRO-48] Commit failed");
+                }
+            } else {
+                memset(pendingKey, 0, AES_KEY_SIZE);
+                pendingValid = false;
+                pendingEpoch = 0;
+                Serial.println("[PRO-48] Pending canceled");
+            }
+        }
+    }
+    if (pendingValid && millis() > pendingDeadlineMs) {
+        Serial.println("[PRO-48] Pending expired");
+        memset(pendingKey, 0, AES_KEY_SIZE);
+        pendingValid = false;
+        pendingEpoch = 0;
+    }
+
     switch (currentState) {
         case STATE_WAITING_FOR_KEY:
             if (receiveKeyFromUNOQ()) {
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                digitalWrite(LED_BUILTIN, HIGH);
+                Serial.print("[PRO-48] Pending stored epoch "); Serial.print(pendingEpoch); Serial.println(" waiting for COMMIT");
+                // Stay in WAITING_FOR_KEY until COMMIT, but show authenticating
                 epdShowStatus(EPD_STATUS_AUTHENTICATING);
             }
             break;
@@ -588,16 +682,27 @@ void loop() {
 
         case STATE_COMPUTING_RESPONSE:
             if (keyStored) {
-                hmac_sha256(aesKey, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
+                uint8_t hmacInput[4 + CHALLENGE_SIZE];
+                hmacInput[0] = (challengeEpoch >> 24) & 0xFF;
+                hmacInput[1] = (challengeEpoch >> 16) & 0xFF;
+                hmacInput[2] = (challengeEpoch >> 8) & 0xFF;
+                hmacInput[3] = challengeEpoch & 0xFF;
+                memcpy(hmacInput+4, challenge, CHALLENGE_SIZE);
+                hmac_sha256(aesKey, AES_KEY_SIZE, hmacInput, 4+CHALLENGE_SIZE, response);
+                memset(hmacInput, 0, sizeof(hmacInput));
 
-                Serial.print("[PRO-50] HMAC Response computed: ");
+                Serial.print("[PRO-50] HMAC Response computed epoch "); Serial.print(challengeEpoch); Serial.print(" : ");
                 for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);
                 Serial.println();
 
-                uint8_t txPacket[1 + CHALLENGE_SIZE + HMAC_SIZE];
+                uint8_t txPacket[1 + CHALLENGE_SIZE + 4 + HMAC_SIZE];
                 txPacket[0] = MSG_RESPONSE;
                 memcpy(txPacket + 1, challenge, CHALLENGE_SIZE);
-                memcpy(txPacket + 1 + CHALLENGE_SIZE, response, HMAC_SIZE);
+                txPacket[1+CHALLENGE_SIZE] = (challengeEpoch >> 24) & 0xFF;
+                txPacket[1+CHALLENGE_SIZE+1] = (challengeEpoch >> 16) & 0xFF;
+                txPacket[1+CHALLENGE_SIZE+2] = (challengeEpoch >> 8) & 0xFF;
+                txPacket[1+CHALLENGE_SIZE+3] = challengeEpoch & 0xFF;
+                memcpy(txPacket + 1 + CHALLENGE_SIZE + 4, response, HMAC_SIZE);
 
                 if (loraInitialized) {
                     int txState = radio.transmit(txPacket, sizeof(txPacket));
@@ -609,8 +714,7 @@ void loop() {
                     radio.startReceive();
                 }
 
-                Serial.write(txPacket, sizeof(txPacket));
-                Serial.flush();
+                // Removed Serial.write leak over USB (was HMAC exposure)
 
                 currentState = STATE_WAITING_FOR_RESULT;
                 memset(challenge, 0, CHALLENGE_SIZE);
