@@ -19,7 +19,7 @@
  * röda planet oskrivet -> röd bakgrund. Full refresh ~14 s.
  *
  * Architecture (USB - UART deprecated 2026-09-04):
- *   1. Wait for key from UNO Q at startup via USB (was Serial1)
+ *   1. Wait for key from UNO Q at startup via USB (was Serial)
  *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
  *   3. Listen for challenge (nonce) from PLC over LoRa
  *   4. Compute HMAC-SHA256(key, nonce) and transmit response
@@ -75,7 +75,7 @@ enum EpdStatus {
 // CS=5, DC=A0(26), RST=A1(27), BUSY=D25(25)
 
 // --- UART to UNO Q ---
-// Hardware Serial1: TX->1, RX->0
+// Hardware Serial: TX->1, RX->0
 
 #undef LED_BUILTIN
 #define LED_BUILTIN 6
@@ -362,9 +362,9 @@ bool receiveKeyFromUNOQ() {
     Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
 
     while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        if (Serial1.available() >= 2) {
-            uint8_t msgType = Serial1.read();
-            uint8_t targetId = Serial1.read();
+        if (Serial.available() >= 2) {
+            uint8_t msgType = Serial.read();
+            uint8_t targetId = Serial.read();
 
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
                 Serial.println("[PRO-48] Handshake received.");
@@ -381,43 +381,43 @@ bool receiveKeyFromUNOQ() {
     for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
     Serial.println();
 
-    Serial1.write(MSG_READY);
-    Serial1.write(deviceId, 4);
-    Serial1.flush();
+    Serial.write(MSG_READY);
+    Serial.write(deviceId, 4);
+    Serial.flush();
 
     timeoutStart = millis();
-    while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+    while (Serial.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
         delay(1);
     }
-    if (Serial1.available() < 22) {
+    if (Serial.available() < 22) {
         Serial.println("[PRO-48] Timeout waiting for key data.");
         return false;
     }
 
-    uint8_t msgType = Serial1.read();
+    uint8_t msgType = Serial.read();
     if (msgType != MSG_KEY_DATA) {
         Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
         return false;
     }
 
-    uint8_t receivedKeyLen = Serial1.read();
+    uint8_t receivedKeyLen = Serial.read();
     if (receivedKeyLen != AES_KEY_SIZE) {
         Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
         return false;
     }
 
     uint8_t receivedKey[AES_KEY_SIZE];
-    Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+    Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
-    uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                         | ((uint32_t)Serial1.read() << 16)
-                         | ((uint32_t)Serial1.read() << 8)
-                         | ((uint32_t)Serial1.read());
+    uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
+                         | ((uint32_t)Serial.read() << 16)
+                         | ((uint32_t)Serial.read() << 8)
+                         | ((uint32_t)Serial.read());
 
     uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
     if (computedCrc != receivedCrc) {
         Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n", computedCrc, receivedCrc);
-        Serial1.write(MSG_ERROR);
+        Serial.write(MSG_ERROR);
         memset(receivedKey, 0, AES_KEY_SIZE);
         return false;
     }
@@ -432,9 +432,9 @@ bool receiveKeyFromUNOQ() {
     uint8_t keyHash[KEY_HASH_SIZE];
     memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
-    Serial1.write(MSG_STORED);
-    Serial1.write(keyHash, KEY_HASH_SIZE);
-    Serial1.flush();
+    Serial.write(MSG_STORED);
+    Serial.write(keyHash, KEY_HASH_SIZE);
+    Serial.flush();
 
     Serial.print("[PRO-48] Key stored. Hash sent: ");
     for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
@@ -463,8 +463,7 @@ static bool loraInitialized = false;
 // =============================================================
 
 void setup() {
-    Serial.begin(115200);
-    Serial1.begin(115200);
+    Serial.begin(115200); while(!Serial) delay(10);
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);

@@ -79,6 +79,23 @@ static uint8_t aesKey[AES_KEY_SIZE];
 static uint8_t keyHash[KEY_HASH_SIZE];
 static KeyState keyState = KeyState::UNINITIALIZED;
 static volatile uint8_t pendingDistributionTarget = 0;
+static uint32_t activeEpoch = 0;
+static uint32_t pendingEpoch = 0;
+static uint8_t pendingKey[AES_KEY_SIZE];
+static uint8_t pendingHash[KEY_HASH_SIZE];
+static uint32_t pendingDeadlineMs = 0;
+#define GRANT_SIZE 16
+#define GRANT_CACHE_SIZE 8
+static uint8_t grantCache[GRANT_CACHE_SIZE][GRANT_SIZE];
+static uint8_t grantCacheCount = 0;
+static uint32_t lastButtonReleaseMs = 0;
+static bool buttonWasHigh = true;
+
+#define OP_GENERATE_KEY 0x01
+#define OP_STAGE_PLC 0x02
+#define OP_STAGE_PAW 0x03
+#define OP_COMMIT_EPOCH 0x04
+#define OP_CANCEL_EPOCH 0x05
 
 // =============================================================
 // Hex output helpers (Serial.printf unavailable on Zephyr core)
@@ -91,6 +108,61 @@ static inline void printHex(const uint8_t* data, size_t len) {
     Serial.print(HEX_CHARS[(data[i] >> 4) & 0x0F]);
     Serial.print(HEX_CHARS[data[i] & 0x0F]);
   }
+}
+
+// One-time grant and fresh button helpers (placeholder before FIDO)
+static bool wasFreshPress() {
+  static uint32_t lastHighMs = 0;
+  static bool prevHigh = true;
+  bool isHigh = digitalRead(CONFIRM_BUTTON_PIN) == HIGH;
+  uint32_t now = millis();
+  if (prevHigh && !isHigh) {
+    prevHigh = false;
+    lastHighMs = now;
+    delay(50);
+    if (digitalRead(CONFIRM_BUTTON_PIN) == LOW) {
+      return true;
+    }
+  } else if (!prevHigh && isHigh) {
+    prevHigh = true;
+  }
+  return false;
+}
+
+static bool isGrantReplay(const uint8_t* grant) {
+  for (int i = 0; i < GRANT_CACHE_SIZE; i++) {
+    bool match = true;
+    for (int j = 0; j < GRANT_SIZE; j++) {
+      if (grantCache[i][j] != grant[j]) { match = false; break; }
+    }
+    if (match && grantCache[i][0] != 0) return true;
+  }
+  return false;
+}
+
+static void rememberGrant(const uint8_t* grant) {
+  memcpy(grantCache[grantCacheCount % GRANT_CACHE_SIZE], grant, GRANT_SIZE);
+  grantCacheCount++;
+}
+
+static bool verifyGrant(const uint8_t* grant, uint8_t op, uint32_t epoch, uint32_t expiry) {
+  if (!grant) return false;
+  uint32_t now = millis();
+  if (expiry <= now) return false;
+  if (expiry - now > 60000) return false;
+  if (op == OP_GENERATE_KEY) {
+    if (epoch != activeEpoch + 1) return false;
+  } else if (op == OP_STAGE_PLC || op == OP_STAGE_PAW) {
+    if (epoch != pendingEpoch) return false;
+  } else if (op == OP_COMMIT_EPOCH) {
+    if (epoch != pendingEpoch) return false;
+  } else {
+    return false;
+  }
+  if (isGrantReplay(grant)) return false;
+  if (!wasFreshPress()) return false;
+  rememberGrant(grant);
+  return true;
 }
 
 // =============================================================
@@ -137,11 +209,10 @@ static bool generateSecureRandomBytes(uint8_t* buffer, size_t length) {
     while (__builtin_expect(!(STM32_RNG_SR & RNG_SR_DRDY), 1)) {
       uint32_t sr = STM32_RNG_SR;
       if (sr & (RNG_SR_CECS | RNG_SR_SECS)) {
-        // BUG: toggling RNG_CR here resets the error flags but does NOT
-        // clear the FIFO. Residual corrupted data may be read on the next
-        // call. A full RNG disable/enable with DRDY polling is safer.
         STM32_RNG_CR &= ~RNG_CR_RNGEN;
+        for (int i=0;i<4;i++) (void)STM32_RNG_DR;
         STM32_RNG_CR |= RNG_CR_RNGEN;
+        delay(1);
         return false;
       }
       if (__builtin_expect(--timeout == 0, 0)) return false;
@@ -322,10 +393,21 @@ static inline void secureWipeKey() {
   volatile uint8_t* h = (volatile uint8_t*)keyHash;
   for (int i = 0; i < KEY_HASH_SIZE; i++) h[i] = 0;
 }
+static inline void secureWipePending() {
+  volatile uint8_t* k = (volatile uint8_t*)pendingKey;
+  for (int i = 0; i < AES_KEY_SIZE; i++) k[i] = 0;
+  volatile uint8_t* h = (volatile uint8_t*)pendingHash;
+  for (int i = 0; i < KEY_HASH_SIZE; i++) h[i] = 0;
+  pendingEpoch = 0;
+}
 
-static bool generateKey() {
+static bool generateKey(const uint8_t* grant, uint32_t epoch, uint32_t expiry) {
   Serial.println("[PRO-45] Starting key generation...");
-
+  if (!verifyGrant(grant, OP_GENERATE_KEY, epoch, expiry)) {
+    Serial.println("[PRO-45] Grant verification FAILED (need fresh button + valid grant, not replay, not expired, epoch must be active+1)");
+    Bridge.notify("key_authority_event", "key_generation_failed", "grant verification failed");
+    return false;
+  }
   Serial.print("[PRO-45] Running TRNG health check... ");
   if (!trngHealthCheck()) {
     Serial.println("FAILED");
@@ -337,25 +419,48 @@ static bool generateKey() {
   Serial.println("OK");
 
   Serial.print("[PRO-45] Generating 128-bit AES key from TRNG... ");
-  if (!generateSecureRandomBytes(aesKey, AES_KEY_SIZE)) {
+  if (!generateSecureRandomBytes(pendingKey, AES_KEY_SIZE)) {
     Serial.println("FAILED");
     Serial.println("[PRO-45] TRNG generation failed. Aborting (fail-closed).");
-    secureWipeKey();
+    secureWipePending();
     keyState = KeyState::ERROR_STATE;
     Bridge.notify("key_authority_event", "key_generation_failed", "TRNG generation error");
     return false;
   }
   Serial.println("OK");
 
-  computeKeyHash(aesKey, keyHash);
+  computeKeyHash(pendingKey, pendingHash);
+  pendingEpoch = epoch;
+  pendingDeadlineMs = millis() + 600000; // 10 min to stage both
   keyState = KeyState::GENERATED;
 
-  Serial.println("[PRO-45] Key generated successfully.");
-  Serial.print("[PRO-45] Key fingerprint (SHA-256[:4]): ");
-  printHex(keyHash, KEY_HASH_SIZE);
+  Serial.print("[PRO-45] Pending key generated epoch ");
+  Serial.print(pendingEpoch);
+  Serial.print(" fingerprint ");
+  printHex(pendingHash, KEY_HASH_SIZE);
   Serial.println();
 
-  Bridge.notify("key_authority_event", "key_generated", "AES-128 key generated successfully");
+  Bridge.notify("key_authority_event", "key_generated", "AES-128 pending key generated");
+  return true;
+}
+// Legacy wrapper for serial 'g' (still requires button, uses placeholder grant for demo)
+static bool generateKeyLegacy() {
+  uint8_t dummyGrant[GRANT_SIZE];
+  // Use a dummy grant that will pass wasFreshPress but fail replay if reused - for 'g' we bypass grant check and just require button
+  if (!wasFreshPress()) {
+    Serial.println("[PRO-45] Need fresh button press for 'g'");
+    return false;
+  }
+  // Direct generation without grant for local 'g' but still epoch-checked
+  uint32_t epoch = activeEpoch + 1;
+  Serial.println("[PRO-45] Local 'g' with fresh button - generate pending");
+  if (!trngHealthCheck()) { Serial.println("FAILED health"); keyState=KeyState::ERROR_STATE; return false; }
+  if (!generateSecureRandomBytes(pendingKey, AES_KEY_SIZE)) { secureWipePending(); keyState=KeyState::ERROR_STATE; return false; }
+  computeKeyHash(pendingKey, pendingHash);
+  pendingEpoch = epoch;
+  pendingDeadlineMs = millis() + 600000;
+  keyState = KeyState::GENERATED;
+  Serial.print("[PRO-45] Pending epoch "); Serial.print(pendingEpoch); Serial.print(" fp "); printHex(pendingHash, KEY_HASH_SIZE); Serial.println();
   return true;
 }
 
@@ -390,6 +495,10 @@ static inline bool waitForBytes(uint8_t* buffer, size_t count, uint32_t timeoutM
 }
 
 static bool distributeKey(uint8_t targetId) {
+  if (pendingEpoch == 0 || millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-46] No pending key or expired (need GENERATE_KEY first)");
+    return false;
+  }
   if (keyState != KeyState::GENERATED &&
       keyState != KeyState::DISTRIBUTED_PLC &&
       keyState != KeyState::DISTRIBUTED_PAW) {
@@ -433,14 +542,14 @@ static bool distributeKey(uint8_t targetId) {
   printHex(deviceId, 4);
   Serial.println(")");
 
-  // Step 2: Send key + CRC32 in a single batched write (22 bytes)
+  // Step 2: Send pending key + CRC32 (22 bytes) - uses pendingKey for epoch
   // Format: MSG_KEY_DATA(1) + key_len(1) + key(16) + crc32(4) = 22 bytes
-  Serial.print("[PRO-46] Sending key data... ");
+  Serial.print("[PRO-46] Sending pending key epoch "); Serial.print(pendingEpoch); Serial.print(" ... ");
   uint8_t keyPacket[22];
   keyPacket[0] = MSG_KEY_DATA;
   keyPacket[1] = (uint8_t)AES_KEY_SIZE;
-  memcpy(&keyPacket[2], aesKey, AES_KEY_SIZE);
-  uint32_t crc = crc32(aesKey, AES_KEY_SIZE);
+  memcpy(&keyPacket[2], pendingKey, AES_KEY_SIZE);
+  uint32_t crc = crc32(pendingKey, AES_KEY_SIZE);
   keyPacket[18] = (uint8_t)(crc >> 24);
   keyPacket[19] = (uint8_t)(crc >> 16);
   keyPacket[20] = (uint8_t)(crc >> 8);
@@ -466,16 +575,16 @@ static bool distributeKey(uint8_t targetId) {
     return false;
   }
 
-  // Step 4: Verify stored hash (constant-time comparison)
+  // Step 4: Verify stored hash against pendingHash (constant-time)
   volatile uint8_t hashDiff = 0;
   for (int i = 0; i < KEY_HASH_SIZE; i++) {
-    hashDiff |= storedHash[i] ^ keyHash[i];
+    hashDiff |= storedHash[i] ^ pendingHash[i];
   }
 
   if (hashDiff != 0) {
     Serial.println("FAILED (hash mismatch)");
     Serial.print("[PRO-46] Expected: ");
-    printHex(keyHash, KEY_HASH_SIZE);
+    printHex(pendingHash, KEY_HASH_SIZE);
     Serial.print("  Got: ");
     printHex(storedHash, KEY_HASH_SIZE);
     Serial.println();
@@ -497,6 +606,13 @@ static bool distributeKey(uint8_t targetId) {
     keyState = (keyState == KeyState::DISTRIBUTED_PLC)
              ? KeyState::DISTRIBUTED_BOTH : KeyState::DISTRIBUTED_PAW;
   }
+  if (keyState == KeyState::DISTRIBUTED_BOTH) {
+    activeEpoch = pendingEpoch;
+    memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+    memcpy(keyHash, pendingHash, KEY_HASH_SIZE);
+    Serial.print("[PRO-46] Both staged, committed epoch "); Serial.println(activeEpoch);
+    Bridge.notify("key_authority_event", "epoch_committed", String(activeEpoch));
+  }
 
   Bridge.notify("key_authority_event", "distribution_success",
                String(targetName) + " provisioned successfully");
@@ -515,7 +631,6 @@ static void setupBridgeRPC() {
   });
 
   Bridge.provide_safe("get_key_fingerprint", []() -> String {
-    // Pre-allocate exact size (8 hex chars + null terminator)
     String fp;
     fp.reserve(9);
     for (int i = 0; i < KEY_HASH_SIZE; i++) {
@@ -525,23 +640,70 @@ static void setupBridgeRPC() {
     return fp;
   });
 
-  Bridge.provide_safe("request_key_generation", []() -> bool {
-    return generateKey();
+  Bridge.provide_safe("get_active_epoch", []() -> uint32_t {
+    return activeEpoch;
   });
 
-  Bridge.provide_safe("request_key_distribution", [](uint8_t targetId) -> bool {
-    Serial.print("[PRO-46] MPU requested distribution to target ");
+  Bridge.provide_safe("get_pending_epoch", []() -> uint32_t {
+    return pendingEpoch;
+  });
+
+  Bridge.provide_safe("get_pending_fingerprint", []() -> String {
+    String fp;
+    fp.reserve(9);
+    for (int i = 0; i < KEY_HASH_SIZE; i++) {
+      fp += HEX_CHARS[(pendingHash[i] >> 4) & 0x0F];
+      fp += HEX_CHARS[pendingHash[i] & 0x0F];
+    }
+    return fp;
+  });
+
+  // Placeholder grant-gated generation (first vertical slice)
+  // grantHex is 32 hex chars = 16 bytes, epoch and expiry are checked on MCU
+  Bridge.provide_safe("request_key_generation", [](String grantHex, uint32_t epoch, uint32_t expiry) -> bool {
+    uint8_t grant[GRANT_SIZE];
+    if (grantHex.length() != GRANT_SIZE*2) return false;
+    for (int i=0;i<GRANT_SIZE;i++) {
+      String b = grantHex.substring(i*2, i*2+2);
+      grant[i] = (uint8_t) strtoul(b.c_str(), nullptr, 16);
+    }
+    return generateKey(grant, epoch, expiry);
+  });
+
+  Bridge.provide_safe("request_key_distribution", [](uint8_t targetId, String grantHex, uint32_t epoch, uint32_t expiry) -> bool {
+    uint8_t grant[GRANT_SIZE];
+    if (grantHex.length() != GRANT_SIZE*2) return false;
+    for (int i=0;i<GRANT_SIZE;i++) {
+      String b = grantHex.substring(i*2, i*2+2);
+      grant[i] = (uint8_t) strtoul(b.c_str(), nullptr, 16);
+    }
+    if (!verifyGrant(grant, (targetId==TARGET_PLC?OP_STAGE_PLC:OP_STAGE_PAW), epoch, expiry)) {
+      Serial.println("[PRO-46] Grant verification failed for distribution");
+      return false;
+    }
+    Serial.print("[PRO-46] Grant verified for target ");
     Serial.print(targetId);
-    Serial.println(". Awaiting button press.");
+    Serial.println(" - awaiting fresh button for staging");
     pendingDistributionTarget = targetId;
+    // For placeholder, we still require fresh button in loop, but grant already consumed
     return true;
   });
 
-  // FIDO2-enabled immediate distribution (no button press required)
-  Bridge.provide_safe("distribute_key_now", [](uint8_t targetId) -> bool {
-    Serial.print("[PRO-46] FIDO2 verified - immediate distribution to target ");
+  // Legacy immediate path now also requires grant+button (no bypass)
+  Bridge.provide_safe("distribute_key_now", [](uint8_t targetId, String grantHex, uint32_t epoch, uint32_t expiry) -> bool {
+    uint8_t grant[GRANT_SIZE];
+    if (grantHex.length() != GRANT_SIZE*2) return false;
+    for (int i=0;i<GRANT_SIZE;i++) {
+      String b = grantHex.substring(i*2, i*2+2);
+      grant[i] = (uint8_t) strtoul(b.c_str(), nullptr, 16);
+    }
+    if (!verifyGrant(grant, (targetId==TARGET_PLC?OP_STAGE_PLC:OP_STAGE_PAW), epoch, expiry)) {
+      Serial.println("[PRO-46] Grant verification failed for distribute_key_now");
+      return false;
+    }
+    Serial.print("[PRO-46] Grant + button verified - immediate distribution to ");
     Serial.print(targetId);
-    Serial.println(".");
+    Serial.println();
     return distributeKey(targetId);
   });
 }
@@ -566,12 +728,19 @@ static void printStatus() {
   Serial.println("\n=== UNO Q Key Authority Status ===");
   Serial.print("Key state: ");
   Serial.println(keyStateString(keyState));
+  Serial.print("Active epoch: "); Serial.println(activeEpoch);
+  Serial.print("Pending epoch: "); Serial.println(pendingEpoch);
   if (keyState != KeyState::UNINITIALIZED && keyState != KeyState::ERROR_STATE) {
-    Serial.print("Key fingerprint: ");
+    Serial.print("Active fingerprint: ");
     printHex(keyHash, KEY_HASH_SIZE);
     Serial.println();
   }
-  Serial.println("Commands: g=generate  1=dist PLC  2=dist PAW  s=status");
+  if (pendingEpoch != 0) {
+    Serial.print("Pending fingerprint: ");
+    printHex(pendingHash, KEY_HASH_SIZE);
+    Serial.print(" (deadline "); Serial.print(pendingDeadlineMs); Serial.println(" ms)");
+  }
+  Serial.println("Commands: g=generate(needs fresh button) 1=dist PLC 2=dist PAW s=status");
   Serial.println("=====================================\n");
 }
 
@@ -601,6 +770,16 @@ void setup() {
 }
 
 void loop() {
+  // Pending timeout check (10 min window)
+  if (pendingEpoch != 0 && pendingDeadlineMs != 0 && millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-46] Pending epoch expired - invalidating");
+    secureWipePending();
+    keyState = (activeEpoch == 0) ? KeyState::UNINITIALIZED : KeyState::GENERATED;
+    pendingDistributionTarget = 0;
+    Bridge.notify("key_authority_event", "pending_expired", "pending epoch expired");
+    printStatus();
+  }
+
   // Serial command processing
   if (Serial.available()) {
     char cmd = Serial.read();
@@ -608,7 +787,7 @@ void loop() {
     switch (cmd) {
       case 'g': case 'G':
         digitalWrite(STATUS_LED_PIN, HIGH);
-        generateKey();
+        generateKeyLegacy();
         digitalWrite(STATUS_LED_PIN, LOW);
         printStatus();
         break;
@@ -616,11 +795,16 @@ void loop() {
       case '1':
         if (keyState == KeyState::GENERATED ||
             keyState == KeyState::DISTRIBUTED_PAW) {
-          Serial.println("\n>> Distributing to PLC. Connect UART and press button.");
-          while (digitalRead(CONFIRM_BUTTON_PIN) == HIGH) delay(10);
-          digitalWrite(STATUS_LED_PIN, HIGH);
-          distributeKey(TARGET_PLC);
-          digitalWrite(STATUS_LED_PIN, LOW);
+          Serial.println("\n>> Distributing to PLC. Press fresh button for USB staging.");
+          if (!wasFreshPress()) {
+            Serial.println("Need fresh button press (not held) for '1'");
+          } else {
+            digitalWrite(STATUS_LED_PIN, HIGH);
+            // For USB, host does distribution, but keep local for backwards compat
+            // Use pendingKey if available
+            distributeKey(TARGET_PLC);
+            digitalWrite(STATUS_LED_PIN, LOW);
+          }
           printStatus();
         } else {
           Serial.println("No key generated or already distributed to PLC.");
@@ -630,11 +814,14 @@ void loop() {
       case '2':
         if (keyState == KeyState::GENERATED ||
             keyState == KeyState::DISTRIBUTED_PLC) {
-          Serial.println("\n>> Distributing to PAW. Connect UART and press button.");
-          while (digitalRead(CONFIRM_BUTTON_PIN) == HIGH) delay(10);
-          digitalWrite(STATUS_LED_PIN, HIGH);
-          distributeKey(TARGET_PAW);
-          digitalWrite(STATUS_LED_PIN, LOW);
+          Serial.println("\n>> Distributing to PAW. Press fresh button for USB staging.");
+          if (!wasFreshPress()) {
+            Serial.println("Need fresh button press (not held) for '2'");
+          } else {
+            digitalWrite(STATUS_LED_PIN, HIGH);
+            distributeKey(TARGET_PAW);
+            digitalWrite(STATUS_LED_PIN, LOW);
+          }
           printStatus();
         } else {
           Serial.println("No key generated or already distributed to PAW.");
@@ -647,14 +834,16 @@ void loop() {
     }
   }
 
-  // MPU-requested distribution (requires physical button press)
+  // MPU-requested distribution (requires fresh button press, not held)
   if (pendingDistributionTarget != 0) {
-    if (digitalRead(CONFIRM_BUTTON_PIN) == LOW) {
+    if (wasFreshPress()) {
       digitalWrite(STATUS_LED_PIN, HIGH);
       distributeKey(pendingDistributionTarget);
       digitalWrite(STATUS_LED_PIN, LOW);
       pendingDistributionTarget = 0;
       printStatus();
+    } else if (millis() > pendingDeadlineMs && pendingDeadlineMs != 0) {
+      // Also handle held button timeout via pending expiry above
     }
   }
 

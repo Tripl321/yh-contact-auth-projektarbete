@@ -161,9 +161,9 @@ bool receiveKey() {
 
   // Step 1: Wait for handshake
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    if (Serial1.available() >= 2) {
-      uint8_t msgType = Serial1.read();
-      uint8_t targetId = Serial1.read();
+    if (Serial.available() >= 2) {
+      uint8_t msgType = Serial.read();
+      uint8_t targetId = Serial.read();
 
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
         Serial.println("[PRO-48] Handshake received.");
@@ -184,27 +184,27 @@ bool receiveKey() {
   for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
   Serial.println();
 
-  Serial1.write(MSG_READY);
-  Serial1.write(deviceId, 4);
-  Serial1.flush();
+  Serial.write(MSG_READY);
+  Serial.write(deviceId, 4);
+  Serial.flush();
 
   // Step 3: Wait for key data (22 bytes: msg + len + key + crc)
   timeoutStart = millis();
-  while (Serial1.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
+  while (Serial.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
     delay(1);
   }
-  if (Serial1.available() < 22) {
+  if (Serial.available() < 22) {
     Serial.println("[PRO-48] Timeout waiting for key data.");
     return false;
   }
 
-  uint8_t msgType = Serial1.read();
+  uint8_t msgType = Serial.read();
   if (msgType != MSG_KEY_DATA) {
     Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
     return false;
   }
 
-  uint8_t receivedKeyLen = Serial1.read();
+  uint8_t receivedKeyLen = Serial.read();
   if (receivedKeyLen != AES_KEY_SIZE) {
     Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
     return false;
@@ -212,20 +212,20 @@ bool receiveKey() {
 
   // Read key
   uint8_t receivedKey[AES_KEY_SIZE];
-  Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+  Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
   // Read CRC32 (big-endian)
-  uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                       | ((uint32_t)Serial1.read() << 16)
-                       | ((uint32_t)Serial1.read() << 8)
-                       | ((uint32_t)Serial1.read());
+  uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
+                       | ((uint32_t)Serial.read() << 16)
+                       | ((uint32_t)Serial.read() << 8)
+                       | ((uint32_t)Serial.read());
 
   // Verify CRC32
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
     Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
                    computedCrc, receivedCrc);
-    Serial1.write(MSG_ERROR);
+    Serial.write(MSG_ERROR);
     return false;
   }
   Serial.println("[PRO-48] CRC verified OK.");
@@ -243,9 +243,9 @@ bool receiveKey() {
   uint8_t keyHash[KEY_HASH_SIZE];
   memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
-  Serial1.write(MSG_STORED);
-  Serial1.write(keyHash, KEY_HASH_SIZE);
-  Serial1.flush();
+  Serial.write(MSG_STORED);
+  Serial.write(keyHash, KEY_HASH_SIZE);
+  Serial.flush();
 
   Serial.print("[PRO-48] Key stored. Hash sent: ");
   for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
@@ -273,8 +273,9 @@ const uint8_t* getStoredKey() {
 // =============================================================
 
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(115200);  // UART to UNO Q (GP0=TX, GP1=RX)
+  Serial.begin(115200); while(!Serial) delay(10);
+  // USB distribution (UART GP0/GP1 deprecated 2026-09-04)
+  // Serial kept for backwards compat but not used for key
 
   // Status LED (Feather RP2350 has built-in NeoPixel, but use GP25 if available)
   pinMode(LED_BUILTIN, OUTPUT);
@@ -309,7 +310,7 @@ void loop() {
   if (keyStored) {
     digitalWrite(LED_BUILTIN, (millis() / 2000) % 2);
   } else {
-    if (Serial1.available() >= 2) {
+    if (Serial.available() >= 2) {
       receiveKey();
     }
   }

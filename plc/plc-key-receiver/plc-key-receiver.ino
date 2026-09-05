@@ -297,9 +297,9 @@ bool receiveKey() {
 
   // Step 1: Wait for handshake
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    if (Serial1.available() >= 2) {
-      uint8_t msgType = Serial1.read();
-      uint8_t targetId = Serial1.read();
+    if (Serial.available() >= 2) {
+      uint8_t msgType = Serial.read();
+      uint8_t targetId = Serial.read();
 
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PLC) {
         Serial.println("[PRO-47] Handshake received.");
@@ -320,45 +320,45 @@ bool receiveKey() {
   for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
   Serial.println();
 
-  Serial1.write(MSG_READY);
-  Serial1.write(deviceId, 4);
-  Serial1.flush();
+  Serial.write(MSG_READY);
+  Serial.write(deviceId, 4);
+  Serial.flush();
 
   // Step 3: Wait for key data
   timeoutStart = millis();
-  while (Serial1.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
+  while (Serial.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
     delay(1);
   }
-  if (Serial1.available() < 22) {
+  if (Serial.available() < 22) {
     Serial.println("[PRO-47] Timeout waiting for key data.");
     return false;
   }
 
-  uint8_t msgType = Serial1.read();
+  uint8_t msgType = Serial.read();
   if (msgType != MSG_KEY_DATA) {
     Serial.printf("[PRO-47] Expected KEY_DATA, got 0x%02X\n", msgType);
     return false;
   }
 
-  uint8_t receivedKeyLen = Serial1.read();
+  uint8_t receivedKeyLen = Serial.read();
   if (receivedKeyLen != AES_KEY_SIZE) {
     Serial.printf("[PRO-47] Unexpected key length: %d\n", receivedKeyLen);
     return false;
   }
 
   uint8_t receivedKey[AES_KEY_SIZE];
-  Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+  Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
-  uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                       | ((uint32_t)Serial1.read() << 16)
-                       | ((uint32_t)Serial1.read() << 8)
-                       | ((uint32_t)Serial1.read());
+  uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
+                       | ((uint32_t)Serial.read() << 16)
+                       | ((uint32_t)Serial.read() << 8)
+                       | ((uint32_t)Serial.read());
 
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
     Serial.printf("[PRO-47] CRC mismatch! Expected: %08X Got: %08X\n",
                    computedCrc, receivedCrc);
-    Serial1.write(MSG_ERROR);
+    Serial.write(MSG_ERROR);
     return false;
   }
   Serial.println("[PRO-47] CRC verified OK.");
@@ -372,9 +372,9 @@ bool receiveKey() {
   uint8_t keyHash[KEY_HASH_SIZE];
   memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
-  Serial1.write(MSG_STORED);
-  Serial1.write(keyHash, KEY_HASH_SIZE);
-  Serial1.flush();
+  Serial.write(MSG_STORED);
+  Serial.write(keyHash, KEY_HASH_SIZE);
+  Serial.flush();
 
   Serial.print("[PRO-47] Key stored. Hash sent: ");
   for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
@@ -498,15 +498,13 @@ void initLoRa() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200); while(!Serial) delay(10);
 
   loraSPI.setSCK(SPI1_SCK_PIN);
   loraSPI.setTX(SPI1_MOSI_PIN);
   loraSPI.setRX(SPI1_MISO_PIN);
   loraSPI.begin();
   Serial.println("[PRO-27] SPI1 initialized for Core1262.");
-
-  Serial1.begin(UART_BAUD);
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
@@ -610,9 +608,14 @@ void loop() {
   }
 
   if (!keyStored) {
-    if (Serial1.available() >= 2) {
-      receiveKey();
+    if (Serial.available() >= 2) {
+      if (receiveKey()) {
+        // Key received via USB (was UART) - init LoRa now
+        if (!loraInitialized) initLoRa();
+      }
     }
+  } else if (keyStored && !loraInitialized) {
+    initLoRa();
   }
 
   static uint32_t lastHeartbeat = 0;
