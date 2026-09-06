@@ -485,14 +485,23 @@ bool receiveKeyFromUNOQ() {
 
     uint32_t stagedEpoch = 0;
     while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+        // Check for identity challenge first (Slice 4) - may need up to 39 bytes
         if (Serial.available() >= 1) {
             int peek = Serial.peek();
-            // Check for identity challenge first (Slice 4)
             if (peek == MSG_ID_CHALLENGE) {
-                handleIdentityChallenge();
-                continue;  // Continue waiting for handshake
+                // Wait for complete identity challenge frame
+                if (Serial.available() >= 39) {
+                    handleIdentityChallenge();
+                    // Reset timeout after handling challenge
+                    timeoutStart = millis();
+                    continue;
+                }
+                // Not enough bytes yet, keep waiting
+                delay(1);
+                continue;
             }
         }
+        // Proceed with handshake only if we have enough AND first byte is not identity
         if (Serial.available() >= 6) {
             uint8_t msgType = Serial.read();
             uint8_t targetId = Serial.read();
@@ -504,6 +513,7 @@ bool receiveKeyFromUNOQ() {
                 break;
             }
         }
+        delay(1);
     }
     if (stagedEpoch == 0) {
         Serial.println("[PRO-48] Timeout waiting for handshake.");
@@ -519,25 +529,35 @@ bool receiveKeyFromUNOQ() {
     Serial.write(stagedEpoch & 0xFF);
     Serial.flush();
 
+    // Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
+    // But first, handle any identity challenges (0xB4) which may arrive at any time
     timeoutStart = millis();
-    while (Serial.available() < 26 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        // Check for identity challenge while waiting (Slice 4)
+    while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+        // Check for identity challenge first (Slice 4) - may need up to 39 bytes
         if (Serial.available() >= 1) {
             int peek = Serial.peek();
             if (peek == MSG_ID_CHALLENGE) {
-                handleIdentityChallenge();
+                // Wait for complete identity challenge frame
+                if (Serial.available() >= 39) {
+                    handleIdentityChallenge();
+                    // Reset timeout after handling challenge
+                    timeoutStart = millis();
+                    continue;
+                }
+                // Not enough bytes yet, keep waiting
+                delay(1);
+                continue;
             }
+        }
+        // Proceed with key data only if we have enough AND first byte is not identity
+        if (Serial.available() >= 26) {
+            break;
         }
         delay(1);
     }
     if (Serial.available() < 26) {
         Serial.println("[PRO-48] Timeout waiting for key data.");
         return false;
-    }
-
-    // Check for identity challenge before reading key data (Slice 4)
-    if (Serial.peek() == MSG_ID_CHALLENGE) {
-        handleIdentityChallenge();
     }
 
     uint8_t msgType = Serial.read();
