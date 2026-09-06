@@ -444,6 +444,14 @@ bool receiveKey() {
   // Step 1: Wait for handshake 0xA1 target[1] epoch_be4[4] (6B)
   uint32_t stagedEpoch = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
+    if (Serial.available() >= 1) {
+      int peek = Serial.peek();
+      // Check for identity challenge first (Slice 4) - need all 39 bytes
+      if (peek == MSG_ID_CHALLENGE && Serial.available() >= 39) {
+        handleIdentityChallenge();
+        continue;  // Continue waiting for handshake
+      }
+    }
     if (Serial.available() >= 6) {
       uint8_t msgType = Serial.read();
       uint8_t targetId = Serial.read();
@@ -481,6 +489,13 @@ bool receiveKey() {
   // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
   timeoutStart = millis();
   while (Serial.available() < 26 && millis() - timeoutStart < TIMEOUT_MS) {
+    // Check for identity challenge while waiting (Slice 4) - need all 39 bytes
+    if (Serial.available() >= 39) {
+      int peek = Serial.peek();
+      if (peek == MSG_ID_CHALLENGE) {
+        handleIdentityChallenge();
+      }
+    }
     delay(1);
   }
   if (Serial.available() < 26) {
@@ -831,6 +846,14 @@ void loop() {
     }
     if (!awaitingResponse && millis() - lastChallengeTime >= CHALLENGE_INTERVAL) {
       sendChallenge();
+    }
+  }
+
+  // Handle identity challenge via USB (Slice 4) - check first, regardless of key state
+  if (Serial.available() >= 1) {
+    int peek = Serial.peek();
+    if (peek == MSG_ID_CHALLENGE) {
+      handleIdentityChallenge();
     }
   }
 
