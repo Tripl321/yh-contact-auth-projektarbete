@@ -485,7 +485,7 @@ bool receiveKeyFromUNOQ() {
 
     uint32_t stagedEpoch = 0;
     while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        if (Serial.available() >= 39) {
+        if (Serial.available() >= 1) {
             int peek = Serial.peek();
             // Check for identity challenge first (Slice 4)
             if (peek == MSG_ID_CHALLENGE) {
@@ -522,7 +522,7 @@ bool receiveKeyFromUNOQ() {
     timeoutStart = millis();
     while (Serial.available() < 26 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
         // Check for identity challenge while waiting (Slice 4)
-        if (Serial.available() >= 39) {
+        if (Serial.available() >= 1) {
             int peek = Serial.peek();
             if (peek == MSG_ID_CHALLENGE) {
                 handleIdentityChallenge();

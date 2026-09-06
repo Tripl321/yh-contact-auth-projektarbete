@@ -446,8 +446,8 @@ bool receiveKey() {
   while (millis() - timeoutStart < TIMEOUT_MS) {
     if (Serial.available() >= 1) {
       int peek = Serial.peek();
-      // Check for identity challenge first (Slice 4) - need all 39 bytes
-      if (peek == MSG_ID_CHALLENGE && Serial.available() >= 39) {
+      // Check for identity challenge first (Slice 4)
+      if (peek == MSG_ID_CHALLENGE) {
         handleIdentityChallenge();
         continue;  // Continue waiting for handshake
       }
@@ -489,8 +489,8 @@ bool receiveKey() {
   // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
   timeoutStart = millis();
   while (Serial.available() < 26 && millis() - timeoutStart < TIMEOUT_MS) {
-    // Check for identity challenge while waiting (Slice 4) - need all 39 bytes
-    if (Serial.available() >= 39) {
+    // Check for identity challenge while waiting (Slice 4)
+    if (Serial.available() >= 1) {
       int peek = Serial.peek();
       if (peek == MSG_ID_CHALLENGE) {
         handleIdentityChallenge();
