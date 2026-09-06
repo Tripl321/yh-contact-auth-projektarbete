@@ -13,12 +13,14 @@ HMAC-SHA256(AES-128-nyckel, nonce). Status visas på en e-Paper-display.
 
 - **PLC**: Raspberry Pi Pico 2 (RP2350A) + Waveshare Core1262-868M (SX1262 LoRa)
 - **ID-kort**: Adafruit Feather RP2350 + Core1262-868M + 1.54" Waveshare e-Paper
-- **Key Authority**: Arduino UNO Q (Qualcomm QRB2210 + STM32U585) -- genererar AES-128-nycklar, distribuerar via USB till bada noder
+- **Key Authority**: Arduino UNO Q (Qualcomm QRB2210 + STM32U585) -- genererar AES-128-nycklar med hardware TRNG, distribuerar via USB till båda noder (single source of truth)
+
+> **Notering 2026-09-04:** Tidigare dokumentation beskrev nyckeldistribution via UART (Serial1, D0/D1). Projektet använder nu **USB** för all nyckeldistribution. UART-kopplingar ska inte användas. Se `key-authority/README.md` och `docs/02-arkitektur.md` för aktuell USB-arkitektur.
 
 ## Kryptografiskt flode
 
-1. UNO Q genererar en AES-128-nyckel
-2. Nyckeln distribueras via USB till bada noder (PLC och ID-kort)
+1. UNO Q genererar en AES-128-nyckel med STM32U585 hardware TRNG
+2. Nyckeln distribueras via USB till båda noder (PLC och ID-kort) efter fysisk bekräftelse
 3. PLC skickar en nonce (slumpmässigt tal) over LoRa till ID-kortet
 4. ID-kortet beräknar HMAC-SHA256(nyckel, nonce) och returnerar resultatet
 5. PLC verifierar HMAC och uppdaterar status på e-Paper-display

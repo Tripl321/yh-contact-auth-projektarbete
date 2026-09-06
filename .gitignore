@@ -32,3 +32,6 @@ Thumbs.db
 *.pem
 secrets.h
 config_local.h
+shallot_cli.egg-info/
+__pycache__/
+*.pyc

@@ -3,21 +3,21 @@
  * ID-bricka: Adafruit Feather RP2350
  *
  * Role in key distribution:
- *   Receives AES-128 key from UNO Q via UART, stores in RP2350 SRAM,
- *   returns SHA-256 hash for verification.
+ *   Receives AES-128 key from UNO Q via USB (was UART, deprecated 2026-09-04),
+ *   stores in RP2350 SRAM, returns SHA-256 hash for verification.
  *
- * Distribution protocol (matches UNO Q MCU firmware):
- *   UNO Q -> PAW:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
- *   PAW -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)
- *   UNO Q -> PAW:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4)
- *   PAW -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)
+ * Distribution protocol (matches UNO Q MCU firmware) - now via USB CDC:
+ *   UNO Q -> PAW:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
+ *   PAW -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)     [USB]
+ *   UNO Q -> PAW:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) [USB]
+ *   PAW -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)  [USB]
  *
  * Key storage:
  *   Volatile SRAM (same approach as PLC). Key lost on power cycle.
  *
  * Hardware:
  *   Adafruit Feather RP2350
- *   UART: Serial1 (GP0=TX, GP1=RX) — connected to UNO Q Serial1
+ *   USB: Serial (USB CDC) — connected via USB hub to host/Mama Bear (UART GP0/GP1 deprecated)
  *   Core1262-868M: SPI1 (D10/GP10=CLK, D11/GP11=MOSI, A2/GP28=MISO,
  *                  D9/GP9=CS, D6/GP6=BUSY, D8/GP8=RESET, D21/GP21=DIO1)
  *   e-Paper: SPI0 (MO/GP23=DIN, SCK/GP22=CLK, D5/GP5=CS,
@@ -40,6 +40,8 @@
 #define MSG_KEY_DATA     0xA3
 #define MSG_STORED       0xA4
 #define MSG_ERROR        0xA5
+#define MSG_COMMIT       0xA6
+#define MSG_CANCEL       0xA7
 
 // --- Target IDs ---
 #define TARGET_PAW  0x02
@@ -47,9 +49,153 @@
 // --- Key storage ---
 static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
+static uint32_t activeEpoch = 0;
+static uint32_t pendingEpoch = 0;
+static uint8_t pendingKey[AES_KEY_SIZE];
+static bool pendingValid = false;
+static uint32_t pendingDeadlineMs = 0;
+static inline void secureWipePending() {
+  memset(pendingKey, 0, AES_KEY_SIZE);
+  pendingValid = false;
+  pendingEpoch = 0;
+  pendingDeadlineMs = 0;
+}
 
 // --- Device ID (unique identifier for this PAW node) ---
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 };  // "PAW\x01"
+
+// =============================================================
+// Device Identity (Slice 4) - P-256 ECDSA
+// =============================================================
+
+// P-256 curve parameters (secp256r1 / prime256v1)
+// Using compressed public key format for storage (33 bytes: 0x02/0x03 + x[32])
+#define P256_PRIVATE_KEY_SIZE  32
+#define P256_PUBLIC_KEY_SIZE   65  // Uncompressed: 0x04 + x[32] + y[32] = 65 bytes
+#define P256_COMPRESSED_PUB_SIZE 33  // Compressed: 0x02/0x03 + x[32]
+#define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
+#define SHA256_HASH_SIZE      32  // SHA-256 produces 32-byte hash
+
+// Device identity storage
+static uint8_t devicePrivateKey[P256_PRIVATE_KEY_SIZE];
+static uint8_t devicePublicKey[P256_PUBLIC_KEY_SIZE];
+static bool deviceIdentityGenerated = false;
+static uint8_t devicePublicKeyHash[SHA256_HASH_SIZE];  // SHA-256 of public key
+
+// Generate deterministic P-256 keypair from device-specific seed
+// For prototype: use deviceId as seed; for production: use RP2350 flash OTP + TRNG
+static void generateDeviceIdentity() {
+  if (deviceIdentityGenerated) return;
+  
+  Serial.println("[PRO-48] Generating P-256 device identity...");
+  
+  // For prototype: use deviceId as seed (deterministic for testing)
+  // In production: use RP2350 unique ID + TRNG
+  uint8_t seed[32];
+  memset(seed, 0, 32);
+  memcpy(seed, deviceId, 4);
+  
+  // Generate private key from seed (for testing - deterministic)
+  // In production: use proper ECDSA key generation with TRNG
+  memcpy(devicePrivateKey, seed, P256_PRIVATE_KEY_SIZE);
+  
+  // For prototype: compute public key as hash of private key (not real ECDSA)
+  // This is a placeholder - real implementation would use ECDSA
+  sha256(devicePrivateKey, P256_PRIVATE_KEY_SIZE, devicePublicKeyHash);
+  
+  // Create mock public key (uncompressed format: 0x04 + x + y)
+  devicePublicKey[0] = 0x04;  // Uncompressed point
+  memcpy(&devicePublicKey[1], devicePrivateKey, 32);  // x coordinate
+  memcpy(&devicePublicKey[33], devicePrivateKey, 32); // y coordinate (mock)
+  
+  deviceIdentityGenerated = true;
+  
+  Serial.print("[PRO-48] Device identity generated. Pubkey hash: ");
+  for (int i = 0; i < 4; i++) Serial.printf("%02X", devicePublicKeyHash[i]);
+  Serial.println("...");
+}
+
+// Get device public key hash (first 4 bytes for identification)
+static void getDevicePublicKeyHash(uint8_t* hashOut) {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  memcpy(hashOut, devicePublicKeyHash, KEY_HASH_SIZE);
+}
+
+// Sign a message using device identity (placeholder - mock signature for prototype)
+// Real implementation would use ECDSA P-256 with proper signing
+// For prototype: returns SHA-256 of (privateKey + message) as mock signature
+static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* signature) {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  // Mock signature: SHA-256(privateKey + message)
+  uint8_t input[P256_PRIVATE_KEY_SIZE + msgLen];
+  memcpy(input, devicePrivateKey, P256_PRIVATE_KEY_SIZE);
+  memcpy(&input[P256_PRIVATE_KEY_SIZE], message, msgLen);
+  sha256(input, sizeof(input), signature);
+  
+  // For prototype: duplicate hash to fill 64-byte signature
+  memcpy(&signature[32], signature, 32);
+}
+
+// =============================================================
+// Identity Challenge-Response Protocol
+// =============================================================
+
+// Handle identity challenge from MCU
+// MCU sends: MSG_ID_CHALLENGE(0xB4) + challenge[32] + operation[1] + target[1] + epoch[4]
+// Device responds: MSG_ID_RESPONSE(0xB5) + signature[64] + devicePubKeyHash[4]
+#define MSG_ID_CHALLENGE  0xB4
+#define MSG_ID_RESPONSE   0xB5
+
+static bool handleIdentityChallenge() {
+  if (!deviceIdentityGenerated) generateDeviceIdentity();
+  
+  // Total message: 1 (msgType) + 32 (challenge) + 1 (operation) + 1 (target) + 4 (epoch) = 39 bytes
+  if (Serial.available() < 39) return false;
+  
+  int peek = Serial.peek();
+  if (peek != MSG_ID_CHALLENGE) return false;
+  
+  // Read challenge message
+  uint8_t msgType = Serial.read();
+  if (msgType != MSG_ID_CHALLENGE) return false;
+  
+  uint8_t challenge[32];
+  uint8_t operation;
+  uint8_t target;
+  uint32_t epoch;
+  
+  // Read exactly 32 bytes for challenge
+  size_t bytesRead = Serial.readBytes((char*)challenge, 32);
+  if (bytesRead != 32) return false;
+  operation = Serial.read();
+  target = Serial.read();
+  epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) |
+          ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+  
+  // Create message to sign: challenge + operation + target + epoch
+  uint8_t signInput[32 + 1 + 1 + 4];
+  memcpy(signInput, challenge, 32);
+  signInput[32] = operation;
+  signInput[33] = target;
+  signInput[34] = (epoch >> 24) & 0xFF;
+  signInput[35] = (epoch >> 16) & 0xFF;
+  signInput[36] = (epoch >> 8) & 0xFF;
+  signInput[37] = epoch & 0xFF;
+  
+  // Sign the message
+  uint8_t signature[P256_SIGNATURE_SIZE];
+  signWithDeviceKey(signInput, sizeof(signInput), signature);
+  
+  // Send response
+  Serial.write(MSG_ID_RESPONSE);
+  Serial.write(signature, P256_SIGNATURE_SIZE);
+  Serial.write(devicePublicKeyHash, KEY_HASH_SIZE);  // First 4 bytes of pubkey hash
+  Serial.flush();
+  
+  Serial.println("[PRO-48] Identity challenge response sent");
+  return true;
+}
 
 // =============================================================
 // Minimal SHA-256 (same implementation as UNO Q and PLC firmware)
@@ -157,54 +303,99 @@ bool receiveKey() {
   uint32_t timeoutStart = millis();
   const uint32_t TIMEOUT_MS = 10000;
 
-  Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
+  Serial.println("[PRO-48] Waiting for key distribution from UNO Q (USB epoch-tagged)...");
 
-  // Step 1: Wait for handshake
+  // Step 1: Wait for handshake 0xA1 target[1] epoch[4] (6B)
+  uint32_t stagedEpoch = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    if (Serial1.available() >= 2) {
-      uint8_t msgType = Serial1.read();
-      uint8_t targetId = Serial1.read();
-
+    // Check for identity challenge first (Slice 4) - may need up to 39 bytes
+    if (Serial.available() >= 1) {
+      int peek = Serial.peek();
+      if (peek == MSG_ID_CHALLENGE) {
+        // Wait for complete identity challenge frame
+        if (Serial.available() >= 39) {
+          handleIdentityChallenge();
+          // Reset timeout after handling challenge
+          timeoutStart = millis();
+          continue;
+        }
+        // Not enough bytes yet, keep waiting
+        delay(1);
+        continue;
+      }
+    }
+    // Proceed with handshake only if we have enough AND first byte is not identity
+    if (Serial.available() >= 6) {
+      uint8_t msgType = Serial.read();
+      uint8_t targetId = Serial.read();
+      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
-        Serial.println("[PRO-48] Handshake received.");
+        Serial.print("[PRO-48] Handshake received epoch "); Serial.println(epoch);
+        if (epoch <= activeEpoch) {
+          Serial.println("[PRO-48] Epoch not newer - reject");
+          return false;
+        }
+        stagedEpoch = epoch;
         break;
       } else {
-        Serial.printf("[PRO-48] Unexpected message: 0x%02X target: 0x%02X\n", msgType, targetId);
+        Serial.printf("[PRO-48] Unexpected message: 0x%02X target: 0x%02X epoch %lu\n", msgType, targetId, (unsigned long)epoch);
         return false;
       }
     }
   }
-  if (millis() - timeoutStart >= TIMEOUT_MS) {
+  if (stagedEpoch == 0) {
     Serial.println("[PRO-48] Timeout waiting for handshake.");
     return false;
   }
 
-  // Step 2: Send READY + device ID
-  Serial.print("[PRO-48] Sending READY with device ID: ");
-  for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-  Serial.println();
+  // Step 2: Send READY + device ID + epoch (9B)
+  Serial.print("[PRO-48] Sending READY epoch "); Serial.println(stagedEpoch);
+  Serial.write(MSG_READY);
+  Serial.write(deviceId, 4);
+  Serial.write((stagedEpoch >> 24) & 0xFF);
+  Serial.write((stagedEpoch >> 16) & 0xFF);
+  Serial.write((stagedEpoch >> 8) & 0xFF);
+  Serial.write(stagedEpoch & 0xFF);
+  Serial.flush();
 
-  Serial1.write(MSG_READY);
-  Serial1.write(deviceId, 4);
-  Serial1.flush();
-
-  // Step 3: Wait for key data (22 bytes: msg + len + key + crc)
+  // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
+  // But first, handle any identity challenges (0xB4) which may arrive at any time
   timeoutStart = millis();
-  while (Serial1.available() < 22 && millis() - timeoutStart < TIMEOUT_MS) {
+  while (millis() - timeoutStart < TIMEOUT_MS) {
+    // Check for identity challenge first (Slice 4) - may need up to 39 bytes
+    if (Serial.available() >= 1) {
+      int peek = Serial.peek();
+      if (peek == MSG_ID_CHALLENGE) {
+        // Wait for complete identity challenge frame
+        if (Serial.available() >= 39) {
+          handleIdentityChallenge();
+          // Reset timeout after handling challenge
+          timeoutStart = millis();
+          continue;
+        }
+        // Not enough bytes yet, keep waiting
+        delay(1);
+        continue;
+      }
+    }
+    // Proceed with key data only if we have enough AND first byte is not identity
+    if (Serial.available() >= 26) {
+      break;
+    }
     delay(1);
   }
-  if (Serial1.available() < 22) {
+  if (Serial.available() < 26) {
     Serial.println("[PRO-48] Timeout waiting for key data.");
     return false;
   }
 
-  uint8_t msgType = Serial1.read();
+  uint8_t msgType = Serial.read();
   if (msgType != MSG_KEY_DATA) {
     Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
     return false;
   }
 
-  uint8_t receivedKeyLen = Serial1.read();
+  uint8_t receivedKeyLen = Serial.read();
   if (receivedKeyLen != AES_KEY_SIZE) {
     Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
     return false;
@@ -212,42 +403,57 @@ bool receiveKey() {
 
   // Read key
   uint8_t receivedKey[AES_KEY_SIZE];
-  Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+  Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
-  // Read CRC32 (big-endian)
-  uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                       | ((uint32_t)Serial1.read() << 16)
-                       | ((uint32_t)Serial1.read() << 8)
-                       | ((uint32_t)Serial1.read());
+  // Read CRC32 and epoch (big-endian)
+  uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
+                       | ((uint32_t)Serial.read() << 16)
+                       | ((uint32_t)Serial.read() << 8)
+                       | ((uint32_t)Serial.read());
+  uint32_t receivedEpoch = ((uint32_t)Serial.read() << 24)
+                         | ((uint32_t)Serial.read() << 16)
+                         | ((uint32_t)Serial.read() << 8)
+                         | ((uint32_t)Serial.read());
+  if (receivedEpoch != stagedEpoch) {
+    Serial.printf("[PRO-48] Epoch mismatch staged %lu got %lu\n", (unsigned long)stagedEpoch, (unsigned long)receivedEpoch);
+    Serial.write(MSG_ERROR);
+    return false;
+  }
 
   // Verify CRC32
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
     Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
                    computedCrc, receivedCrc);
-    Serial1.write(MSG_ERROR);
+    Serial.write(MSG_ERROR);
     return false;
   }
   Serial.println("[PRO-48] CRC verified OK.");
 
-  // Step 4: Store key in SRAM
-  memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-  keyStored = true;
+  // Step 4: Store as pending (not active) for second slice
+  memcpy(pendingKey, receivedKey, AES_KEY_SIZE);
+  pendingEpoch = stagedEpoch;
+  pendingValid = true;
+  pendingDeadlineMs = millis() + 600000;
 
   // Clear receivedKey buffer
   memset(receivedKey, 0, AES_KEY_SIZE);
 
-  // Step 5: Compute SHA-256 hash of stored key and send confirmation
+  // Step 5: Compute hash of pending key and send confirmation with epoch
   uint8_t fullHash[32];
-  sha256(aesKey, AES_KEY_SIZE, fullHash);
+  sha256(pendingKey, AES_KEY_SIZE, fullHash);
   uint8_t keyHash[KEY_HASH_SIZE];
   memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
-  Serial1.write(MSG_STORED);
-  Serial1.write(keyHash, KEY_HASH_SIZE);
-  Serial1.flush();
+  Serial.write(MSG_STORED);
+  Serial.write(keyHash, KEY_HASH_SIZE);
+  Serial.write((pendingEpoch >> 24) & 0xFF);
+  Serial.write((pendingEpoch >> 16) & 0xFF);
+  Serial.write((pendingEpoch >> 8) & 0xFF);
+  Serial.write(pendingEpoch & 0xFF);
+  Serial.flush();
 
-  Serial.print("[PRO-48] Key stored. Hash sent: ");
+  Serial.print("[PRO-48] Pending key stored epoch "); Serial.print(pendingEpoch); Serial.print(" hash ");
   for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
   Serial.println();
 
@@ -268,13 +474,42 @@ const uint8_t* getStoredKey() {
   return keyStored ? aesKey : nullptr;
 }
 
+bool isPendingValid() {
+  return pendingValid && pendingEpoch != 0 && millis() < pendingDeadlineMs;
+}
+
+bool commitPending(uint32_t epoch) {
+  if (!pendingValid || pendingEpoch != epoch) {
+    Serial.println("[PRO-48] Commit failed: no pending or epoch mismatch");
+    return false;
+  }
+  if (millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-48] Commit failed: deadline expired");
+    secureWipePending();
+    return false;
+  }
+  memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+  activeEpoch = pendingEpoch;
+  keyStored = true;
+  Serial.print("[PRO-48] Committed epoch "); Serial.println(activeEpoch);
+  return true;
+}
+
+void checkPendingExpiry() {
+  if (pendingValid && millis() > pendingDeadlineMs) {
+    Serial.println("[PRO-48] Pending expired, wiping");
+    secureWipePending();
+  }
+}
+
 // =============================================================
 // Setup and Loop
 // =============================================================
 
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(115200);  // UART to UNO Q (GP0=TX, GP1=RX)
+  Serial.begin(115200); while(!Serial) delay(10);
+  // USB distribution (UART GP0/GP1 deprecated 2026-09-04)
+  // Serial kept for backwards compat but not used for key
 
   // Status LED (Feather RP2350 has built-in NeoPixel, but use GP25 if available)
   pinMode(LED_BUILTIN, OUTPUT);
@@ -306,10 +541,38 @@ void loop() {
   // PRO-50 (HMAC-SHA256 on PAW), PRO-57 (e-Paper driver),
   // PRO-58-60 (status display).
 
+  // Handle identity challenge (Slice 4)
+  if (Serial.available() >= 1) {
+    int peek = Serial.peek();
+    if (peek == MSG_ID_CHALLENGE) {
+      handleIdentityChallenge();
+    }
+  }
+
+  if (pendingValid && Serial.available() >= 5) {
+    int peek = Serial.peek();
+    if (peek == MSG_COMMIT || peek == MSG_CANCEL) {
+      uint8_t msg = Serial.read();
+      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
+      if (msg == MSG_COMMIT) {
+        if (commitPending(epoch)) Serial.println("[PRO-48] Committed via USB");
+      } else {
+        secureWipePending();
+        Serial.println("[PRO-48] Pending canceled");
+      }
+    }
+  }
+  checkPendingExpiry();
   if (keyStored) {
     digitalWrite(LED_BUILTIN, (millis() / 2000) % 2);
   } else {
-    if (Serial1.available() >= 2) {
+    if (Serial.available() >= 2) {
+      receiveKey();
+    }
+  }
+  if (pendingValid && !keyStored) {
+    // Also allow key reception when pending but not yet committed
+    if (Serial.available() >= 2) {
       receiveKey();
     }
   }

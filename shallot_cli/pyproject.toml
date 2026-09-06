@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shallot-cli"
+version = "0.1.0"
+description = "CLI tool for syncing and flashing SHALLOT firmware to PAW, PLC, UNO Q"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "SHALLOT Team", email = "team@shallot.local"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+]
+dependencies = []
+
+[project.scripts]
+shallot = "shallot_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Tripl321/yh-lora-auth-projektarbete"
+
+[tool.setuptools.packages.find]
+where = ["."]
