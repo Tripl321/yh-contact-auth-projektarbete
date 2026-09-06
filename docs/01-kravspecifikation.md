@@ -1,10 +1,10 @@
 # Kravspecifikation — SHALLOT
 
-> Status: Ej paabörjad | Vecka: 1 | Linear: PRO-30
+> Status: Ej påbörjad | Vecka: 1 | Linear: PRO-30
 
 ## 1. Bakgrund
 
-SHALLOT (Secure-by-Design ID-bricka foer OT-miljoe) aer en prototyp foer portabel autentisering i industriella OT-miljoeer. Systemet anvander LoRa P2P-kommunikation och HMAC-SHA256 challenge-response foer att verifiera en baerbar ID-bricka (PAW) mot en edge enforcement-nod.
+SHALLOT (Secure-by-Design ID-bricka för OT-miljö) är en prototyp för portabel autentisering i industriella OT-miljöer. Systemet använder LoRa P2P-kommunikation och HMAC-SHA256 challenge-response för att verifiera en bärbar ID-bricka (PAW) mot en edge enforcement-nod.
 
 ## 2. Funktionella krav
 
@@ -22,14 +22,14 @@ SHALLOT (Secure-by-Design ID-bricka foer OT-miljoe) aer en prototyp foer portabe
 | NF2 | | |
 | NF3 | | |
 
-## 4. Avgraensningar
+## 4. Avgränsningar
 
 - Ingen FIDO2/WebAuthn-implementation
 - Ingen AI- eller agentintegration
-- Ingen UX-utvaerdering
-- Prototyp paa breadboard, ej produktionsklar haardvara
+- Ingen UX-utvärdering
+- Prototyp på breadboard, ej produktionsklar hårdvara
 
 ## 5. Betygskrav
 
 - G: Fungerande prototyp med teknisk dokumentation
-- VG: Foerdjupad analys (hotmodellering, framework-mappning, pen-test)
+- VG: Fördjupad analys (hotmodellering, framework-mappning, pen-test)
