@@ -503,6 +503,11 @@ bool receiveKey() {
     return false;
   }
 
+  // Check for identity challenge before reading key data (Slice 4)
+  if (Serial.peek() == MSG_ID_CHALLENGE) {
+    handleIdentityChallenge();
+  }
+
   uint8_t msgType = Serial.read();
   if (msgType != MSG_KEY_DATA) {
     Serial.printf("[PRO-47] Expected KEY_DATA, got 0x%02X\n", msgType);
