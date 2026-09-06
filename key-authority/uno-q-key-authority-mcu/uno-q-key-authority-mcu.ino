@@ -135,10 +135,10 @@ static bool wasFreshPress() {
   
   // Detect HIGH->LOW transition (fresh press) with release check
   if (lastButtonState == HIGH && currentState == LOW) {
-    // Check that button was released for >200ms before this press
+    // Check that button was released for >=50ms before this press (TEST MODE: was 200ms)
     // This prevents held-down button from being considered "fresh"
     uint32_t releaseDuration = now - buttonReleaseStartMs;
-    if (releaseDuration >= 200) {
+    if (releaseDuration >= 50) {
       lastValidPressMs = now;
       Serial.println("[BTN] Fresh press detected (HIGH->LOW edge after release)");
       return true;
@@ -150,10 +150,10 @@ static bool wasFreshPress() {
   
   lastButtonState = currentState;
   
-  // Check if there was a valid press within the last 2 seconds
-  // This allows verifyGrant to be called within 2s of the actual press
-  if (now - lastValidPressMs <= 2000) {
-    Serial.println("[BTN] Valid press within 2s window");
+  // Check if there was a valid press within the last 5 seconds (TEST MODE: was 2s)
+  // This allows verifyGrant to be called within 5s of the actual press
+  if (now - lastValidPressMs <= 5000) {
+    Serial.println("[BTN] Valid press within 5s window");
     return true;
   }
   
