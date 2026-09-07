@@ -1149,6 +1149,93 @@ static void setupBridgeRPC() {
     Serial.println();
     return distributeKey(targetId);
   });
+
+  // =============================================================
+  // USB CDC relay test (Bridge-initiated, non-secret payload)
+  //
+  // MCU provides a non-secret handshake frame (0xA1) for the MPU to relay
+  // to PLC/PAW via /dev/ttyACM*. No key material is involved. The MPU
+  // writes the frame, reads the READY (0xA2) response, and reports back.
+  // =============================================================
+
+  // Relay test result storage (set by MPU after relay attempt)
+  static uint8_t  relayResultTarget  = 0;
+  static bool     relayResultSuccess = false;
+  static uint8_t  relayResultDeviceId[4] = {0,0,0,0};
+  static uint32_t relayResultEpoch   = 0;
+  static String   relayResultError   = "";
+
+  Bridge.provide_safe("get_relay_test_payload", [](uint8_t targetId, uint32_t epoch) -> String {
+    if (targetId != SHALLOT_TARGET_PLC && targetId != SHALLOT_TARGET_PAW) {
+      Serial.println("[RELAY] Invalid target for test payload");
+      return "";
+    }
+    uint8_t frame[SHALLOT_KD_HANDSHAKE_LEN];
+    frame[0] = SHALLOT_MSG_HANDSHAKE;
+    frame[1] = targetId;
+    frame[2] = (epoch >> 24) & 0xFF;
+    frame[3] = (epoch >> 16) & 0xFF;
+    frame[4] = (epoch >> 8) & 0xFF;
+    frame[5] = epoch & 0xFF;
+    frame[6] = 0; // seq
+    String hex;
+    hex.reserve(SHALLOT_KD_HANDSHAKE_LEN * 2);
+    for (int i = 0; i < SHALLOT_KD_HANDSHAKE_LEN; i++) {
+      hex += HEX_CHARS[(frame[i] >> 4) & 0x0F];
+      hex += HEX_CHARS[frame[i] & 0x0F];
+    }
+    Serial.print("[RELAY] Test payload for target ");
+    Serial.print(targetId);
+    Serial.print(" epoch ");
+    Serial.print(epoch);
+    Serial.print(": ");
+    Serial.println(hex);
+    return hex;
+  });
+
+  Bridge.provide_safe("set_relay_test_result", [](uint8_t targetId, bool success,
+                     String deviceIdHex, uint32_t echoedEpoch, String error) -> bool {
+    relayResultTarget  = targetId;
+    relayResultSuccess = success;
+    relayResultError    = error;
+    if (success && deviceIdHex.length() >= 8) {
+      for (int i = 0; i < 4; i++) {
+        relayResultDeviceId[i] = (uint8_t) strtoul(deviceIdHex.substring(i*2, i*2+2).c_str(),
+                                                    nullptr, 16);
+      }
+    } else {
+      memset(relayResultDeviceId, 0, 4);
+    }
+    relayResultEpoch = echoedEpoch;
+
+    Serial.print("[RELAY] Result for target ");
+    Serial.print(targetId);
+    if (success) {
+      Serial.print(": OK (device: ");
+      printHex(relayResultDeviceId, 4);
+      Serial.print(" epoch: ");
+      Serial.println(echoedEpoch);
+    } else {
+      Serial.print(": FAILED (");
+      Serial.println(error + ")");
+    }
+    return true;
+  });
+
+  Bridge.provide_safe("get_relay_test_result", [](uint8_t targetId) -> String {
+    if (targetId != relayResultTarget) return "no_result";
+    if (relayResultSuccess) {
+      String r = "ok,device:";
+      for (int i = 0; i < 4; i++) {
+        r += HEX_CHARS[(relayResultDeviceId[i] >> 4) & 0x0F];
+        r += HEX_CHARS[relayResultDeviceId[i] & 0x0F];
+      }
+      r += ",epoch:";
+      r += String(relayResultEpoch);
+      return r;
+    }
+    return "fail:" + relayResultError;
+  });
 }
 
 // =============================================================
