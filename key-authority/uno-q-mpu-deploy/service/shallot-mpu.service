@@ -1,0 +1,18 @@
+[Unit]
+Description=SHALLOT MPU Orchestration Service
+After=network.target arduino-bridge.service
+Requires=arduino-bridge.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/shallot/key-authority/uno-q-key-authority-mpu
+ExecStart=/usr/bin/python3 /home/user/shallot/key-authority/uno-q-key-authority-mpu/uno-q-key-authority-mpu.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/etc/shallot/shallot-mpu.conf
+
+[Install]
+WantedBy=multi-user.target
