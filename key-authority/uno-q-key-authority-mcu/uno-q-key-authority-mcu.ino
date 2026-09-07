@@ -48,7 +48,7 @@
 #define UNOQ_DIST_MAX_ATTEMPTS 3     // handshake / key-data sends per round
 #define UNOQ_DIST_RETRY_DELAY_MS 100 // pause between retries
 #define UART_BAUD          115200
-#define SERIAL_BAUD        9600  // USB Serial via ttyGS0/socat must match service @ 9600
+#define SERIAL_BAUD        115200  // USB Serial console baud rate (was 9600, mismatch with test plan)
 
 #define CONFIRM_BUTTON_PIN A0
 #define STATUS_LED_PIN      LED_BUILTIN
