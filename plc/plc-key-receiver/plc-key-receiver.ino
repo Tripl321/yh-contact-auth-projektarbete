@@ -4,20 +4,22 @@
  *
  * Complete implementation:
  *   - PRO-47: Key reception from UNO Q via USB (was UART, deprecated 2026-09-04)
- *   - PRO-51: Nonce generation (16-byte random)
- *   - PRO-52: Challenge-response protocol over LoRa P2P
+ *   - PRO-51: Nonce generation (16-byte, seeded from radio noise + ADC + micros)
+ *   - PRO-52: Challenge-response protocol over LoRa P2P, with response
+ *     timeout, bounded retries (lockout cooldown on exhaustion), and
+ *     rejection of stray/duplicate/malformed packets (fail-closed)
  *   - PRO-49: HMAC-SHA256 verification of PAW responses
  *
  * Distribution protocol (matches UNO Q MCU firmware) - now via USB CDC:
- *   UNO Q -> PLC:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
- *   PLC -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)     [USB]
- *   UNO Q -> PLC:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) [USB]
- *   PLC -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)  [USB]
+ *   UNO Q -> PLC:  SHALLOT_MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
+ *   PLC -> UNO Q:  SHALLOT_MSG_READY (0xA2) + device_id (4 bytes)     [USB]
+ *   UNO Q -> PLC:  SHALLOT_MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) [USB]
+ *   PLC -> UNO Q:  SHALLOT_MSG_STORED (0xA4) + stored_hash (4 bytes)  [USB]
  *
  * Authentication protocol (LoRa P2P with PAW):
- *   PLC -> PAW:   MSG_CHALLENGE (0xB1) + nonce (16 bytes)
- *   PAW -> PLC:   MSG_RESPONSE (0xB2) + HMAC-SHA256(key, nonce) (32 bytes)
- *   PLC -> PAW:   MSG_RESULT (0xB3) + result (0x01=success, 0x00=failed)
+ *   PLC -> PAW:   SHALLOT_MSG_CHALLENGE (0xB1) + nonce (16 bytes)
+ *   PAW -> PLC:   SHALLOT_MSG_RESPONSE (0xB2) + HMAC-SHA256(key, nonce) (32 bytes)
+ *   PLC -> PAW:   SHALLOT_MSG_RESULT (0xB3) + result (0x01=success, 0x00=failed)
  *
  * Key storage:
  *   The key is stored in volatile SRAM. On power loss the key
@@ -38,6 +40,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include <ShallotLoRaProtocol.h>  // Shared PAW/PLC protocol (types, lengths, timeouts)
 
 // =============================================================
 // Configuration
@@ -52,42 +55,13 @@
 #define LORA_SYNC_WORD        0x12
 #define LORA_OUTPUT_POWER     14
 
-// Timeouts
-#define KEY_DISTRIBUTION_TIMEOUT 10000  // ms
-#define CHALLENGE_INTERVAL        5000   // ms between challenges
-#define CHALLENGE_RESPONSE_TIMEOUT 30000 // ms before re-issuing a stale challenge
+// Timeouts: see SHALLOT_*_MS in ShallotLoRaProtocol.h (shared with PAW).
 #define UART_BAUD                115200
 
 // =============================================================
-// Constants
+// Constants and protocol message types — see ShallotLoRaProtocol.h
+// (shared SHALLOT_* definitions, same as PAW)
 // =============================================================
-
-#define AES_KEY_SIZE     16
-#define KEY_HASH_SIZE     4
-#define CHALLENGE_SIZE    16  // Nonce size
-#define HMAC_SIZE         32  // HMAC-SHA256 output
-
-// =============================================================
-// Protocol Message Types
-// =============================================================
-
-// Key distribution (UART)
-#define MSG_HANDSHAKE    0xA1
-#define MSG_READY        0xA2
-#define MSG_KEY_DATA     0xA3
-#define MSG_STORED       0xA4
-#define MSG_ERROR        0xA5
-#define MSG_COMMIT       0xA6
-#define MSG_CANCEL       0xA7
-
-// Authentication protocol (LoRa)
-#define MSG_CHALLENGE    0xB1
-#define MSG_RESPONSE     0xB2
-#define MSG_RESULT       0xB3
-
-// Target IDs
-#define TARGET_PLC       0x01
-#define TARGET_PAW       0x02
 
 // =============================================================
 // Pin Definitions
@@ -124,61 +98,64 @@ static void setLoRaFlag(void) {
 
 // =============================================================
 // Key Storage
+//
+// Lifecycle: staged as pending (validated) -> committed to active on
+// COMMIT -> pending wiped. Expiry/cancel/replacement wipe pending.
+// Only status and the 4-byte fingerprint ever leave the device; the
+// key bytes are never exposed (no getter returns them).
 // =============================================================
 
-static uint8_t aesKey[AES_KEY_SIZE];
+static uint8_t aesKey[SHALLOT_AES_KEY_SIZE];
 static bool keyStored = false;
 static uint32_t activeEpoch = 0;
 static uint32_t pendingEpoch = 0;
-static uint8_t pendingKey[AES_KEY_SIZE];
+static uint8_t pendingKey[SHALLOT_AES_KEY_SIZE];
 static bool pendingValid = false;
 static uint32_t pendingDeadlineMs = 0;
+static uint8_t pendingSeq = 0;
 static inline void secureWipePending() {
-  memset(pendingKey, 0, AES_KEY_SIZE);
+  volatile uint8_t* k = (volatile uint8_t*)pendingKey;
+  for (uint8_t i = 0; i < SHALLOT_AES_KEY_SIZE; i++) k[i] = 0;
   pendingValid = false;
   pendingEpoch = 0;
   pendingDeadlineMs = 0;
+  pendingSeq = 0;
 }
-static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
+// Device ID: see shared header ("PLC\x01")
 
 // =============================================================
 // Device Identity (Slice 4) - P-256 ECDSA
 // =============================================================
 
 // P-256 curve parameters (secp256r1 / prime256v1)
-// Using compressed public key format for storage (33 bytes: 0x02/0x03 + x[32])
-#define P256_PRIVATE_KEY_SIZE  32
-#define P256_PUBLIC_KEY_SIZE   65  // Uncompressed: 0x04 + x[32] + y[32] = 65 bytes
-#define P256_COMPRESSED_PUB_SIZE 33  // Compressed: 0x02/0x03 + x[32]
-#define P256_SIGNATURE_SIZE    64  // r[32] + s[32]
-#define SHA256_HASH_SIZE      32  // SHA-256 produces 32-byte hash
+// Sizes: see shared header (same as PAW).
 
 // Device identity storage
-static uint8_t devicePrivateKey[P256_PRIVATE_KEY_SIZE];
-static uint8_t devicePublicKey[P256_PUBLIC_KEY_SIZE];
+static uint8_t devicePrivateKey[SHALLOT_P256_PRIVATE_KEY_SIZE];
+static uint8_t devicePublicKey[SHALLOT_P256_PUBLIC_KEY_SIZE];
 static bool deviceIdentityGenerated = false;
-static uint8_t devicePublicKeyHash[SHA256_HASH_SIZE];  // SHA-256 of public key
+static uint8_t devicePublicKeyHash[SHALLOT_SHA256_SIZE];  // SHA-256 of public key
 
 // Generate deterministic P-256 keypair from device-specific seed
-// For prototype: use deviceId as seed; for production: use RP2350 flash OTP + TRNG
+// For prototype: use SHALLOT_DEVICE_ID_PLC as seed; for production: use RP2350 flash OTP + TRNG
 static void generateDeviceIdentity() {
   if (deviceIdentityGenerated) return;
   
   Serial.println("[PRO-48] Generating P-256 device identity...");
   
-  // For prototype: use deviceId as seed (deterministic for testing)
+  // For prototype: use SHALLOT_DEVICE_ID_PLC as seed (deterministic for testing)
   // In production: use RP2350 unique ID + TRNG
   uint8_t seed[32];
   memset(seed, 0, 32);
-  memcpy(seed, deviceId, 4);
+  memcpy(seed, SHALLOT_DEVICE_ID_PLC, 4);
   
   // Generate private key from seed (for testing - deterministic)
   // In production: use proper ECDSA key generation with TRNG
-  memcpy(devicePrivateKey, seed, P256_PRIVATE_KEY_SIZE);
+  memcpy(devicePrivateKey, seed, SHALLOT_P256_PRIVATE_KEY_SIZE);
   
   // For prototype: compute public key as hash of private key (not real ECDSA)
   // This is a placeholder - real implementation would use ECDSA
-  sha256(devicePrivateKey, P256_PRIVATE_KEY_SIZE, devicePublicKeyHash);
+  sha256(devicePrivateKey, SHALLOT_P256_PRIVATE_KEY_SIZE, devicePublicKeyHash);
   
   // Create mock public key (uncompressed format: 0x04 + x + y)
   devicePublicKey[0] = 0x04;  // Uncompressed point
@@ -195,7 +172,7 @@ static void generateDeviceIdentity() {
 // Get device public key hash (first 4 bytes for identification)
 static void getDevicePublicKeyHash(uint8_t* hashOut) {
   if (!deviceIdentityGenerated) generateDeviceIdentity();
-  memcpy(hashOut, devicePublicKeyHash, KEY_HASH_SIZE);
+  memcpy(hashOut, devicePublicKeyHash, SHALLOT_KEY_HASH_SIZE);
 }
 
 // Sign a message using device identity (placeholder - mock signature for prototype)
@@ -205,9 +182,9 @@ static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* si
   if (!deviceIdentityGenerated) generateDeviceIdentity();
   
   // Mock signature: SHA-256(privateKey + message)
-  uint8_t input[P256_PRIVATE_KEY_SIZE + msgLen];
-  memcpy(input, devicePrivateKey, P256_PRIVATE_KEY_SIZE);
-  memcpy(&input[P256_PRIVATE_KEY_SIZE], message, msgLen);
+  uint8_t input[SHALLOT_P256_PRIVATE_KEY_SIZE + msgLen];
+  memcpy(input, devicePrivateKey, SHALLOT_P256_PRIVATE_KEY_SIZE);
+  memcpy(&input[SHALLOT_P256_PRIVATE_KEY_SIZE], message, msgLen);
   sha256(input, sizeof(input), signature);
   
   // For prototype: duplicate hash to fill 64-byte signature
@@ -218,24 +195,21 @@ static void signWithDeviceKey(const uint8_t* message, size_t msgLen, uint8_t* si
 // Identity Challenge-Response Protocol
 // =============================================================
 
-// Handle identity challenge from MCU
-// MCU sends: MSG_ID_CHALLENGE(0xB4) + challenge[32] + operation[1] + target[1] + epoch[4]
-// Device responds: MSG_ID_RESPONSE(0xB5) + signature[64] + devicePubKeyHash[4]
-#define MSG_ID_CHALLENGE  0xB4
-#define MSG_ID_RESPONSE   0xB5
+// Handle identity challenge from MCU — types and frame lengths:
+// see shared header (same as PAW).
 
 static bool handleIdentityChallenge() {
   if (!deviceIdentityGenerated) generateDeviceIdentity();
   
-  // Total message: 1 (msgType) + 32 (challenge) + 1 (operation) + 1 (target) + 4 (epoch) = 39 bytes
-  if (Serial.available() < 39) return false;
+  // Total message: see SHALLOT_ID_CHALLENGE_FRAME_LEN in ShallotLoRaProtocol.h
+  if (Serial.available() < SHALLOT_ID_CHALLENGE_FRAME_LEN) return false;
   
   int peek = Serial.peek();
-  if (peek != MSG_ID_CHALLENGE) return false;
+  if (peek != SHALLOT_MSG_ID_CHALLENGE) return false;
   
   // Read challenge message
   uint8_t msgType = Serial.read();
-  if (msgType != MSG_ID_CHALLENGE) return false;
+  if (msgType != SHALLOT_MSG_ID_CHALLENGE) return false;
   
   uint8_t challenge[32];
   uint8_t operation;
@@ -261,13 +235,13 @@ static bool handleIdentityChallenge() {
   signInput[37] = epoch & 0xFF;
   
   // Sign the message
-  uint8_t signature[P256_SIGNATURE_SIZE];
+  uint8_t signature[SHALLOT_P256_SIGNATURE_SIZE];
   signWithDeviceKey(signInput, sizeof(signInput), signature);
   
   // Send response
-  Serial.write(MSG_ID_RESPONSE);
-  Serial.write(signature, P256_SIGNATURE_SIZE);
-  Serial.write(devicePublicKeyHash, KEY_HASH_SIZE);  // First 4 bytes of pubkey hash
+  Serial.write(SHALLOT_MSG_ID_RESPONSE);
+  Serial.write(signature, SHALLOT_P256_SIGNATURE_SIZE);
+  Serial.write(devicePublicKeyHash, SHALLOT_KEY_HASH_SIZE);  // First 4 bytes of pubkey hash
   Serial.flush();
   
   Serial.println("[PRO-48] Identity challenge response sent");
@@ -375,81 +349,158 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 
 // =============================================================
 // HMAC-SHA256 Implementation (PRO-49)
+// (Block size SHALLOT_HMAC_BLOCK_SIZE, see ShallotLoRaProtocol.h)
 // =============================================================
 
-#define HMAC_BLOCK_SIZE 64
-
 void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t msgLen, uint8_t* mac) {
-  uint8_t k_ipad[HMAC_BLOCK_SIZE];
-  uint8_t k_opad[HMAC_BLOCK_SIZE];
+  uint8_t k_ipad[SHALLOT_HMAC_BLOCK_SIZE];
+  uint8_t k_opad[SHALLOT_HMAC_BLOCK_SIZE];
   uint8_t innerHash[32];
   uint8_t outerHash[32];
 
-  memset(k_ipad, 0x36, HMAC_BLOCK_SIZE);
-  memset(k_opad, 0x5C, HMAC_BLOCK_SIZE);
+  memset(k_ipad, 0x36, SHALLOT_HMAC_BLOCK_SIZE);
+  memset(k_opad, 0x5C, SHALLOT_HMAC_BLOCK_SIZE);
 
   for (size_t i = 0; i < keyLen; i++) {
-    if (i < HMAC_BLOCK_SIZE) {
+    if (i < SHALLOT_HMAC_BLOCK_SIZE) {
       k_ipad[i] ^= key[i];
       k_opad[i] ^= key[i];
     }
   }
 
-  uint8_t* innerMsg = (uint8_t*)calloc(HMAC_BLOCK_SIZE + msgLen, 1);
+  uint8_t* innerMsg = (uint8_t*)calloc(SHALLOT_HMAC_BLOCK_SIZE + msgLen, 1);
   if (!innerMsg) { memset(mac, 0, 32); return; }
-  memcpy(innerMsg, k_ipad, HMAC_BLOCK_SIZE);
-  memcpy(innerMsg + HMAC_BLOCK_SIZE, msg, msgLen);
-  sha256(innerMsg, HMAC_BLOCK_SIZE + msgLen, innerHash);
+  memcpy(innerMsg, k_ipad, SHALLOT_HMAC_BLOCK_SIZE);
+  memcpy(innerMsg + SHALLOT_HMAC_BLOCK_SIZE, msg, msgLen);
+  sha256(innerMsg, SHALLOT_HMAC_BLOCK_SIZE + msgLen, innerHash);
 
-  uint8_t outerMsg[HMAC_BLOCK_SIZE + 32];
-  memcpy(outerMsg, k_opad, HMAC_BLOCK_SIZE);
-  memcpy(outerMsg + HMAC_BLOCK_SIZE, innerHash, 32);
+  uint8_t outerMsg[SHALLOT_HMAC_BLOCK_SIZE + 32];
+  memcpy(outerMsg, k_opad, SHALLOT_HMAC_BLOCK_SIZE);
+  memcpy(outerMsg + SHALLOT_HMAC_BLOCK_SIZE, innerHash, 32);
   sha256(outerMsg, sizeof(outerMsg), outerHash);
 
   memcpy(mac, outerHash, 32);
 
-  memset(k_ipad, 0, HMAC_BLOCK_SIZE);
-  memset(k_opad, 0, HMAC_BLOCK_SIZE);
+  memset(k_ipad, 0, SHALLOT_HMAC_BLOCK_SIZE);
+  memset(k_opad, 0, SHALLOT_HMAC_BLOCK_SIZE);
   memset(innerHash, 0, 32);
   memset(outerHash, 0, 32);
-  memset(innerMsg, 0, HMAC_BLOCK_SIZE + msgLen);
+  memset(innerMsg, 0, SHALLOT_HMAC_BLOCK_SIZE + msgLen);
   free(innerMsg);
   memset(outerMsg, 0, sizeof(outerMsg));
 }
+
+// Encrypted key envelope (must be after sha256, crc32, hmac_sha256 definitions)
+#include <ShallotEnvelope.h>
 
 // =============================================================
 // Nonce Generation (PRO-51)
 // =============================================================
 
-uint32_t simpleRandState = 1;
+// Prototype entropy pool. Seeded once from radio-channel noise, a floating
+// ADC pin and micros(), stirred with micros() on every challenge so two
+// boots never produce the same sequence. Prototype grade — production
+// should use the RP2350 TRNG directly.
+static uint32_t simpleRandState = 1;
+
+static inline uint32_t nonceMix32(uint32_t x) {
+  // splitmix32 finalizer: avalanche all input bits into the output.
+  x += 0x9E3779B9UL;
+  x = (x ^ (x >> 16)) * 0x85EBCA6BUL;
+  x = (x ^ (x >> 13)) * 0xC2B2AE35UL;
+  return x ^ (x >> 16);
+}
+
+static void seedNonceGenerator() {
+  uint32_t seed = (uint32_t)micros();
+  seed ^= ((uint32_t)analogRead(A0) << 16) ^ (uint32_t)analogRead(A1);
+  int32_t rssiRaw = (int32_t)(radio.getRSSI() * 256.0f);  // channel noise LSBs
+  seed ^= (uint32_t)rssiRaw * 0x9E3779B1UL;
+  if (seed == 0) seed = 0x243F6A88UL;  // never seed with zero
+  simpleRandState = nonceMix32(seed);
+  Serial.println("[PRO-51] Nonce generator seeded.");
+}
 
 void generateNonce(uint8_t* nonce, size_t size) {
-  if (size > 16) size = 16;
+  if (size > SHALLOT_CHALLENGE_SIZE) size = SHALLOT_CHALLENGE_SIZE;
+  simpleRandState ^= (uint32_t)micros();  // stir per challenge
   for (size_t i = 0; i < size; i++) {
     simpleRandState = simpleRandState * 1664525 + 1013904223;
     nonce[i] = (uint8_t)(simpleRandState >> 16);
   }
+  simpleRandState = nonceMix32(simpleRandState);
 }
 
 // =============================================================
 // Key Reception Protocol (PRO-47)
 // =============================================================
 
+// Live pending round identity: epoch = session, seq = UNO Q retry counter.
+// A repeated frame with matching (epoch, seq) is answered idempotently.
+
+static void sendReadyFrame(uint32_t epoch) {
+  Serial.print("[PRO-47] Sending READY epoch "); Serial.println(epoch);
+  Serial.write(SHALLOT_MSG_READY);
+  Serial.write(SHALLOT_DEVICE_ID_PLC, 4);
+  uint8_t epochBe[4];
+  shallot_put_be32(epochBe, epoch);
+  Serial.write(epochBe, 4);
+  Serial.flush();
+}
+
+// Stage CRC-verified key bytes as pending and acknowledge with STORED.
+// The key is validated before storage: zero/degenerate values are refused
+// (fail-closed) and leave any live pending round untouched.
+// Returns true when staged (STORED sent), false when refused.
+// Safe to repeat for the same round (idempotent resend).
+static bool stagePendingKey(const uint8_t* key, uint32_t epoch, uint8_t seq) {
+  if (!shallot_key_looks_valid(key)) {
+    Serial.println("[PRO-47] Refusing to stage degenerate key (fail-closed).");
+    return false;
+  }
+  memcpy(pendingKey, key, SHALLOT_AES_KEY_SIZE);
+  pendingEpoch = epoch;
+  pendingSeq = seq;
+  pendingValid = true;
+  pendingDeadlineMs = millis() + 600000;
+
+  uint8_t fullHash[32];
+  sha256(pendingKey, SHALLOT_AES_KEY_SIZE, fullHash);
+  uint8_t pendingHashLocal[SHALLOT_KEY_HASH_SIZE];
+  memcpy(pendingHashLocal, fullHash, SHALLOT_KEY_HASH_SIZE);
+  memset(fullHash, 0, 32);
+
+  Serial.write(SHALLOT_MSG_STORED);
+  Serial.write(pendingHashLocal, SHALLOT_KEY_HASH_SIZE);
+  uint8_t epochBe[4];
+  shallot_put_be32(epochBe, epoch);
+  Serial.write(epochBe, 4);
+  Serial.flush();
+
+  Serial.print("[PRO-47] Pending hash sent: ");
+  for (int i = 0; i < SHALLOT_KEY_HASH_SIZE; i++) Serial.printf("%02X", pendingHashLocal[i]);
+  Serial.println();
+  return true;
+}
+
 bool receiveKey() {
   uint32_t timeoutStart = millis();
-  const uint32_t TIMEOUT_MS = 10000;
+  const uint32_t TIMEOUT_MS = SHALLOT_KEY_DIST_TIMEOUT_MS;
+  uint32_t resyncSkips = 0;
 
   Serial.println("[PRO-47] Waiting for key distribution from UNO Q (USB, epoch-tagged)...");
 
-  // Step 1: Wait for handshake 0xA1 target[1] epoch_be4[4] (6B)
+  // Step 1: scan for a HANDSHAKE frame. Stray bytes are dropped one at a
+  // time (bounded resync); a KEY_DATA frame matching the live pending
+  // round is answered idempotently (covers a lost STORED frame).
   uint32_t stagedEpoch = 0;
+  uint8_t stagedSeq = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    // Check for identity challenge first (Slice 4) - may need up to 39 bytes
     if (Serial.available() >= 1) {
       int peek = Serial.peek();
-      if (peek == MSG_ID_CHALLENGE) {
+      if (peek == SHALLOT_MSG_ID_CHALLENGE) {
         // Wait for complete identity challenge frame
-        if (Serial.available() >= 39) {
+        if (Serial.available() >= SHALLOT_ID_CHALLENGE_FRAME_LEN) {
           handleIdentityChallenge();
           // Reset timeout after handling challenge
           timeoutStart = millis();
@@ -459,23 +510,61 @@ bool receiveKey() {
         delay(1);
         continue;
       }
-    }
-    // Proceed with handshake only if we have enough AND first byte is not identity
-    if (Serial.available() >= 6) {
-      uint8_t msgType = Serial.read();
-      uint8_t targetId = Serial.read();
-      uint32_t epoch = ((uint32_t)Serial.read() << 24) | ((uint32_t)Serial.read() << 16) | ((uint32_t)Serial.read() << 8) | ((uint32_t)Serial.read());
-      if (msgType == MSG_HANDSHAKE && targetId == TARGET_PLC) {
-        Serial.print("[PRO-47] Handshake received epoch "); Serial.println(epoch);
-        stagedEpoch = epoch;
-        // Reject if epoch not newer than active
-        if (stagedEpoch <= activeEpoch) {
+      if (peek == SHALLOT_MSG_KEY_DATA) {
+        if (Serial.available() < SHALLOT_KD_KEY_DATA_LEN) {
+          delay(1);  // partial frame: wait for the rest
+          continue;
+        }
+        uint8_t frame[SHALLOT_KD_KEY_DATA_LEN];
+        for (uint8_t i = 0; i < SHALLOT_KD_KEY_DATA_LEN; i++) frame[i] = (uint8_t)Serial.read();
+        uint32_t e = shallot_get_be32(&frame[22]);
+        if (pendingValid && frame[1] == SHALLOT_AES_KEY_SIZE &&
+            e == pendingEpoch && frame[26] == pendingSeq &&
+            crc32(&frame[2], SHALLOT_AES_KEY_SIZE) == shallot_get_be32(&frame[18])) {
+          if (!stagePendingKey(&frame[2], e, frame[26])) {
+            memset(frame, 0, sizeof(frame));
+            continue;  // refused: staged round untouched, await retry
+          }
+          memset(frame, 0, sizeof(frame));
+          return true;
+        }
+        Serial.println("[PRO-47] Foreign key-data frame dropped.");
+        memset(frame, 0, sizeof(frame));
+        continue;
+      }
+      if (peek == SHALLOT_MSG_HANDSHAKE) {
+        if (Serial.available() < SHALLOT_KD_HANDSHAKE_LEN) {
+          delay(1);  // partial frame: wait for the rest
+          continue;
+        }
+        uint8_t frame[SHALLOT_KD_HANDSHAKE_LEN];
+        for (uint8_t i = 0; i < SHALLOT_KD_HANDSHAKE_LEN; i++) frame[i] = (uint8_t)Serial.read();
+        uint8_t target = frame[1];
+        uint32_t epoch = shallot_get_be32(&frame[2]);
+        uint8_t seq = frame[6];
+        memset(frame, 0, sizeof(frame));
+        if (target != SHALLOT_TARGET_PLC) {
+          Serial.println("[PRO-47] Handshake for another target; dropped.");
+          continue;
+        }
+        bool fresh = (epoch > activeEpoch);
+        bool retry = (pendingValid && epoch == pendingEpoch);
+        if (!fresh && !retry) {
           Serial.println("[PRO-47] Epoch not newer than active - reject");
           return false;
         }
+        Serial.print("[PRO-47] Handshake received epoch "); Serial.print(epoch);
+        Serial.print(" seq "); Serial.println(seq);
+        stagedEpoch = epoch;
+        stagedSeq = seq;
         break;
+      }
+      // Stray byte: drop it (bounded resync after partial messages).
+      if (resyncSkips < SHALLOT_KD_MAX_RESYNC_SKIPS) {
+        Serial.read();
+        resyncSkips++;
       } else {
-        Serial.printf("[PRO-47] Unexpected message: 0x%02X target: 0x%02X epoch %lu\n", msgType, targetId, (unsigned long)epoch);
+        Serial.println("[PRO-47] Resync budget exhausted waiting for handshake.");
         return false;
       }
     }
@@ -483,29 +572,28 @@ bool receiveKey() {
   }
   if (stagedEpoch == 0) {
     Serial.println("[PRO-47] Timeout waiting for handshake.");
+    if (resyncSkips > 0) {
+      Serial.print("[PRO-47] Resynced past ");
+      Serial.print(resyncSkips);
+      Serial.println(" stray bytes.");
+    }
     return false;
   }
 
-  // Step 2: Send READY + device ID + epoch (9B)
-  Serial.print("[PRO-47] Sending READY epoch "); Serial.println(stagedEpoch);
-  Serial.write(MSG_READY);
-  Serial.write(deviceId, 4);
-  Serial.write((stagedEpoch >> 24) & 0xFF);
-  Serial.write((stagedEpoch >> 16) & 0xFF);
-  Serial.write((stagedEpoch >> 8) & 0xFF);
-  Serial.write(stagedEpoch & 0xFF);
-  Serial.flush();
+  sendReadyFrame(stagedEpoch);
 
-  // Step 3: Wait for key data 0xA3 len key16 crc4 epoch4 = 26B
-  // But first, handle any identity challenges (0xB4) which may arrive at any time
+  // Step 2: scan for the KEY_DATA frame. Validation failures resume
+  // scanning (resync) instead of aborting: UNO Q retries the same
+  // (epoch, seq), so a corrupt first attempt still converges.
+  // Identity challenges (0xB4) are served inline as before.
   timeoutStart = millis();
+  resyncSkips = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
-    // Check for identity challenge first (Slice 4) - may need up to 39 bytes
     if (Serial.available() >= 1) {
       int peek = Serial.peek();
-      if (peek == MSG_ID_CHALLENGE) {
+      if (peek == SHALLOT_MSG_ID_CHALLENGE) {
         // Wait for complete identity challenge frame
-        if (Serial.available() >= 39) {
+        if (Serial.available() >= SHALLOT_ID_CHALLENGE_FRAME_LEN) {
           handleIdentityChallenge();
           // Reset timeout after handling challenge
           timeoutStart = millis();
@@ -515,99 +603,68 @@ bool receiveKey() {
         delay(1);
         continue;
       }
-    }
-    // Proceed with key data only if we have enough AND first byte is not identity
-    if (Serial.available() >= 26) {
-      break;
+      if (peek == SHALLOT_MSG_KEY_DATA) {
+        if (Serial.available() < SHALLOT_KD_KEY_DATA_LEN) {
+          delay(1);  // partial frame: wait for the rest
+          continue;
+        }
+        uint8_t frame[SHALLOT_KD_KEY_DATA_LEN];
+        for (uint8_t i = 0; i < SHALLOT_KD_KEY_DATA_LEN; i++) frame[i] = (uint8_t)Serial.read();
+        if (frame[1] != SHALLOT_AES_KEY_SIZE) {
+          Serial.println("[PRO-47] Bad key-data length; resyncing.");
+          memset(frame, 0, sizeof(frame));
+          continue;
+        }
+        uint32_t receivedEpoch = shallot_get_be32(&frame[22]);
+        uint8_t receivedSeq = frame[26];
+        if (receivedEpoch != stagedEpoch || receivedSeq != stagedSeq) {
+          Serial.println("[PRO-47] Key-data from another round; dropped.");
+          memset(frame, 0, sizeof(frame));
+          continue;
+        }
+        uint32_t receivedCrc = shallot_get_be32(&frame[18]);
+        uint32_t computedCrc = crc32(&frame[2], SHALLOT_AES_KEY_SIZE);
+        if (computedCrc != receivedCrc) {
+          Serial.println("[PRO-47] CRC mismatch; waiting for retry.");
+          Serial.write(SHALLOT_MSG_ERROR);
+          memset(frame, 0, sizeof(frame));
+          continue;
+        }
+        Serial.println("[PRO-47] CRC verified OK.");
+        if (!stagePendingKey(&frame[2], stagedEpoch, stagedSeq)) {
+          Serial.write(SHALLOT_MSG_ERROR);
+          memset(frame, 0, sizeof(frame));
+          continue;  // refused: keep waiting for a valid retry
+        }
+        memset(frame, 0, sizeof(frame));
+        return true;
+      }
+      // Stray byte: drop it (bounded resync after partial messages).
+      if (resyncSkips < SHALLOT_KD_MAX_RESYNC_SKIPS) {
+        Serial.read();
+        resyncSkips++;
+      } else {
+        Serial.println("[PRO-47] Resync budget exhausted waiting for key data.");
+        return false;
+      }
     }
     delay(1);
   }
-  if (Serial.available() < 26) {
-    Serial.println("[PRO-47] Timeout waiting for key data.");
-    return false;
+  Serial.println("[PRO-47] Timeout waiting for key data.");
+  if (resyncSkips > 0) {
+    Serial.print("[PRO-47] Resynced past ");
+    Serial.print(resyncSkips);
+    Serial.println(" stray bytes.");
   }
-
-  uint8_t msgType = Serial.read();
-  if (msgType != MSG_KEY_DATA) {
-    Serial.printf("[PRO-47] Expected KEY_DATA, got 0x%02X\n", msgType);
-    return false;
-  }
-
-  uint8_t receivedKeyLen = Serial.read();
-  if (receivedKeyLen != AES_KEY_SIZE) {
-    Serial.printf("[PRO-47] Unexpected key length: %d\n", receivedKeyLen);
-    return false;
-  }
-
-  uint8_t receivedKey[AES_KEY_SIZE];
-  Serial.readBytes(receivedKey, AES_KEY_SIZE);
-
-  uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
-                       | ((uint32_t)Serial.read() << 16)
-                       | ((uint32_t)Serial.read() << 8)
-                       | ((uint32_t)Serial.read());
-  uint32_t receivedEpoch = ((uint32_t)Serial.read() << 24)
-                         | ((uint32_t)Serial.read() << 16)
-                         | ((uint32_t)Serial.read() << 8)
-                         | ((uint32_t)Serial.read());
-  if (receivedEpoch != stagedEpoch) {
-    Serial.printf("[PRO-47] Epoch mismatch staged %lu got %lu\n", (unsigned long)stagedEpoch, (unsigned long)receivedEpoch);
-    Serial.write(MSG_ERROR);
-    return false;
-  }
-
-  uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
-  if (computedCrc != receivedCrc) {
-    Serial.printf("[PRO-47] CRC mismatch! Expected: %08X Got: %08X\n",
-                   computedCrc, receivedCrc);
-    Serial.write(MSG_ERROR);
-    return false;
-  }
-  Serial.println("[PRO-47] CRC verified OK.");
-
-  // Store as pending, not active (second slice)
-  memcpy(pendingKey, receivedKey, AES_KEY_SIZE);
-  pendingEpoch = stagedEpoch;
-  pendingValid = true;
-  pendingDeadlineMs = millis() + 600000;
-  memset(receivedKey, 0, AES_KEY_SIZE);
-
-  uint8_t fullHash[32];
-  sha256(pendingKey, AES_KEY_SIZE, fullHash);
-  uint8_t pendingHashLocal[KEY_HASH_SIZE];
-  memcpy(pendingHashLocal, fullHash, KEY_HASH_SIZE);
-
-  Serial.write(MSG_STORED);
-  Serial.write(pendingHashLocal, KEY_HASH_SIZE);
-  Serial.write((pendingEpoch >> 24) & 0xFF);
-  Serial.write((pendingEpoch >> 16) & 0xFF);
-  Serial.write((pendingEpoch >> 8) & 0xFF);
-  Serial.write(pendingEpoch & 0xFF);
-  Serial.flush();
-
-  Serial.print("[PRO-47] Pending hash sent: ");
-  for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", pendingHashLocal[i]);
-  Serial.println();
-
-  memset(fullHash, 0, 32);
-  return true;
+  return false;
 }
 
 // =============================================================
-// API
+// Key lifecycle API
+//
+// Only status and the key fingerprint are observable from outside;
+// there is intentionally no getter returning key bytes.
 // =============================================================
-
-bool isKeyStored() {
-  return keyStored;
-}
-
-const uint8_t* getStoredKey() {
-  return keyStored ? aesKey : nullptr;
-}
-
-bool isPendingValid() {
-  return pendingValid && pendingEpoch != 0 && millis() < pendingDeadlineMs;
-}
 
 bool commitPending(uint32_t epoch) {
   if (!pendingValid || pendingEpoch != epoch) {
@@ -617,13 +674,17 @@ bool commitPending(uint32_t epoch) {
   if (millis() > pendingDeadlineMs) {
     Serial.println("[PRO-47] Commit failed: deadline expired");
     secureWipePending();
-    pendingValid = false;
     return false;
   }
-  memcpy(aesKey, pendingKey, AES_KEY_SIZE);
+  if (!shallot_key_looks_valid(pendingKey)) {
+    Serial.println("[PRO-47] Commit failed: degenerate pending key (fail-closed)");
+    secureWipePending();
+    return false;
+  }
+  memcpy(aesKey, pendingKey, SHALLOT_AES_KEY_SIZE);
   activeEpoch = pendingEpoch;
   keyStored = true;
-  // Keep pending for audit but mark as committed
+  secureWipePending();  // temp key data must not linger after replacement
   Serial.print("[PRO-47] Committed epoch "); Serial.println(activeEpoch);
   return true;
 }
@@ -631,10 +692,25 @@ bool commitPending(uint32_t epoch) {
 void checkPendingExpiry() {
   if (pendingValid && millis() > pendingDeadlineMs) {
     Serial.println("[PRO-47] Pending expired, wiping");
-    memset(pendingKey, 0, AES_KEY_SIZE);
-    pendingValid = false;
-    pendingEpoch = 0;
+    secureWipePending();
   }
+}
+
+// Acknowledge the ACTIVE key with STORED + fingerprint (hash only).
+// Callers must ensure keyStored is true; sends no key material.
+static void sendStoredAck() {
+  uint8_t fullHash[32];
+  sha256(aesKey, SHALLOT_AES_KEY_SIZE, fullHash);
+  uint8_t ackHash[SHALLOT_KEY_HASH_SIZE];
+  memcpy(ackHash, fullHash, SHALLOT_KEY_HASH_SIZE);
+  memset(fullHash, 0, 32);
+  Serial.write(SHALLOT_MSG_STORED);
+  Serial.write(ackHash, SHALLOT_KEY_HASH_SIZE);
+  uint8_t epochBe[4];
+  shallot_put_be32(epochBe, activeEpoch);
+  Serial.write(epochBe, 4);
+  Serial.flush();
+  Serial.println("[PRO-47] Sent COMMIT acknowledgment");
 }
 
 // =============================================================
@@ -642,9 +718,76 @@ void checkPendingExpiry() {
 // =============================================================
 
 static bool loraInitialized = false;
-static uint8_t currentNonce[CHALLENGE_SIZE];
+static uint8_t currentNonce[SHALLOT_CHALLENGE_SIZE];
 static uint32_t lastChallengeTime = 0;
 static bool awaitingResponse = false;
+
+// =============================================================
+// Bounded retries + replay protection (PRO-52, fail-closed)
+//
+// Retry budget: consecutive timeouts/failed verifications consume the
+// budget; a success resets it. Exhaustion enters a lockout cooldown
+// during which no challenges are sent and responses are ignored —
+// the lock stays denied by default. Replays/duplicates are rejected
+// without consuming budget (so an attacker cannot force lockout).
+// =============================================================
+
+#define PLC_AUTH_MAX_ATTEMPTS 5          // failures in a row before lockout
+#define PLC_AUTH_LOCKOUT_MS 60000        // cooldown after budget exhausted
+#define PLC_NONCE_CACHE_SIZE 16          // replay cache: last accepted nonces
+#define PLC_NONCE_CACHE_WINDOW_MS 60000  // entries older than this are evicted
+
+static uint8_t nonceCache[PLC_NONCE_CACHE_SIZE][SHALLOT_CHALLENGE_SIZE];
+static uint32_t nonceCacheTimeMs[PLC_NONCE_CACHE_SIZE];
+static uint8_t nonceCacheCount = 0;    // ever stored (ring index source)
+static uint8_t authConsecFails = 0;    // timeouts + failed verifications in a row
+static uint32_t authLockoutUntilMs = 0;
+static uint32_t authRejectedCount = 0;  // diagnostics: pre-verification rejections
+
+// True when the echoed nonce was already accepted within the window.
+static bool nonceCacheSeen(const uint8_t* nonce, uint32_t now) {
+  uint8_t n = (nonceCacheCount < PLC_NONCE_CACHE_SIZE) ? nonceCacheCount : PLC_NONCE_CACHE_SIZE;
+  for (uint8_t i = 0; i < n; i++) {
+    if (now - nonceCacheTimeMs[i] > PLC_NONCE_CACHE_WINDOW_MS) continue;  // evicted
+    volatile uint8_t diff = 0;
+    for (uint8_t j = 0; j < SHALLOT_CHALLENGE_SIZE; j++) {
+      diff |= (uint8_t)(nonceCache[i][j] ^ nonce[j]);
+    }
+    if (diff == 0) return true;
+  }
+  return false;
+}
+
+static void nonceCacheRemember(const uint8_t* nonce, uint32_t now) {
+  uint8_t slot = (uint8_t)(nonceCacheCount % PLC_NONCE_CACHE_SIZE);
+  memcpy(nonceCache[slot], nonce, SHALLOT_CHALLENGE_SIZE);
+  nonceCacheTimeMs[slot] = now;
+  nonceCacheCount++;
+}
+
+// Lockout gate. Returns true while locked; expiry resets the budget.
+// Wrap-safe via signed Elapsed comparison on unsigned millis().
+static bool authInLockout(uint32_t now) {
+  if (authLockoutUntilMs == 0) return false;
+  if ((int32_t)(now - authLockoutUntilMs) >= 0) {
+    authLockoutUntilMs = 0;
+    authConsecFails = 0;
+    Serial.println("[PRO-52] Auth lockout expired; resuming challenges.");
+    return false;
+  }
+  return true;
+}
+
+// Record a timeout or failed verification. Exhaustion fails closed
+// into lockout; success (elsewhere) resets authConsecFails to zero.
+static void authRecordFailure(uint32_t now) {
+  if (authConsecFails < 255) authConsecFails++;
+  if (authConsecFails >= PLC_AUTH_MAX_ATTEMPTS && authLockoutUntilMs == 0) {
+    authLockoutUntilMs = now + PLC_AUTH_LOCKOUT_MS;
+    awaitingResponse = false;
+    Serial.println("[PRO-52] Retry budget exhausted; entering auth lockout (fail-closed).");
+  }
+}
 
 bool sendChallenge() {
   if (!keyStored) {
@@ -655,21 +798,26 @@ bool sendChallenge() {
     Serial.println("[PRO-52] LoRa not initialized.");
     return false;
   }
+  if (authInLockout(millis())) {
+    // Fail-closed: suppressed during lockout. Silent here — the loop
+    // call site already guards, so a log would spam every pass.
+    return false;
+  }
 
-  generateNonce(currentNonce, CHALLENGE_SIZE);
+  generateNonce(currentNonce, SHALLOT_CHALLENGE_SIZE);
 
   Serial.print("[PRO-51] Generated nonce: ");
-  for (int i = 0; i < CHALLENGE_SIZE; i++) Serial.printf("%02X", currentNonce[i]);
+  for (int i = 0; i < SHALLOT_CHALLENGE_SIZE; i++) Serial.printf("%02X", currentNonce[i]);
   Serial.print(" epoch "); Serial.println(activeEpoch);
   Serial.println();
 
-  uint8_t txPacket[1 + CHALLENGE_SIZE + 4];
-  txPacket[0] = MSG_CHALLENGE;
-  memcpy(txPacket + 1, currentNonce, CHALLENGE_SIZE);
-  txPacket[1+CHALLENGE_SIZE] = (activeEpoch >> 24) & 0xFF;
-  txPacket[1+CHALLENGE_SIZE+1] = (activeEpoch >> 16) & 0xFF;
-  txPacket[1+CHALLENGE_SIZE+2] = (activeEpoch >> 8) & 0xFF;
-  txPacket[1+CHALLENGE_SIZE+3] = activeEpoch & 0xFF;
+  uint8_t txPacket[SHALLOT_LORA_CHALLENGE_LEN];
+  txPacket[0] = SHALLOT_MSG_CHALLENGE;
+  memcpy(txPacket + 1, currentNonce, SHALLOT_CHALLENGE_SIZE);
+  txPacket[1+SHALLOT_CHALLENGE_SIZE] = (activeEpoch >> 24) & 0xFF;
+  txPacket[1+SHALLOT_CHALLENGE_SIZE+1] = (activeEpoch >> 16) & 0xFF;
+  txPacket[1+SHALLOT_CHALLENGE_SIZE+2] = (activeEpoch >> 8) & 0xFF;
+  txPacket[1+SHALLOT_CHALLENGE_SIZE+3] = activeEpoch & 0xFF;
 
   int txState = radio.transmit(txPacket, sizeof(txPacket));
   if (txState == RADIOLIB_ERR_NONE) {
@@ -690,38 +838,38 @@ bool verifyResponse(const uint8_t* echoedNonce, uint32_t echoedEpoch,
     Serial.println("[PRO-49] Cannot verify: no key stored.");
     return false;
   }
-  if (responseLen != HMAC_SIZE) {
+  if (responseLen != SHALLOT_HMAC_SIZE) {
     Serial.printf("[PRO-49] Invalid response length: %u (expected %u)\n",
-                  responseLen, HMAC_SIZE);
+                  responseLen, SHALLOT_HMAC_SIZE);
     return false;
   }
-  if (echoedEpoch != activeEpoch) {
-    Serial.printf("[PRO-49] Epoch mismatch expected %lu got %lu\n", (unsigned long)activeEpoch, (unsigned long)echoedEpoch);
-    return false;
-  }
-  // Constant-time nonce check (prevent attacker-chosen nonce)
-  volatile uint8_t nonceDiff = 0;
-  for (int i=0;i<CHALLENGE_SIZE;i++) nonceDiff |= echoedNonce[i] ^ currentNonce[i];
-  if (nonceDiff != 0) {
-    Serial.println("[PRO-49] Nonce mismatch (replay or wrong challenge)");
-    return false;
+  // Shared correlation check: response must echo the live nonce and epoch.
+  switch (shallot_check_correlation(currentNonce, echoedNonce, activeEpoch, echoedEpoch)) {
+    case SHALLOT_PROTO_OK:
+      break;
+    case SHALLOT_PROTO_ERR_EPOCH_MISMATCH:
+      Serial.printf("[PRO-49] Epoch mismatch expected %lu got %lu\n", (unsigned long)activeEpoch, (unsigned long)echoedEpoch);
+      return false;
+    default:
+      Serial.println("[PRO-49] Nonce mismatch (replay or wrong challenge)");
+      return false;
   }
 
-  uint8_t hmacInput[4 + CHALLENGE_SIZE];
+  uint8_t hmacInput[4 + SHALLOT_CHALLENGE_SIZE];
   hmacInput[0] = (activeEpoch >> 24) & 0xFF;
   hmacInput[1] = (activeEpoch >> 16) & 0xFF;
   hmacInput[2] = (activeEpoch >> 8) & 0xFF;
   hmacInput[3] = activeEpoch & 0xFF;
-  memcpy(hmacInput+4, echoedNonce, CHALLENGE_SIZE);
-  uint8_t expectedHmac[HMAC_SIZE];
-  hmac_sha256(aesKey, AES_KEY_SIZE, hmacInput, 4+CHALLENGE_SIZE, expectedHmac);
+  memcpy(hmacInput+4, echoedNonce, SHALLOT_CHALLENGE_SIZE);
+  uint8_t expectedHmac[SHALLOT_HMAC_SIZE];
+  hmac_sha256(aesKey, SHALLOT_AES_KEY_SIZE, hmacInput, 4+SHALLOT_CHALLENGE_SIZE, expectedHmac);
 
   volatile uint8_t diff = 0;
-  for (size_t i = 0; i < HMAC_SIZE; i++) {
+  for (size_t i = 0; i < SHALLOT_HMAC_SIZE; i++) {
     diff |= response[i] ^ expectedHmac[i];
   }
 
-  memset(expectedHmac, 0, HMAC_SIZE);
+  memset(expectedHmac, 0, SHALLOT_HMAC_SIZE);
   memset(hmacInput, 0, sizeof(hmacInput));
 
   if (diff != 0) {
@@ -751,6 +899,7 @@ void initLoRa() {
     loraInitialized = true;
     radio.setDio1Action(setLoRaFlag);
     radio.startReceive();
+    seedNonceGenerator();  // radio noise is available from here on
   } else {
     Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
   }
@@ -758,6 +907,14 @@ void initLoRa() {
 
 void setup() {
   Serial.begin(115200); while(!Serial) delay(10);
+
+  // Fail-closed boot: SRAM holds no key after power loss. State this
+  // explicitly (belt-and-braces alongside BSS zero-init) so nothing
+  // below can run on stale key material.
+  memset(aesKey, 0, SHALLOT_AES_KEY_SIZE);
+  keyStored = false;
+  activeEpoch = 0;
+  secureWipePending();
 
   loraSPI.setSCK(SPI1_SCK_PIN);
   loraSPI.setTX(SPI1_MOSI_PIN);
@@ -809,29 +966,50 @@ void loop() {
       Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
                     msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
 
-      // RSSI fail-closed gate
+      // RSSI fail-closed gate (shared validator)
       float rssi = radio.getRSSI();
-      if (rssi < -70.0) {
+      if (!shallot_rssi_ok(rssi)) {
         Serial.printf("[PRO-52] RSSI %.1f dBm too weak, discard\n", rssi);
         radio.startReceive();
         return;
       }
-      if (msgType == MSG_RESPONSE && rxLen >= (1 + CHALLENGE_SIZE + 4 + HMAC_SIZE)) {
+      if (shallot_check_response_packet(msgType, rxLen) == SHALLOT_PROTO_OK) {
+        // Fail-closed: a response is only meaningful for a live challenge.
+        if (!awaitingResponse) {
+          authRejectedCount++;
+          Serial.println("[PRO-52] Stray response with no live challenge; rejected.");
+          radio.startReceive();
+          return;
+        }
         Serial.println("[PRO-52] Response received from PAW over LoRa");
 
-        // Response: 0xB2 || nonce[16] || epoch_be4[4] || hmac[32] = 53B
+        // Response layout: see SHALLOT_LORA_RESPONSE_LEN in shared header.
         const uint8_t* echoedNonce = rxBuffer + 1;
-        uint32_t echoedEpoch = ((uint32_t)rxBuffer[1+CHALLENGE_SIZE] << 24) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+1] << 16) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+2] << 8) | ((uint32_t)rxBuffer[1+CHALLENGE_SIZE+3]);
-        const uint8_t* responseHmac = rxBuffer + 1 + CHALLENGE_SIZE + 4;
+        uint32_t echoedEpoch = ((uint32_t)rxBuffer[1+SHALLOT_CHALLENGE_SIZE] << 24) | ((uint32_t)rxBuffer[1+SHALLOT_CHALLENGE_SIZE+1] << 16) | ((uint32_t)rxBuffer[1+SHALLOT_CHALLENGE_SIZE+2] << 8) | ((uint32_t)rxBuffer[1+SHALLOT_CHALLENGE_SIZE+3]);
+        const uint8_t* responseHmac = rxBuffer + 1 + SHALLOT_CHALLENGE_SIZE + 4;
 
-        bool verified = verifyResponse(echoedNonce, echoedEpoch, responseHmac, HMAC_SIZE);
+        uint32_t nowRx = millis();
+        if (nonceCacheSeen(echoedNonce, nowRx)) {
+          authRejectedCount++;
+          Serial.println("[PRO-52] Duplicate response (replay); rejected.");
+          radio.startReceive();
+          return;
+        }
+
+        bool verified = verifyResponse(echoedNonce, echoedEpoch, responseHmac, SHALLOT_HMAC_SIZE);
+        if (verified) {
+          nonceCacheRemember(echoedNonce, nowRx);
+          authConsecFails = 0;
+        } else {
+          authRecordFailure(nowRx);
+        }
 
         awaitingResponse = false;
         lastChallengeTime = millis();
 
-        uint8_t resultPacket[2];
-        resultPacket[0] = MSG_RESULT;
-        resultPacket[1] = verified ? 0x01 : 0x00;
+        uint8_t resultPacket[SHALLOT_LORA_RESULT_LEN];
+        resultPacket[0] = SHALLOT_MSG_RESULT;
+        resultPacket[1] = verified ? SHALLOT_RESULT_SUCCESS : SHALLOT_RESULT_FAILURE;
 
         int txState = radio.transmit(resultPacket, sizeof(resultPacket));
         if (txState == RADIOLIB_ERR_NONE) {
@@ -856,19 +1034,31 @@ void loop() {
             delay(50);
           }
         }
+      } else {
+        // Explicit rejection of malformed packets: wrong type tag or
+        // shorter than the layout requires. Never treated as success.
+        authRejectedCount++;
+        Serial.printf("[PRO-52] Malformed LoRa packet rejected: type 0x%02X len %u\n",
+                      msgType, (unsigned)rxLen);
+        radio.startReceive();
+        return;
       }
     }
     radio.startReceive();
   }
 
   if (keyStored && loraInitialized) {
+    uint32_t nowAuth = millis();
     bool stale = awaitingResponse &&
-                 (millis() - lastChallengeTime >= CHALLENGE_RESPONSE_TIMEOUT);
+                 (nowAuth - lastChallengeTime >= SHALLOT_CHALLENGE_RESPONSE_TIMEOUT_MS);
     if (stale) {
       awaitingResponse = false;
       Serial.println("[PRO-52] Challenge response timed out; re-issuing.");
+      authRecordFailure(nowAuth);  // bounded retries: exhaustion locks out
     }
-    if (!awaitingResponse && millis() - lastChallengeTime >= CHALLENGE_INTERVAL) {
+    // Lockout suppresses sends (fail-closed); expiry is logged by the gate.
+    if (!authInLockout(nowAuth) &&
+        !awaitingResponse && nowAuth - lastChallengeTime >= SHALLOT_CHALLENGE_INTERVAL_MS) {
       sendChallenge();
     }
   }
@@ -876,7 +1066,7 @@ void loop() {
   // Handle identity challenge via USB (Slice 4) - check first, regardless of key state
   if (Serial.available() >= 1) {
     int peek = Serial.peek();
-    if (peek == MSG_ID_CHALLENGE) {
+    if (peek == SHALLOT_MSG_ID_CHALLENGE) {
       handleIdentityChallenge();
     }
   }
@@ -892,10 +1082,12 @@ void loop() {
     initLoRa();
   }
 
-  // Handle pending commit/cancel via USB (6B: type + target + epoch_be4, or 5B legacy)
-  if (pendingValid && Serial.available() >= 5) {
+  // Handle pending commit/cancel via USB (6B: type + target + epoch_be4, or 5B legacy).
+  // A COMMIT for the already-active epoch is answered idempotently (covers
+  // a lost STORED ack without touching key state).
+  if (Serial.available() >= 5) {
     int peek = Serial.peek();
-    if (peek == MSG_COMMIT || peek == MSG_CANCEL) {
+    if (peek == SHALLOT_MSG_COMMIT || peek == SHALLOT_MSG_CANCEL) {
       uint8_t msg = Serial.read();
       uint32_t epoch = 0;
       
@@ -903,9 +1095,9 @@ void loop() {
       if (Serial.available() >= 5) { // At least 5 more bytes = target + epoch
         uint8_t targetId = Serial.read();
         // Only process if this message is for us or broadcast
-        if (targetId != TARGET_PLC && targetId != 0xFF) {
+        if (targetId != SHALLOT_TARGET_PLC && targetId != 0xFF) {
           // Not for us, skip the rest
-          while (Serial.available() > 0 && Serial.peek() != MSG_COMMIT && Serial.peek() != MSG_CANCEL) {
+          while (Serial.available() > 0 && Serial.peek() != SHALLOT_MSG_COMMIT && Serial.peek() != SHALLOT_MSG_CANCEL) {
             Serial.read();
           }
           return; // Wait for next message
@@ -918,30 +1110,22 @@ void loop() {
         return;
       }
       
-      if (msg == MSG_COMMIT) {
-        if (commitPending(epoch)) {
+      if (msg == SHALLOT_MSG_COMMIT) {
+        if (pendingValid && commitPending(epoch)) {
           Serial.print("[PRO-47] Committed pending epoch "); Serial.println(epoch);
-          // Send acknowledgment back to MCU
-          uint8_t fullHash[32];
-          sha256(aesKey, AES_KEY_SIZE, fullHash);
-          uint8_t ackHash[KEY_HASH_SIZE];
-          memcpy(ackHash, fullHash, KEY_HASH_SIZE);
-          Serial.write(MSG_STORED);
-          Serial.write(ackHash, KEY_HASH_SIZE);
-          Serial.write((activeEpoch >> 24) & 0xFF);
-          Serial.write((activeEpoch >> 16) & 0xFF);
-          Serial.write((activeEpoch >> 8) & 0xFF);
-          Serial.write(activeEpoch & 0xFF);
-          Serial.flush();
-          // Clear the hash to prevent memory leakage
-          memset(fullHash, 0, 32);
-          Serial.println("[PRO-47] Sent COMMIT acknowledgment");
+          sendStoredAck();
+        } else if (keyStored && epoch == activeEpoch) {
+          // Duplicate COMMIT after a lost ACK: already active, resend ack only.
+          Serial.println("[PRO-47] Duplicate COMMIT for active epoch; resending ack");
+          sendStoredAck();
         } else {
           Serial.println("[PRO-47] Commit failed");
         }
-      } else {
+      } else if (pendingValid) {
         secureWipePending();
         Serial.println("[PRO-47] Pending canceled");
+      } else {
+        Serial.println("[PRO-47] Cancel ignored (no pending)");
       }
     }
   }

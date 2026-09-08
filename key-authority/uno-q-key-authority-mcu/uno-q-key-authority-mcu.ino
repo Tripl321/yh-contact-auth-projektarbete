@@ -636,6 +636,53 @@ static inline uint32_t crc32(const uint8_t* data, size_t len) {
 }
 
 // =============================================================
+// HMAC-SHA256 (needed by ShallotEnvelope for key derivation)
+// =============================================================
+
+static void hmac_sha256(const uint8_t* key, size_t keyLen,
+                        const uint8_t* msg, size_t msgLen, uint8_t* mac) {
+  uint8_t ipad[SHALLOT_HMAC_BLOCK_SIZE];
+  uint8_t opad[SHALLOT_HMAC_BLOCK_SIZE];
+  uint8_t innerMsg[SHALLOT_HMAC_BLOCK_SIZE + 64]; // block + message (messages are short)
+  uint8_t innerHash[SHALLOT_SHA256_SIZE];
+
+  memset(ipad, 0, SHALLOT_HMAC_BLOCK_SIZE);
+  memset(opad, 0, SHALLOT_HMAC_BLOCK_SIZE);
+  if (keyLen <= SHALLOT_HMAC_BLOCK_SIZE) {
+    memcpy(ipad, key, keyLen);
+  } else {
+    sha256(key, keyLen, ipad);
+  }
+  memcpy(opad, ipad, SHALLOT_HMAC_BLOCK_SIZE);
+  for (int i = 0; i < SHALLOT_HMAC_BLOCK_SIZE; i++) {
+    ipad[i] ^= 0x36;
+    opad[i] ^= 0x5C;
+  }
+
+  // Inner: SHA-256(ipad || msg)
+  if (msgLen <= sizeof(innerMsg) - SHALLOT_HMAC_BLOCK_SIZE) {
+    memcpy(innerMsg, ipad, SHALLOT_HMAC_BLOCK_SIZE);
+    memcpy(innerMsg + SHALLOT_HMAC_BLOCK_SIZE, msg, msgLen);
+    sha256(innerMsg, SHALLOT_HMAC_BLOCK_SIZE + msgLen, innerHash);
+  }
+
+  // Outer: SHA-256(opad || innerHash)
+  uint8_t outerMsg[SHALLOT_HMAC_BLOCK_SIZE + SHALLOT_SHA256_SIZE];
+  memcpy(outerMsg, opad, SHALLOT_HMAC_BLOCK_SIZE);
+  memcpy(outerMsg + SHALLOT_HMAC_BLOCK_SIZE, innerHash, SHALLOT_SHA256_SIZE);
+  sha256(outerMsg, sizeof(outerMsg), mac);
+
+  memset(ipad, 0, sizeof(ipad));
+  memset(opad, 0, sizeof(opad));
+  memset(innerMsg, 0, sizeof(innerMsg));
+  memset(innerHash, 0, sizeof(innerHash));
+  memset(outerMsg, 0, sizeof(outerMsg));
+}
+
+// Encrypted key envelope (must be after sha256, crc32, hmac_sha256 definitions)
+#include <ShallotEnvelope.h>
+
+// =============================================================
 // Key Generation (PRO-45)
 // =============================================================
 
@@ -1247,6 +1294,83 @@ static void setupBridgeRPC() {
       return r;
     }
     return "fail:" + relayResultError[slot];
+  });
+
+  // =============================================================
+  // Encrypted key envelope (Bridge-initiated, ciphertext only)
+  //
+  // MCU encrypts the pending AES key with a per-device transport key
+  // derived from the device identity key and a fresh random nonce.
+  // The MPU receives only ciphertext — it cannot decrypt the key.
+  // =============================================================
+
+  Bridge.provide_safe("get_key_envelope", [](uint8_t targetId, uint32_t epoch, uint8_t seq) -> String {
+    if (targetId != SHALLOT_TARGET_PLC && targetId != SHALLOT_TARGET_PAW) {
+      Serial.println("[ENV] Invalid target");
+      return "";
+    }
+    if (pendingEpoch == 0 || millis() > pendingDeadlineMs) {
+      Serial.println("[ENV] No pending key or expired");
+      return "";
+    }
+    if (epoch != pendingEpoch) {
+      Serial.print("[ENV] Epoch mismatch: requested ");
+      Serial.print(epoch);
+      Serial.print(" pending ");
+      Serial.println(pendingEpoch);
+      return "";
+    }
+
+    // Device identity key (prototype: deterministic from device ID)
+    uint8_t devKey[32];
+    memset(devKey, 0, sizeof(devKey));
+    if (targetId == SHALLOT_TARGET_PLC) {
+      memcpy(devKey, SHALLOT_DEVICE_ID_PLC, 4);
+    } else {
+      memcpy(devKey, SHALLOT_DEVICE_ID_PAW, 4);
+    }
+
+    // Generate fresh random nonce (4 bytes from TRNG or millis)
+    uint8_t nonce[SHALLOT_ENVELOPE_NONCE_SIZE];
+    // Use TRNG if available, otherwise use entropy from millis
+    uint32_t trngVal = millis();
+    nonce[0] = (trngVal >> 24) & 0xFF;
+    nonce[1] = (trngVal >> 16) & 0xFF;
+    nonce[2] = (trngVal >> 8) & 0xFF;
+    nonce[3] = trngVal & 0xFF;
+    // Mix with a second read for more entropy
+    trngVal = micros();
+    nonce[0] ^= (trngVal >> 24) & 0xFF;
+    nonce[1] ^= (trngVal >> 16) & 0xFF;
+    nonce[2] ^= (trngVal >> 8) & 0xFF;
+    nonce[3] ^= trngVal & 0xFF;
+
+    // Build encrypted envelope
+    uint8_t frame[SHALLOT_ENVELOPE_FRAME_LEN];
+    shallot_build_envelope(pendingKey, pendingEpoch, devKey, sizeof(devKey),
+                           nonce, seq, frame);
+
+    // Convert to hex string
+    String hex;
+    hex.reserve(SHALLOT_ENVELOPE_FRAME_LEN * 2);
+    for (int i = 0; i < SHALLOT_ENVELOPE_FRAME_LEN; i++) {
+      hex += HEX_CHARS[(frame[i] >> 4) & 0x0F];
+      hex += HEX_CHARS[frame[i] & 0x0F];
+    }
+
+    Serial.print("[ENV] Envelope for target ");
+    Serial.print(targetId);
+    Serial.print(" epoch ");
+    Serial.print(epoch);
+    Serial.print(" seq ");
+    Serial.print(seq);
+    Serial.print(": ");
+    Serial.println(hex);
+
+    // Zero sensitive data
+    memset(devKey, 0, sizeof(devKey));
+    memset(frame, 0, sizeof(frame));
+    return hex;
   });
 }
 
