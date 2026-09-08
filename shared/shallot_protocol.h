@@ -7,7 +7,7 @@
 #include "hardware/sha256.h"
 #include "pico/rand.h"
 
-#include <AESLib.h>
+#include <AES.h>
 
 // =====================================================================
 // SHALLOT Protocol — Shared header for Edge Enforcement and PAW
@@ -22,7 +22,8 @@
 //
 // HMAC scope: Version+MsgType || SenderID || SeqNum || Nonce || EncryptedPayload
 // Key derivation: K_enc = SHA-256(master_key || "ENC")[:16], K_mac = SHA-256(master_key || "MAC")[:16]
-// IV: [0x00 x4] || SeqNum(4B) || Nonce(8B)
+// IV: blkCtr_be2 || [0x00 x2] || SeqNum(4B) || Nonce(8B) — the block
+// counter has DEDICATED bytes and never overlaps the nonce (see aes_ctr_crypt).
 // =====================================================================
 
 #define SHALLOT_VERSION        0x01
@@ -64,6 +65,75 @@ struct ShallotKeys {
     uint8_t k_enc[SHALLOT_KEY_LEN];
     uint8_t k_mac[SHALLOT_KEY_LEN];
 };
+
+// =====================================================================
+// Streaming adapter over the pico-sdk RP2350 SHA-256 peripheral API
+// (sha256_start/put_word/wait_valid/get_result).
+//
+// The peripheral compresses raw 64-byte blocks and has no padding
+// engine, so this adapter buffers partial blocks and appends standard
+// SHA-256 padding (0x80, zeros, 64-bit big-endian bit length) in
+// finish(). BSWAP stays at its SDK default (true: little-endian bus
+// words are converted to the big-endian order SHA-256 expects); the
+// digest is read back big-endian per FIPS 180-4.
+//
+// Single-threaded use only: one global hash context. Both sketches run
+// a single loop with strictly sequential hash calls — never nested.
+// =====================================================================
+
+static uint8_t  sha_hw_buf[SHA256_BLOCK_SIZE];
+static size_t   sha_hw_buflen = 0;
+static uint64_t sha_hw_total = 0;
+
+static inline void sha_hw_flush_block(void) {
+    sha256_wait_ready_blocking();
+    for (uint8_t i = 0; i < SHA256_BLOCK_SIZE / 4; i++) {
+        uint32_t w;
+        memcpy(&w, sha_hw_buf + i * 4, 4);
+        sha256_put_word(w);
+    }
+    sha_hw_buflen = 0;
+}
+
+static inline void hw_sha256_start(void) {
+    sha256_start();
+    sha_hw_buflen = 0;
+    sha_hw_total = 0;
+}
+
+static inline void hw_sha256_update(const uint8_t *data, size_t len) {
+    sha_hw_total += (uint64_t)len;
+    while (len > 0) {
+        size_t room = SHA256_BLOCK_SIZE - sha_hw_buflen;
+        size_t n = (len < room) ? len : room;
+        memcpy(sha_hw_buf + sha_hw_buflen, data, n);
+        sha_hw_buflen += n;
+        data += n;
+        len -= n;
+        if (sha_hw_buflen == SHA256_BLOCK_SIZE) sha_hw_flush_block();
+    }
+}
+
+static inline void hw_sha256_finish(uint8_t digest[SHA256_DIGEST_SIZE]) {
+    uint64_t bitLen = sha_hw_total * 8u;
+    const uint8_t padFirst = 0x80;
+    hw_sha256_update(&padFirst, 1);
+    const uint8_t zero = 0x00;
+    if (sha_hw_buflen > SHA256_BLOCK_SIZE - 8) {
+        while (sha_hw_buflen < SHA256_BLOCK_SIZE) hw_sha256_update(&zero, 1);
+    }
+    while (sha_hw_buflen < SHA256_BLOCK_SIZE - 8) hw_sha256_update(&zero, 1);
+    uint8_t lenBe[8];
+    for (uint8_t i = 0; i < 8; i++) lenBe[i] = (uint8_t)(bitLen >> (56u - 8u * i));
+    hw_sha256_update(lenBe, 8);
+    sha256_wait_valid_blocking();
+    sha256_result_t res;
+    sha256_get_result(&res, SHA256_BIG_ENDIAN);
+    memcpy(digest, res.bytes, SHA256_DIGEST_SIZE);
+    memset(sha_hw_buf, 0, sizeof(sha_hw_buf));
+    sha_hw_buflen = 0;
+    sha_hw_total = 0;
+}
 
 // =====================================================================
 // Key derivation (PRO-81 beslut 8)
@@ -127,7 +197,12 @@ static void hmac_sha256_truncated(const uint8_t key[SHALLOT_KEY_LEN],
 
 // =====================================================================
 // AES-128-CTR encrypt/decrypt — single-pass XOR with keystream.
-// Reuses a single AESLib instance (key schedule computed once).
+// Uses the raw single-block API bundled with AESLib (set_key + ECB
+// encrypt of the counter), NOT the AESLib CBC envelope API.
+// The 16-bit block counter lives in DEDICATED counter bytes: it must
+// never overlap the nonce — an earlier revision XORed it over
+// nonce[6..7], reusing keystream whenever a nonce ended in 00 01
+// (two-time pad within one message).
 // =====================================================================
 static void aes_ctr_crypt(const uint8_t key[SHALLOT_KEY_LEN],
                           uint32_t seqNum,
@@ -143,14 +218,16 @@ static void aes_ctr_crypt(const uint8_t key[SHALLOT_KEY_LEN],
     counter[7] = (uint8_t)(seqNum);
     memcpy(counter + 8, nonce, SHALLOT_NONCE_LEN);
 
-    AESLib aesLib;
+    AES aes;
+    aes.set_key(key, 128);
     uint8_t keystream[16];
     size_t offset = 0;
     uint16_t blockCtr = 0;
 
     while (offset < dataLen) {
-        memcpy(keystream, counter, 16);
-        aesLib.encryptSingle(keystream, const_cast<uint8_t *>(key));
+        counter[0] = (uint8_t)(blockCtr >> 8);
+        counter[1] = (uint8_t)(blockCtr);
+        aes.encrypt(counter, keystream);
 
         size_t chunkLen = dataLen - offset;
         if (chunkLen > 16) chunkLen = 16;
@@ -161,10 +238,9 @@ static void aes_ctr_crypt(const uint8_t key[SHALLOT_KEY_LEN],
         offset += chunkLen;
 
         blockCtr++;
-        counter[14] = (uint8_t)(blockCtr >> 8);
-        counter[15] = (uint8_t)(blockCtr);
     }
 
+    aes.clean();
     memset(keystream, 0, 16);
     memset(counter, 0, 16);
 }

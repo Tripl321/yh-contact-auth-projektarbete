@@ -8,10 +8,12 @@
  *
  * Pin mapping (SPI1 / Core1262):
  *   CS    = GPIO9   RST   = GPIO4   BUSY  = GPIO7
- *   DIO1  = GPIO28  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO24
+ *   DIO1  = GPIO28  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO24 (Feather D24)
  *
  * CRITICAL: GPIO4 is SPI0 MISO on RP2350. We use it as RST for Core1262.
- *           Do NOT call SPI1.setRX(4). The SPI1 MISO is on GPIO24 (D24).
+ *           Do NOT call SPI1.setRX(4). The SPI1 MISO is on GPIO24 (D24)
+ *           per docs/04-kopplingsdokumentation (NOT GPIO12 — that is the
+ *           PLC Pico 2 wiring).
  *           RST is output-only so it does not conflict with SPI0 MISO
  *           functionally, but ensure the e-Paper library does not
  *           reconfigure GPIO4 as SPI0 MISO after Core1262 RST is set.
@@ -32,7 +34,7 @@
 #define LORA_DIO1  28
 #define LORA_SCK   10
 #define LORA_MOSI  11
-#define LORA_MISO  24
+#define LORA_MISO  24  // Feather D24 per docs/04 (PLC uses GPIO12)
 
 #define LORA_FREQ       868.1
 #define LORA_BW         125.0
@@ -51,13 +53,14 @@ static const uint8_t PAW_SENDER_ID[SHALLOT_SENDERID_LEN] = {
     0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-static SPIClass spi1(spi1);
-static SX1262 radio = RadioLibModule(&spi1, LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
+static SPIClassRP2040 loraSPI(spi1, LORA_MISO, LORA_CS, LORA_SCK, LORA_MOSI);
+static SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, loraSPI);
 static ShallotKeys keys;
 static uint32_t pawSeqNum = 0;
 static SeqWhitelist seqWhitelist;
 
-#define LED_PIN 25
+#define LED_PIN 6  // NOT 7 (Core1262 BUSY) and NOT 25 (e-Paper BUSY on this
+                   // Feather wiring) — matches paw-main.ino LED relocation
 
 static uint8_t txBuf[SHALLOT_MAX_PACKET];
 static uint8_t rxBuf[SHALLOT_MAX_PACKET];
@@ -75,13 +78,14 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
-    spi1.setSCK(LORA_SCK);
-    spi1.setTX(LORA_MOSI);
-    spi1.setRX(LORA_MISO);
-    spi1.setCS(LORA_CS);
-    spi1.begin();
+    loraSPI.setSCK(LORA_SCK);
+    loraSPI.setTX(LORA_MOSI);
+    loraSPI.setRX(LORA_MISO);
+    loraSPI.setCS(LORA_CS);
+    loraSPI.begin();
 
-    int state = radio.begin(LORA_FREQ, LORA_SF, LORA_BW, LORA_CR,
+    // RadioLib order: freq, bandwidth, spreading factor, coding rate.
+    int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("[SHALLOT] Radio init failed: ");
