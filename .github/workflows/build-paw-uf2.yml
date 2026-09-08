@@ -5,6 +5,18 @@ on:
     branches: [ main ]
     paths:
       - 'id-kort/paw-main/**'
+      - 'id-kort/paw-challenge-response/**'
+      - 'plc/edge-challenge-response/**'
+      - 'shared/**'
+      - 'tests/test_pro52_protocol.py'
+      - '.github/workflows/build-paw-uf2.yml'
+  pull_request:
+    paths:
+      - 'id-kort/paw-main/**'
+      - 'id-kort/paw-challenge-response/**'
+      - 'plc/edge-challenge-response/**'
+      - 'shared/**'
+      - 'tests/test_pro52_protocol.py'
       - '.github/workflows/build-paw-uf2.yml'
   workflow_dispatch:
     inputs:
@@ -103,3 +115,119 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-edge-pro52:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+
+      - name: Install RP2040 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install libraries (RadioLib, AESLib)
+        run: arduino-cli lib install RadioLib "AESLib@2.3.6"
+
+      - name: Build edge challenge-response firmware (UF2)
+        run: |
+          arduino-cli compile \
+            --fqbn rp2040:rp2040:rpipico2 \
+            --library "$GITHUB_WORKSPACE/shared" \
+            --output-dir build/edge-challenge-response \
+            plc/edge-challenge-response/edge-challenge-response.ino
+          ls -la build/edge-challenge-response/
+
+      - name: Verify build artifact exists
+        run: |
+          UF2_FILE=$(find build/edge-challenge-response -name "*.uf2" | head -n 1)
+          if [ -z "$UF2_FILE" ]; then
+            echo "ERROR: No UF2 file produced by edge build"
+            exit 1
+          fi
+          test -f "$UF2_FILE"
+          echo "UF2 file created: $UF2_FILE"
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-challenge-response-uf2
+          path: build/edge-challenge-response/*.uf2
+          compression-level: 0
+          if-no-files-found: error
+
+  build-paw-pro52:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+
+      - name: Install RP2040 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install libraries (RadioLib, AESLib)
+        run: arduino-cli lib install RadioLib "AESLib@2.3.6"
+
+      - name: Build PAW challenge-response firmware (UF2)
+        run: |
+          arduino-cli compile \
+            --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
+            --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+            --library "$GITHUB_WORKSPACE/shared" \
+            --output-dir build/paw-challenge-response \
+            id-kort/paw-challenge-response/paw-challenge-response.ino
+          ls -la build/paw-challenge-response/
+
+      - name: Verify build artifact exists
+        run: |
+          UF2_FILE=$(find build/paw-challenge-response -name "*.uf2" | head -n 1)
+          if [ -z "$UF2_FILE" ]; then
+            echo "ERROR: No UF2 file produced by PAW challenge-response build"
+            exit 1
+          fi
+          test -f "$UF2_FILE"
+          echo "UF2 file created: $UF2_FILE"
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paw-challenge-response-uf2
+          path: build/paw-challenge-response/*.uf2
+          compression-level: 0
+          if-no-files-found: error
+
+  pytest-pro52:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run PRO-52 protocol tests
+        run: python3 -m pytest tests/ -q
