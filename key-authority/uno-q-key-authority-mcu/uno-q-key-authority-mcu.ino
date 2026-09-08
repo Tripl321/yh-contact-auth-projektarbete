@@ -40,6 +40,13 @@
 #include <Arduino_RouterBridge.h>
 #include <ShallotLoRaProtocol.h>  // Shared wire constants (same as PAW/PLC)
 
+// Vendored BearSSL AES-128-GCM (upstream commit 482d491c, MIT license)
+extern "C" {
+#include "bearssl.h"
+#include "bearssl_aead.h"
+#include "bearssl_block.h"
+}
+
 // =============================================================
 // Constants (wire types/sizes live in ShallotLoRaProtocol.h)
 // =============================================================
@@ -1371,6 +1378,91 @@ static void setupBridgeRPC() {
     memset(devKey, 0, sizeof(devKey));
     memset(frame, 0, sizeof(frame));
     return hex;
+  });
+
+  // =============================================================
+  // AES-128-GCM Known-Answer Test (test-only, no keys, no provisioning)
+  //
+  // Runs NIST SP 800-38D test vectors against vendored BearSSL AES-128-GCM.
+  // Returns pass/fail status only. No plaintext, no ciphertext, no tags
+  // are exposed in the result or logs.
+  // =============================================================
+  Bridge.provide_safe("gcm_kat", []() -> String {
+    // Test 1: NIST GCM, key=all-zero, IV=all-zero, empty pt, empty AAD
+    // Expected tag: 58e2fccefa7e3061367f1d57a4e7455a
+    br_aes_big_ctr_keys bc;
+    br_gcm_context gcm;
+    bool t1pass = false;
+    bool t2pass = false;
+    bool t3pass = false;
+
+    {
+      uint8_t key[16] = {0};
+      uint8_t iv[12]  = {0};
+      uint8_t expTag[16] = {0x58,0xe2,0xfc,0xce,0xfa,0x7e,0x30,0x61,
+                            0x36,0x7f,0x1d,0x57,0xa4,0xe7,0x45,0x5a};
+      br_aes_big_ctr_init(&bc, key, 16);
+      br_gcm_init(&gcm, (const br_block_ctr_class **)&br_aes_big_ctr_vtable,
+                  br_ghash_ctmul32);
+      br_gcm_reset(&gcm, iv, 12);
+      br_gcm_flip(&gcm);
+      t1pass = (br_gcm_check_tag(&gcm, expTag) == 1);
+      memset(&bc, 0, sizeof(bc));
+      memset(&gcm, 0, sizeof(gcm));
+    }
+
+    // Test 2: NIST GCM, key=all-zero, IV=all-zero, pt=16 zeros
+    // Expected ct: 0388dace60b6a392f328c2b971b2fe78
+    // Expected tag: ab6e47d42cec13bdf53a67b21257bddf
+    {
+      uint8_t key[16] = {0};
+      uint8_t iv[12]  = {0};
+      uint8_t pt[16]  = {0};
+      uint8_t expCt[16] = {0x03,0x88,0xda,0xce,0x60,0xb6,0xa3,0x92,
+                           0xf3,0x28,0xc2,0xb9,0x71,0xb2,0xfe,0x78};
+      uint8_t expTag[16] = {0xab,0x6e,0x47,0xd4,0x2c,0xec,0x13,0xbd,
+                            0xf5,0x3a,0x67,0xb2,0x12,0x57,0xbd,0xdf};
+      uint8_t out[16];
+      br_aes_big_ctr_init(&bc, key, 16);
+      br_gcm_init(&gcm, (const br_block_ctr_class **)&br_aes_big_ctr_vtable,
+                  br_ghash_ctmul32);
+      br_gcm_reset(&gcm, iv, 12);
+      br_gcm_flip(&gcm);
+      memcpy(out, pt, 16);
+      br_gcm_run(&gcm, 1, out, 16);
+      t2pass = (br_gcm_check_tag(&gcm, expTag) == 1) &&
+               (memcmp(out, expCt, 16) == 0);
+      memset(&bc, 0, sizeof(bc));
+      memset(&gcm, 0, sizeof(gcm));
+      memset(out, 0, sizeof(out));
+    }
+
+    // Test 3: AAD binding — wrong AAD must fail tag check
+    {
+      uint8_t key[16] = {0};
+      uint8_t iv[12]  = {0};
+      uint8_t aad[6]  = {0x01, 0x00,0x00,0x00,0x01, 0x00}; // SHALLOT-like AAD
+      uint8_t expTag[16] = {0x58,0xe2,0xfc,0xce,0xfa,0x7e,0x30,0x61,
+                            0x36,0x7f,0x1d,0x57,0xa4,0xe7,0x45,0x5a};
+      // This tag was computed with empty AAD; injecting AAD must break it
+      br_aes_big_ctr_init(&bc, key, 16);
+      br_gcm_init(&gcm, (const br_block_ctr_class **)&br_aes_big_ctr_vtable,
+                  br_ghash_ctmul32);
+      br_gcm_reset(&gcm, iv, 12);
+      br_gcm_aad_inject(&gcm, aad, sizeof(aad));
+      br_gcm_flip(&gcm);
+      t3pass = (br_gcm_check_tag(&gcm, expTag) == 0); // MUST fail
+      memset(&bc, 0, sizeof(bc));
+      memset(&gcm, 0, sizeof(gcm));
+    }
+
+    String result = "t1:";
+    result += t1pass ? "PASS" : "FAIL";
+    result += ",t2:";
+    result += t2pass ? "PASS" : "FAIL";
+    result += ",t3:";
+    result += t3pass ? "PASS" : "FAIL";
+    return result;
   });
 }
 
