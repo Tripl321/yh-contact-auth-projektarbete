@@ -59,6 +59,12 @@ static ShallotKeys keys;
 static uint32_t pawSeqNum = 0;
 static SeqWhitelist seqWhitelist;
 
+// Outstanding cycle for verdict binding (PRO-52 review): the challenge
+// nonce we last responded to and still await a verdict for. A verdict is
+// acted on only if its payload decrypts to this exact nonce.
+static bool awaitingVerdict = false;
+static uint8_t outstandingNonce[SHALLOT_NONCE_LEN];
+
 #define LED_PIN 6  // NOT 7 (Core1262 BUSY) and NOT 25 (e-Paper BUSY on this
                    // Feather wiring) — matches paw-main.ino LED relocation
 
@@ -153,9 +159,13 @@ static void handle_challenge(size_t challengeWireLen, const ShallotPacket &chall
     Serial.println("[SHALLOT] CHALLENGE HMAC verified OK");
 
     if (!seqWhitelist.check_and_add(challenge.seqNum)) {
-        Serial.println("[SHALLOT] CHALLENGE replay detected — ignoring");
-        display_status("WARNING: Replay attempt");
-        return;
+        // HMAC-valid challenge outside our window: the edge rebooted and
+        // restarted its seq counter. Re-anchor — safe: answering a
+        // replayed old challenge only yields a response echoing a STALE
+        // nonce, which the edge rejects against its live challenge, so
+        // this oracle is unusable (fail-closed at the edge).
+        Serial.println("[SHALLOT] Resync: re-anchoring replay window after edge reboot");
+        seqWhitelist.resync(challenge.seqNum);
     }
 
     ShallotPacket response;
@@ -173,6 +183,12 @@ static void handle_challenge(size_t challengeWireLen, const ShallotPacket &chall
 
     compute_packet_hmac(keys, response, response.hmac);
 
+    // The verdict must echo THIS challenge: remember its nonce while we
+    // await the verdict (a newer challenge overwrites it; a stale verdict
+    // then mismatches and is ignored).
+    memcpy(outstandingNonce, challenge.nonce, SHALLOT_NONCE_LEN);
+    awaitingVerdict = true;
+
     Serial.println("[SHALLOT] Sending RESPONSE...");
     send_packet(response);
 
@@ -182,6 +198,16 @@ static void handle_challenge(size_t challengeWireLen, const ShallotPacket &chall
     if (!receive_packet(verdictLen, verdict, LORA_TIMEOUT_MS)) {
         Serial.println("[SHALLOT] No verdict received from edge");
         display_status("Timeout: No verdict");
+        awaitingVerdict = false;
+        return;
+    }
+
+    // A fresh CHALLENGE (or any non-verdict type) is NEVER a verdict:
+    // ignore it without state change, HMAC work, or display update.
+    // The 5 s verdict window bounds the wait; the next edge retry then
+    // succeeds normally.
+    if (verdict.msgType != MSG_SUCCESS && verdict.msgType != MSG_FAILURE) {
+        Serial.println("[SHALLOT] Non-verdict packet during verdict wait — ignoring");
         return;
     }
 
@@ -193,6 +219,20 @@ static void handle_challenge(size_t challengeWireLen, const ShallotPacket &chall
         display_status("WARNING: Invalid verdict");
         return;
     }
+
+    // Bind the verdict to the outstanding cycle: its payload must decrypt
+    // (K_enc) to the echo of the challenge nonce we responded to.
+    // Unknown or mismatched verdicts are ignored (fail-closed: no display
+    // change, outstanding cycle kept for the real verdict).
+    if (!awaitingVerdict || verdict.payloadLen != SHALLOT_NONCE_LEN ||
+        !verify_echo_binding(keys, verdict.payload, verdict.seqNum,
+                             verdict.nonce, outstandingNonce,
+                             SHALLOT_NONCE_LEN)) {
+        Serial.println("[SHALLOT] VERDICT not bound to outstanding challenge — ignoring");
+        return;
+    }
+    awaitingVerdict = false;
+    memset(outstandingNonce, 0, sizeof(outstandingNonce));
 
     if (verdict.msgType == MSG_SUCCESS) {
         Serial.println("[SHALLOT] AUTHENTICATION SUCCESSFUL");

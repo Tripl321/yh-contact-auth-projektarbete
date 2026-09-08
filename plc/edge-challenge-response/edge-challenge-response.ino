@@ -135,18 +135,24 @@ static bool receive_packet(size_t &rxLen, ShallotPacket &pkt, uint32_t timeoutMs
 }
 
 // Fill a ShallotPacket with header fields and compute its HMAC.
-// Uses memcpy_fast for fixed-size fields and avoids redundant work.
+// Every packet gets a FRESH header nonce. SUCCESS/FAILURE verdicts bind
+// to the completed cycle by echoing the challenge nonce AES-CTR-
+// encrypted (K_enc) in the payload, under this packet's own seq/nonce
+// as CTR context — PAW verifies the binding before acting on a verdict.
 static void build_simple_packet(ShallotPacket &pkt, uint8_t msgType,
                                 const uint8_t *challengeNonce) {
     pkt.version = SHALLOT_VERSION;
     pkt.msgType = msgType;
     memcpy(pkt.senderID, EDGE_SENDER_ID, SHALLOT_SENDERID_LEN);
     pkt.seqNum = edgeSeqNum++;
-    if (challengeNonce)
-        memcpy(pkt.nonce, challengeNonce, SHALLOT_NONCE_LEN);
-    else
-        generate_nonce(pkt.nonce);
-    pkt.payloadLen = 0;
+    generate_nonce(pkt.nonce);
+    if (challengeNonce) {
+        memcpy(pkt.payload, challengeNonce, SHALLOT_NONCE_LEN);
+        pkt.payloadLen = SHALLOT_NONCE_LEN;
+        aes_ctr_crypt(keys.k_enc, pkt.seqNum, pkt.nonce, pkt.payload, pkt.payloadLen);
+    } else {
+        pkt.payloadLen = 0;
+    }
     compute_packet_hmac(keys, pkt, pkt.hmac);
 }
 
@@ -197,9 +203,30 @@ static bool run_challenge_response() {
             return false;
         }
 
+        // Bind the response to the LIVE challenge: the payload must
+        // decrypt (K_enc) to the echo of the outstanding challenge nonce.
+        // A recorded response echoes a STALE nonce and fails here even
+        // with a valid HMAC and seq — resync below can therefore never
+        // turn a replay into a grant (fail-closed).
+        if (response.payloadLen != SHALLOT_NONCE_LEN ||
+            !verify_echo_binding(keys, response.payload, response.seqNum,
+                                 response.nonce, challenge.nonce,
+                                 SHALLOT_NONCE_LEN)) {
+            Serial.println("[SHALLOT] RESPONSE not bound to live challenge");
+            ShallotPacket failure;
+            build_simple_packet(failure, MSG_FAILURE, challenge.nonce);
+            send_packet(failure);
+            digitalWrite(LED_PIN, LOW);
+            return false;
+        }
+
         if (!seqWhitelist.check_and_add(response.seqNum)) {
-            Serial.println("[SHALLOT] REPLAY DETECTED: sequence number rejected");
-            continue;
+            // HMAC-valid and freshly bound, but outside the replay window:
+            // the PAW rebooted and restarted its seq counter. Re-anchor —
+            // safe: freshness is proven above, so this cannot grant a
+            // recorded packet.
+            Serial.println("[SHALLOT] Resync: re-anchoring replay window after PAW reboot");
+            seqWhitelist.resync(response.seqNum);
         }
 
         Serial.println("[SHALLOT] HMAC VERIFICATION PASSED");

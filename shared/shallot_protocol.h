@@ -389,11 +389,66 @@ public:
         return true;
     }
 
+    // Secure resync after peer reboot (PRO-52 review).
+    //
+    // A reboot resets the peer's seq counter to 0 while our window still
+    // anchors at the pre-reboot numbers — without resync the peer is
+    // locked out until its counter climbs back into the window, which in
+    // practice is a permanent denial (bench-proven).
+    //
+    // resync() re-anchors the window at the given seq. It MUST only be
+    // called for HMAC-valid packets that additionally prove FRESHNESS:
+    //   - edge accepts a RESPONSE only if its payload decrypts (K_enc) to
+    //     the echo of the LIVE challenge nonce (see verify_echo_binding);
+    //     a recorded response echoes a stale nonce and fails first, so a
+    //     replay can never re-anchor the window into a grant.
+    //   - PAW accepts an out-of-window CHALLENGE on HMAC alone; a replayed
+    //     old challenge then only yields a response echoing a STALE nonce,
+    //     which the edge rejects against its live challenge. The oracle
+    //     value to an attacker is nil (no K_mac/K_enc disclosed).
+    // Worst case on deliberate misuse is denial, never grant: every grant
+    // still requires a full HMAC-valid + freshness-bound cycle.
+    void resync(uint32_t seqNum) {
+        lastSeen = seqNum;
+        bitmask = 1u << (WINDOW_SIZE - 1);
+        initialized = true;
+    }
+
 private:
     uint32_t lastSeen;
     uint16_t bitmask;
     bool     initialized;
 };
+
+// =====================================================================
+// Echo binding (PRO-52 review): tie a packet to a live cycle.
+//
+// The responder echoes an 8-byte reference nonce AES-CTR-encrypted
+// (K_enc) in the payload, under the packet's own seq/nonce as CTR
+// context. The verifier decrypts and compares — constant-time — against
+// the expected live value:
+//   - edge: response payload must echo the outstanding challenge nonce
+//     (proves the response answers THIS challenge, not a recording).
+//   - PAW: verdict payload must echo the outstanding challenge nonce
+//     (proves the verdict answers THIS cycle; a fresh CHALLENGE arriving
+//     during the verdict wait has a different type and is never treated
+//     as a verdict in the first place).
+// Temp buffers are wiped. Either side uses the same helper.
+// =====================================================================
+static bool verify_echo_binding(const ShallotKeys &keys,
+                                const uint8_t *encEcho,
+                                uint32_t pktSeq,
+                                const uint8_t pktNonce[SHALLOT_NONCE_LEN],
+                                const uint8_t *expected,
+                                size_t expectedLen) {
+    if (expectedLen != SHALLOT_NONCE_LEN) return false;
+    uint8_t echo[SHALLOT_NONCE_LEN];
+    memcpy(echo, encEcho, SHALLOT_NONCE_LEN);
+    aes_ctr_crypt(keys.k_enc, pktSeq, pktNonce, echo, SHALLOT_NONCE_LEN);
+    uint8_t ok = (uint8_t)(constant_time_compare(echo, expected, SHALLOT_NONCE_LEN) == 0);
+    memset(echo, 0, sizeof(echo));
+    return ok != 0;
+}
 
 // =====================================================================
 // Random nonce generation — 8 bytes from RP2350 hardware RNG

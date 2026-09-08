@@ -69,12 +69,12 @@ HMAC verifieras INNAN sekvensnummer konsumeras. Detta förhindrar en attackerare
 ## 5. AES-128-CTR
 
 - Keystream genereras genom AES-ECB-encryption av en 128-bit counter-block
-- Counter-block layout: [0x00 ×4] || SeqNum(4B) || Nonce(8B)
-- Block-counter inkrementeras i de två lägsta byten (counter[14:15])
-- AESLib.encryptSingle() används för varje 16-byte block
+- Counter-block layout: blkCtr_be2 || [0x00 ×2] || SeqNum(4B) || Nonce(8B)
+- Block-countert ligger i DEDIKERADE byte (0–1) och överlappar aldrig noncen. En tidigare revision XORade den över nonce[6..7], vilket återanvände keystream när en nonce slutade 00 01 (two-time pad inom ett meddelande) — åtgärdat i review.
+- `AES`-klassen (medföljer AESLib-biblioteket: `set_key` + single-block `encrypt`) används — inte AESLib:s CBC-kuvert-API som saknar single-block-anrop
 - XOR mellan keystream och plaintext/ciphertext — symmetrisk operation
 
-## 6. Replay-skydd (SeqWhitelist)
+## 6. Replay-skydd (SeqWhitelist) + säker resynk
 
 Sliding-window med bitmask-implementation:
 
@@ -85,6 +85,15 @@ Sliding-window med bitmask-implementation:
 - Paket äldre än fönstret: refuseras
 - Paket nyare än fönstret: fönstret skiftas framåt
 
+### 6.1 Resynk efter ensidig reboot (PRO-52 review)
+
+En reboot nollställer nodens seq-räknare medan motpartens fönster står kvar vid de gamla numren — utan resynk låses den omstartade noden ute tills räknaren klättrat ikapp fönstret (i praktiken permanent denial, bevisat på bänk). `resync()` återförankrar fönstret, men får ENDAST anropas för HMAC-giltiga paket som dessutom bevisar färskhet:
+
+- **Edge** accepterar RESPONSE utanför fönstret endast om payload dekrypteras (K_enc) till ekot av det LEVANDE challenge-noncet (se §7). En inspelad response ekar ett gammalt nonce och faller före resynk — replay kan aldrig bli grant.
+- **PAW** accepterar CHALLENGE utanför fönstret på enbart HMAC; en inspelad gammal challenge ger då bara ett svar som ekar ett gammalt nonce, vilket edgen refuserar mot sin levande challenge. Orakelvärdet för en angripare är noll (ingen K_mac/K_enc läcker).
+
+Värsta fall vid missbruk är denial, aldrig grant: varje godkännande kräver fortfarande en full HMAC-giltig + färskhetsbunden cykel.
+
 ## 7. Challenge-Response Flöde
 
 ### 7.1 Edge-initierat flöde
@@ -94,14 +103,24 @@ Edge (PLC)                          PAW (ID-bricka)
     |                                    |
     |--- MSG_CHALLENGE (nonce_E) ------->|
     |                                    | Verifiera HMAC
-    |                                    | Kontrollera seq (replay)
+    |                                    | Kontrollera seq (replay; resynk §6.1)
     |<--- MSG_RESPONSE (enc(nonce_E)) ---|
     | Verifiera HMAC                     |
-    | Kontrollera seq (replay)           |
-    | Dekryptera payload                  |
+    | Bind till LEVANDE challenge (dekryptera+jmf nonce_E) |
+    | Kontrollera seq (replay; resynk §6.1) |
     |--- MSG_SUCCESS / MSG_FAILURE ----->|
+    |    (payload = enc(nonce_E), bunden  |
+    |     till avslutad cykel)            | Typgrind: endast SUCCESS/
+    |                                    | FAILURE kan vara verdict —
+    |                                    | ny CHALLENGE ignoreras tyst
+    |                                    | Verifiera HMAC + bind mot
+    |                                    | outstanding nonce
     |                                    | Visa verdict på e-Paper
 ```
+
+### 7.2 Verdict-bindning (PRO-52 review)
+
+SUCCESS/FAILURE bär det avslutade challengenoncet AES-CTR-krypterat (K_enc) i payload, under verdict-paketets egen seq/nonce som CTR-kontext. PAW agerar endast på verdict som (i ordning): har korrekt msgType, verifierar HMAC, och dekrypteras till PAW:s outstanding challenge-nonce (konstanttidsjämförelse). Allt annat — ny CHALLENGE under verdict-väntan (bänkobserverat: `0x1` tolkades som verdict), fel nonce, okänd cykel, HMAC-fel — ignoreras utan tillstånds- eller displayändring (fail-closed). En 5 s verdict-timeout rensar outstanding; nästa edge-retry konvergerar normalt.
 
 ### 7.2 Felhantering
 
@@ -117,13 +136,22 @@ Edge enforcement-noden fattar ett fail-closed beslut:
 - LED förblir LOW vid nekad åtkomst
 - PAW visar "Access Denied" på e-Paper
 
+PAW-sidan är likaledes fail-closed:
+- Challenge med HMAC-fel besvaras aldrig; replay utanför fönster utan giltig HMAC ignoreras
+- Verdict som inte är bundet till outstanding challenge ändrar inget (ingen displayuppdatering, ingen tillståndsändring)
+- Timeout i verdict-väntan rensar outstanding; omprovisionering krävs aldrig — nästa cykel konvergerar
+
 ## 9. Säkerhetsöverväganden
 
 | Aspekt | Åtgärd |
 |---|---|
-| Timing-attacker | Konstant-tidsjämförelse av HMAC |
-| Replay | SeqWhitelist sliding-window |
+| Timing-attacker | Konstant-tidsjämförelse av HMAC och nonce-ekon |
+| Replay | SeqWhitelist sliding-window + färskhetsbindning (§6.1, §7) |
+| Ensidig reboot | Säker resynk: edge kräver levande-nonce-eko före återförankring; PAW-resynk är ofarlig via edge-bindning |
+| Verdict-förvirring | Typgrind + HMAC + echo-bindning mot outstanding nonce; okända verdict ignoreras |
+| Inspelad response | Avvisas på stale echo även med giltig HMAC (bindning före resynk) |
 | DoS (seq exhaustion) | HMAC före seq-konsumtion |
+| DoS (resynk-churn) | Angripare utan K_mac/K_enc kan inte utlösa resynk; fönster-churn ger högst denial, aldrig grant |
 | Nyckel-läckage | K_enc/K_mac derivas, master key används ej direkt |
 | Nonce-kollision | 8 byte hardware RNG per paket |
 | Trunkerad HMAC | 8 byte (64-bit) — tillräckligt för LoRa-paket med begränsad bandbredd |
