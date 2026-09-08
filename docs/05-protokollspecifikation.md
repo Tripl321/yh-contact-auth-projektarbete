@@ -299,6 +299,8 @@ Detta förhindrar att en attackerare uttömmer SeqWhitelist-slots med skräppake
 
 ### Duty cycle-budget och sändningsbegränsningar
 
+Detta är ett bindande krav enligt `AGENTS.md` ("Obligatoriskt krav: LoRa duty cycle och radiosäker drift").
+
 Alla sändningar över LoRa, inklusive returer och heartbeat, belastar en gemensam sändningsbudget enligt ETSI EN 300 220 (1 % duty cycle, maximalt 36 sekunder per rullande 60 minuter). Se `docs/06-radio-parametrar.md` för detaljerad policy och implementeringskrav.
 
 Returer kan begränsas eller fördröjas om sändningsbudgeten är uttömd. Heartbeat-paket kan undertryckas helt när budgeten är slut. Autentiseringspaket (CHALLENGE, RESPONSE) prioriteras framför heartbeat och testpaket vid budgetkonflikt.
