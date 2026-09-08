@@ -1062,6 +1062,12 @@ static bool distributeKey(uint8_t targetId) {
 // Bridge RPC — MPU communication (status only, no key material)
 // =============================================================
 
+static uint8_t relaySlotForTarget(uint8_t targetId) {
+  if (targetId == SHALLOT_TARGET_PLC) return 0;
+  if (targetId == SHALLOT_TARGET_PAW) return 1;
+  return 0xFF;
+}
+
 static void setupBridgeRPC() {
   Bridge.begin();
 
@@ -1158,12 +1164,14 @@ static void setupBridgeRPC() {
   // writes the frame, reads the READY (0xA2) response, and reports back.
   // =============================================================
 
-  // Relay test result storage (set by MPU after relay attempt)
-  static uint8_t  relayResultTarget  = 0;
-  static bool     relayResultSuccess = false;
-  static uint8_t  relayResultDeviceId[4] = {0,0,0,0};
-  static uint32_t relayResultEpoch   = 0;
-  static String   relayResultError   = "";
+  // Per-target relay test result storage (set by MPU after relay attempt)
+  // Index 0 = PLC (target 1), Index 1 = PAW (target 2)
+  #define RELAY_RESULT_SLOTS 2
+  static uint8_t  relayResultTarget[RELAY_RESULT_SLOTS]  = {0, 0};
+  static bool     relayResultSuccess[RELAY_RESULT_SLOTS] = {false, false};
+  static uint8_t  relayResultDeviceId[RELAY_RESULT_SLOTS][4] = {{0,0,0,0},{0,0,0,0}};
+  static uint32_t relayResultEpoch[RELAY_RESULT_SLOTS] = {0, 0};
+  static String   relayResultError[RELAY_RESULT_SLOTS] = {"", ""};
 
   Bridge.provide_safe("get_relay_test_payload", [](uint8_t targetId, uint32_t epoch) -> String {
     if (targetId != SHALLOT_TARGET_PLC && targetId != SHALLOT_TARGET_PAW) {
@@ -1194,47 +1202,51 @@ static void setupBridgeRPC() {
   });
 
   Bridge.provide_safe("set_relay_test_result", [](uint8_t targetId, bool success,
-                     String deviceIdHex, uint32_t echoedEpoch, String error) -> bool {
-    relayResultTarget  = targetId;
-    relayResultSuccess = success;
-    relayResultError    = error;
+                     String deviceIdHex, uint32_t echoedEpoch, String error) -> String {
+    uint8_t slot = relaySlotForTarget(targetId);
+    if (slot == 0xFF) return "invalid_target";
+    relayResultTarget[slot]  = targetId;
+    relayResultSuccess[slot] = success;
+    relayResultError[slot]    = error;
     if (success && deviceIdHex.length() >= 8) {
       for (int i = 0; i < 4; i++) {
-        relayResultDeviceId[i] = (uint8_t) strtoul(deviceIdHex.substring(i*2, i*2+2).c_str(),
+        relayResultDeviceId[slot][i] = (uint8_t) strtoul(deviceIdHex.substring(i*2, i*2+2).c_str(),
                                                     nullptr, 16);
       }
     } else {
-      memset(relayResultDeviceId, 0, 4);
+      memset(relayResultDeviceId[slot], 0, 4);
     }
-    relayResultEpoch = echoedEpoch;
+    relayResultEpoch[slot] = echoedEpoch;
 
     Serial.print("[RELAY] Result for target ");
     Serial.print(targetId);
     if (success) {
       Serial.print(": OK (device: ");
-      printHex(relayResultDeviceId, 4);
+      printHex(relayResultDeviceId[slot], 4);
       Serial.print(" epoch: ");
       Serial.println(echoedEpoch);
     } else {
       Serial.print(": FAILED (");
       Serial.println(error + ")");
     }
-    return true;
+    return "ok";
   });
 
   Bridge.provide_safe("get_relay_test_result", [](uint8_t targetId) -> String {
-    if (targetId != relayResultTarget) return "no_result";
-    if (relayResultSuccess) {
+    uint8_t slot = relaySlotForTarget(targetId);
+    if (slot == 0xFF) return "invalid_target";
+    if (relayResultTarget[slot] != targetId) return "no_result";
+    if (relayResultSuccess[slot]) {
       String r = "ok,device:";
       for (int i = 0; i < 4; i++) {
-        r += HEX_CHARS[(relayResultDeviceId[i] >> 4) & 0x0F];
-        r += HEX_CHARS[relayResultDeviceId[i] & 0x0F];
+        r += HEX_CHARS[(relayResultDeviceId[slot][i] >> 4) & 0x0F];
+        r += HEX_CHARS[relayResultDeviceId[slot][i] & 0x0F];
       }
       r += ",epoch:";
-      r += String(relayResultEpoch);
+      r += String(relayResultEpoch[slot]);
       return r;
     }
-    return "fail:" + relayResultError;
+    return "fail:" + relayResultError[slot];
   });
 }
 
