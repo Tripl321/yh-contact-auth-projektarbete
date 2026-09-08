@@ -52,6 +52,9 @@ jobs:
           # Install arduino-pico platform
           arduino-cli core install arduino-pico:rp2040
           
+          # Install required libraries (AESLib used by shared/shallot_protocol.h)
+          arduino-cli lib install "AESLib@2.3.6"
+          
           # Build for Adafruit Feather RP2350
           cd /workspace/github__Tripl321__yh-lora-auth-projektarbete
           arduino-cli compile \

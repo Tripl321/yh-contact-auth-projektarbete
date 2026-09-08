@@ -5,12 +5,15 @@
  * Hardware: Raspberry Pi Pico 2 (RP2350)
  *           Core1262 LoRa transceiver on SPI1
  *
- * Pin mapping (SPI1 / Core1262):
- *   CS    = GPIO9   RST   = GPIO4   BUSY  = GPIO7
- *   DIO1  = GPIO28  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO12
+ * Pin mapping (SPI1 / Core1262) — Pico 2 bench wiring per
+ * docs/04-kopplingsdokumentation and plc-key-receiver.ino:
+ *   CS    = GPIO9   RST   = GPIO8   BUSY  = GPIO6
+ *   DIO1  = GPIO21  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO12
  *
- * NOTE: GPIO4 is SPI0 MISO on RP2350, but we use it as RST for Core1262.
- *       Do NOT call SPI1.setRX(4) — the MISO is on GPIO12.
+ * NOTE: Pico 2 onboard LED is a WS2812 RGB on GPIO25 — plain
+ * digitalWrite(LED_PIN) toggles the pin but does not visibly light it
+ * (needs a NeoPixel/PIO driver). Status is on Serial; LED kept for
+ * convention with plc-key-receiver.ino.
  *
  * LoRa config (PRO-78): 868.1 MHz, SF7, BW125, CR4/5, sync 0x12, 20 dBm
  * Protocol (PRO-81): challenge-response with HMAC-SHA256 truncated to 8 bytes
@@ -23,9 +26,9 @@
 #include "shallot_protocol.h"
 
 #define LORA_CS    9
-#define LORA_RST   4
-#define LORA_BUSY  7
-#define LORA_DIO1  28
+#define LORA_RST   8   // bench wiring (PLC Pico 2)
+#define LORA_BUSY  6   // bench wiring (PLC Pico 2)
+#define LORA_DIO1  21  // bench wiring (PLC Pico 2)
 #define LORA_SCK   10
 #define LORA_MOSI  11
 #define LORA_MISO  12
@@ -48,8 +51,8 @@ static const uint8_t EDGE_SENDER_ID[SHALLOT_SENDERID_LEN] = {
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-static SPIClass spi1(spi1);
-static SX1262 radio = RadioLibModule(&spi1, LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY);
+static SPIClassRP2040 loraSPI(spi1, LORA_MISO, LORA_CS, LORA_SCK, LORA_MOSI);
+static SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY, loraSPI);
 static ShallotKeys keys;
 static uint32_t edgeSeqNum = 0;
 static SeqWhitelist seqWhitelist;
@@ -68,13 +71,14 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
-    spi1.setSCK(LORA_SCK);
-    spi1.setTX(LORA_MOSI);
-    spi1.setRX(LORA_MISO);
-    spi1.setCS(LORA_CS);
-    spi1.begin();
+    loraSPI.setSCK(LORA_SCK);
+    loraSPI.setTX(LORA_MOSI);
+    loraSPI.setRX(LORA_MISO);
+    loraSPI.setCS(LORA_CS);
+    loraSPI.begin();
 
-    int state = radio.begin(LORA_FREQ, LORA_SF, LORA_BW, LORA_CR,
+    // RadioLib order: freq, bandwidth, spreading factor, coding rate.
+    int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_TX_POWER);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("[SHALLOT] Radio init failed: ");
