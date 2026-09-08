@@ -28,56 +28,33 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/earlephilhower/arduino-pico:latest
-      options: --privileged
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Install Arduino CLI
         run: |
-          apt-get update
-          apt-get install -y git wget
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
 
-      - name: Clone arduino-pico core
+      - name: Install RP2040 core
         run: |
-          cd /tmp
-          git clone --depth 1 https://github.com/earlephilhower/arduino-pico.git
-          cd arduino-pico
-          git submodule update --init --depth 1
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install libraries (RadioLib)
+        run: arduino-cli lib install RadioLib
 
       - name: Build PAW firmware (UF2)
         run: |
-          # Set up Arduino CLI
-          wget -q https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_latest_Linux_64bit.tar.gz
-          tar -xzf arduino-cli_latest_Linux_64bit.tar.gz
-          mv arduino-cli /usr/local/bin/
-          
-          # Configure Arduino CLI
-          arduino-cli config init
-          arduino-cli core update-index
-          
-          # Install arduino-pico platform
-          arduino-cli core install arduino-pico:rp2040
-          
-          # Install required libraries (AESLib used by shared/shallot_protocol.h)
-          arduino-cli lib install "AESLib@2.3.6"
-          
-          # Build for Adafruit Feather RP2350
-          cd /workspace/github__Tripl321__yh-lora-auth-projektarbete
           arduino-cli compile \
-            --fqbn arduino-pico:rp2040:feather_rp2350 \
+            --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
             --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
             --output-dir build/paw-main \
             id-kort/paw-main/paw-main.ino
-          
-          # Convert to UF2
-          # The arduino-pico toolchain should produce UF2 automatically for RP2350
-          # If not, we can use pico-sdk's uf2 tool
           ls -la build/paw-main/
 
       - name: Rename UF2 file
