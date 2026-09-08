@@ -8,10 +8,10 @@
  *
  * Pin mapping (SPI1 / Core1262):
  *   CS    = GPIO9   RST   = GPIO4   BUSY  = GPIO7
- *   DIO1  = GPIO28  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO12
+ *   DIO1  = GPIO28  SCK   = GPIO10  MOSI   = GPIO11  MISO = GPIO24
  *
  * CRITICAL: GPIO4 is SPI0 MISO on RP2350. We use it as RST for Core1262.
- *           Do NOT call SPI1.setRX(4). The SPI1 MISO is on GPIO12.
+ *           Do NOT call SPI1.setRX(4). The SPI1 MISO is on GPIO24 (D24).
  *           RST is output-only so it does not conflict with SPI0 MISO
  *           functionally, but ensure the e-Paper library does not
  *           reconfigure GPIO4 as SPI0 MISO after Core1262 RST is set.
@@ -32,7 +32,7 @@
 #define LORA_DIO1  28
 #define LORA_SCK   10
 #define LORA_MOSI  11
-#define LORA_MISO  12
+#define LORA_MISO  24
 
 #define LORA_FREQ       868.1
 #define LORA_BW         125.0
