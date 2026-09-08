@@ -14,7 +14,7 @@ Detta protokoll definierar binär paketstruktur för autentisering mellan edge e
 
 | Roll | Hårdvara | Funktion |
 |---|---|---|
-| Edge Enforcement (PLC) | Pico 2 (RP2350) + Core1262 | Initierar challenge, verifierar response, fattar fail-closed beslut |
+| DEN (Edge Enforcement, PLC) | Pico 2 (RP2350) + Core1262 | Initierar challenge, verifierar response, fattar fail-closed beslut |
 | PAW (ID-bricka) | Feather RP2350 + Core1262 + e-Paper | Mottager challenge, returnerar krypterat svar, visar verdict |
 | UNO Q | STM32U585 (air-gapped) | Provisionering: genererar och distribuerar master-nyckel via USB |
 
@@ -24,6 +24,10 @@ Detta protokoll definierar binär paketstruktur för autentisering mellan edge e
 - PRO-78: LoRa-radio profil (868.1 MHz, SF7, BW125, CR4/5, 20 dBm)
 - PRO-79: Protokollram och autentiseringsgräns (ersatt av PRO-81)
 - PRO-45: Nyckelgenerering på UNO Q (Phase 2)
+
+### Aktiveringsmodell
+
+SHALLOT använder ett tvåhandsgrepp mellan DEN (edge enforcement-nod) och PAW (ID-bricka) för att säkerställa operatörsavsikt. LoRa är inaktiv utanför en explicit aktiveringscykel. Se avsnitt 5.4 för fullständig aktiveringsmodell och tillståndsmaskin.
 
 ---
 
@@ -220,6 +224,8 @@ Heartbeat-paket belastar sändningsbudgeten och ska vara avställda utanför akt
 
 ### 5.1 Edge-initierat flöde
 
+> **Förhandskrav:** Flödet nedan förutsätter att tvåhandsgreppet är aktivt — DEN:s aktiveringsknapp har tryckts (auktoriseringsfönster öppet i 5 s) och PAW:s aktiveringsknapp hålls nedtryckt. Utanför aktiveringsfönstret är LoRa inaktiv. Se avsnitt 5.4–5.6.
+
 ```
 Edge (PLC)                              PAW (ID-bricka)
     |                                        |
@@ -274,6 +280,98 @@ Både edge och PAW verifierar HMAC INNAN sekvensnummer konsumeras. Ordning:
 
 Detta förhindrar att en attackerare uttömmer SeqWhitelist-slots med skräppaket som saknar giltig HMAC.
 
+### 5.4 Aktiveringsmodell: tvåhandsgrepp (PAW + DEN)
+
+SHALLOT använder ett tvåhandsgrepp mellan DEN (edge enforcement-nod) och PAW (ID-bricka) för att säkerställa operatörsavsikt. Utanför en explicit aktiveringscykel ska LoRa vara inaktiv — ingen sändning och ingen mottagning.
+
+#### Aktiveringsfönster
+
+1. **DEN-aktivering:** En lokal knapp på DEN öppnar ett auktoriseringsfönster på 5 sekunder. Under detta fönster är DEN redo att initiera challenge-response.
+2. **PAW-aktivering:** PAW får endast initiera eller besvara challenge-response medan dess aktiveringsknapp hålls nedtryckt och DEN:s auktoriseringsfönster är öppet.
+3. **Tvåhandsgrepp:** Operatören måste samtidigt hålla PAW:s knapp nedtryckt och ha tryckt på DEN:s knapp. Detta bevisar fysisk närvaro vid båda enheterna och förhindrar fjärrangrepp.
+
+#### Aktiveringsflöde
+
+```
+Operatör                    DEN (edge)                     PAW (ID-bricka)
+   |                           |                               |
+   |--- tryck DEN-knapp ----->>|                               |
+   |                           | [DEN_ARMED, 5 s fönster]      |
+   |--- håll PAW-knapp ned ------------------------------------>|
+   |                           |                               | [PAW aktiv]
+   |                           |<-- båda aktiva -------------->|
+   |                           |    [AUTHENTICATING]           |
+   |                           |                               |
+   |                           |--- CHALLENGE --------------->|  (se 5.1)
+   |                           |<-- RESPONSE -----------------|
+   |                           |--- SUCCESS/FAILURE --------->|
+   |                           |                               |
+   |                           | [AUTHORIZED eller             |
+   |                           |  FAILURE/LOCKED]              |
+```
+
+#### Behörighet
+
+Giltig challenge-response ger en kortlivad lokal behörighet på DEN för anslutning eller upplåsning. Behörigheten är tidsbegränsad (standard: 30 sekunder) och återkallas automatiskt efter giltighetstiden.
+
+#### Relation till befintliga säkerhetsmekanismer
+
+Tvåhandsgreppet är ett krav för operatörsavsikt och ersätter inte:
+- HMAC-SHA256-meddelandeautentisering (avsnitt 3.3)
+- SeqWhitelist replay-skydd (avsnitt 7)
+- Timeout-baserad felhantering (avsnitt 6)
+- Fail-closed-arkitektur (avsnitt 8)
+
+Tvåhandsgreppet lägger till ett fysiskt närvarhetskrav ovanpå dessa kryptografiska och protokollbaserade skydd.
+
+### 5.5 Tillståndsmaskin
+
+Systemet rör sig genom följande tillstånd:
+
+| Tillstånd | Beskrivning | LoRa-aktivitet | Knappar |
+|---|---|---|---|
+| IDLE | Viloläge, ingen aktivering | Inaktiv | Alla släppta |
+| DEN_ARMED | DEN-knapp tryckt, 5 s fönster öppet | Lyssnar | DEN nedtryckt, PAW släppt |
+| AUTHENTICATING | Båda knapparna hålls, challenge-response pågår | Aktiv (TX/RX) | Båda nedtryckta |
+| AUTHORIZED | Giltig autentisering, kortlivad behörighet aktiv | Inaktiv | Frivilligt |
+| FAILURE/LOCKED | Avbrott eller ogiltigt resultat | Inaktiv | N/A |
+
+Tillståndsövergångar:
+
+```mermaid
+stateDiagram-v2
+    IDLE --> DEN_ARMED: DEN-knapp tryckt
+    DEN_ARMED --> AUTHENTICATING: PAW-knapp nedtryckt (inom 5 s)
+    DEN_ARMED --> IDLE: 5 s timeout (fönster stängs)
+    AUTHENTICATING --> AUTHORIZED: Giltig challenge-response
+    AUTHENTICATING --> FAILURE_LOCKED: Ogiltig HMAC
+    AUTHENTICATING --> FAILURE_LOCKED: Timeout (5000 ms)
+    AUTHENTICATING --> FAILURE_LOCKED: Knappsläpp (PAW eller DEN)
+    AUTHENTICATING --> FAILURE_LOCKED: Uteblivet svar
+    AUTHENTICATING --> FAILURE_LOCKED: Duty cycle-budget uttömd
+    AUTHORIZED --> IDLE: Behörighet löper ut (30 s)
+    AUTHORIZED --> IDLE: Manuell återställning
+    FAILURE_LOCKED --> IDLE: Lockout-timeout (10 s) eller manuell återställning
+```
+
+### 5.6 Avbrottsvillkor
+
+Följande händelser avbryter omedelbart det pågående flödet och återgår till FAILURE/LOCKED med fail-closed bevarat:
+
+- **Knappsläpp:** Om PAW-knappen eller DEN-knappen släpps under AUTHENTICATING avbryts flödet omedelbart. Ingen behörighet beviljas.
+- **Timeout:** Om CHALLENGE, RESPONSE eller verdict inte mottages inom 5000 ms avbryts flödet.
+- **Ogiltig HMAC:** Paket med ogiltig HMAC kasseras och flödet avbryts.
+- **Uteblivet svar:** Om PAW inte svarar på CHALLENGE inom timeout avbryts flödet.
+- **Duty cycle-budget:** Om sändningsbudgeten är uttömd avbryts flödet med fail-closed.
+
+Vid avbrott ska:
+1. LoRa återgå till inaktivt läge omedelbart.
+2. Ingen behörighet beviljas eller kvarvarande behörighet återkallas.
+3. Systemet övergå till FAILURE/LOCKED.
+4. Återgång till IDLE sker efter lockout-timeout (standard: 10 s) eller manuell återställning.
+
+Retries, heartbeat och all annan LoRa-trafik ska begränsas till aktiveringsfönstret och räknas mot duty-cycle-budgeten enligt AGENTS.md och `docs/06-radio-parametrar.md`.
+
 ---
 
 ## 6. Felhantering och returer
@@ -286,6 +384,10 @@ Detta förhindrar att en attackerare uttömmer SeqWhitelist-slots med skräppake
 | Replay (sekvensnummer) | Paket förkastas tyst, ingen respons |
 | Packet loss / ogiltig CRC | Hanteras med returer enligt PRO-41 (max antal försök) |
 | Radio-initieringsfel | LED blinkar (200 ms intervall), system halt |
+| Knappsläpp under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
+| Aktiveringsfönster stängs (5 s timeout) | Återgång till IDLE, ingen sändning |
+| DEN-knapp släpps under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
+| PAW-knapp släpps under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
 | Default-open | Förbjuden — ingen default-open existerar (PRO-53) |
 
 ### Timeout-konfiguration
@@ -296,6 +398,9 @@ Detta förhindrar att en attackerare uttömmer SeqWhitelist-slots med skräppake
 | LORA_RETRIES | 3 |
 | Cykel-intervall (edge) | 10 s |
 | RX-timeout (PAW loop) | 10 000 ms |
+| Aktiveringsfönster (DEN) | 5 000 ms |
+| Behörighet giltighetstid (DEN) | 30 000 ms |
+| Lockout-tid (FAILURE/LOCKED → IDLE) | 10 000 ms |
 
 ### Duty cycle-budget och sändningsbegränsningar
 
@@ -306,6 +411,8 @@ Alla sändningar över LoRa, inklusive returer och heartbeat, belastar en gemens
 Returer kan begränsas eller fördröjas om sändningsbudgeten är uttömd. Heartbeat-paket kan undertryckas helt när budgeten är slut. Autentiseringspaket (CHALLENGE, RESPONSE) prioriteras framför heartbeat och testpaket vid budgetkonflikt.
 
 Returer ska ha exponentiell backoff (1 s, 2 s, 4 s) mellan försök för att sprida sändningar och minska risk för budgetötning. Kontinuerlig polling med 10 sekunders intervall överskrider budgeten och bör undvikas — autentisering ska vara händelsestyrd.
+
+All LoRa-trafik, inklusive returer och heartbeat, är begränsad till aktiveringsfönstret (se avsnitt 5.4). Utanför aktiveringsfönstret är LoRa inaktiv och ingen budget förbrukas. Aktiveringsfönstrets 5-sekundersgräns utgör dessutom en naturlig begränsning av antalet möjliga returer per cykel.
 
 ---
 
@@ -349,6 +456,8 @@ Jämfört med bool[10] (10 byte) sparas 3 byte per sändare.
 | Timing-attackskydd | Konstant-tidsjämförelse av HMAC | Implementerad |
 | Anti-DoS | HMAC före sekvensnummerkonsumtion | Implementerad |
 | Fail-closed | Watchdog vid timeout, ogiltig HMAC, okänd sändare | Implementerad |
+| Operatörsavsikt | Tvåhandsgrepp: knapp på DEN + knapp på PAW | Krav |
+| LoRa-inaktivitet utanför aktivering | LoRa inaktiv i IDLE, endast aktiv i AUTHENTICATING | Krav |
 | Nonce-ekoverifiering | Edge dekrypterar och verifierar nonce-ekot | Ej implementerad (planerad) |
 
 ---
@@ -435,12 +544,110 @@ Notera: GPIO12 är giltig SPI1 MISO på Pico 2 (40-pins header) men INTE på Fea
 | E-Paper-integration | Ersätt display_status() platshållare med riktig SPI0-drivrutin | PRO-57 |
 | Riktig nyckeldistribution | Ersätt stub-nyckel med UNO Q-nyckel via USB | PRO-45, PRO-46 |
 | AEAD (AES-GCM) | Ersätt separat HMAC + AES-CTR med integrerat AEAD | Hårdvarustöd |
-| HEARTBEAT-implementering | Implementera livstecken för sessionsunderhåll | Inget |
+| HEARTBEAT-implementering | Implementera livstecken, begränsat till aktiveringsfönster (se avsnitt 5.4) | Inget |
 | Session tokens | Implementera session-hantering i SUCCESS-payload | Inget |
+| Tvåhandsgrepp-implementering | Implementera knappstyrning och tillståndsmaskin för aktiveringsmodell (se avsnitt 5.4–5.6) | Inget |
 
 ---
 
-## 12. Referenser
+## 12. Testspecifikation: tvåhandsgrepp och aktivering
+
+Följande testfall verifierar tvåhandsgreppets aktiveringsmodell, tillståndsmaskin och avbrottsvillkor. Varje test ska logga time-on-air, antal sändningar och förbrukad duty-cycle-budget enligt AGENTS.md.
+
+### TC-TGH-01: Timeout under pågående autentisering
+
+**Förväntat tillstånd:** AUTHENTICATING → FAILURE/LOCKED
+
+1. Tryck DEN-knapp (DEN_ARMED).
+2. Håll PAW-knapp nedtryckt (AUTHENTICATING).
+3. Blockera RESPONSE-paketet från PAW.
+4. Verifiera att flödet avbryts efter 5000 ms (LORA_TIMEOUT_MS).
+5. Verifiera att tillstånd övergår till FAILURE/LOCKED.
+6. Verifiera att ingen behörighet beviljas på DEN.
+7. Verifiera att LoRa återgår till inaktivt läge.
+
+### TC-TGH-02: Knappsläpp under pågående autentisering
+
+**Förväntat tillstånd:** AUTHENTICATING → FAILURE/LOCKED
+
+1. Tryck DEN-knapp (DEN_ARMED).
+2. Håll PAW-knapp nedtryckt (AUTHENTICATING).
+3. Släpp PAW-knappen efter att CHALLENGE har sänts men innan RESPONSE mottagits.
+4. Verifiera omedelbart avbrott av flödet.
+5. Verifiera att tillstånd övergår till FAILURE/LOCKED.
+6. Verifiera att ingen behörighet beviljas.
+7. Upprepa med DEN-knappen släppt istället för PAW-knappen.
+
+### TC-TGH-03: Felaktigt svar (ogiltig HMAC)
+
+**Förväntat tillstånd:** AUTHENTICATING → FAILURE/LOCKED
+
+1. Tryck DEN-knapp (DEN_ARMED).
+2. Håll PAW-knapp nedtryckt (AUTHENTICATING).
+3. Låt PAW sända RESPONSE med ogiltig HMAC (manipulerat MAC-fält).
+4. Verifiera att DEN avvisar paketet (konstant-tidsjämförelse).
+5. Verifiera att tillstånd övergår till FAILURE/LOCKED.
+6. Verifiera att ingen behörighet beviljas.
+7. Verifiera att returer (om några) räknas mot duty-cycle-budgeten.
+
+### TC-TGH-04: Upprepad aktivering
+
+**Förväntat tillstånd:** IDLE → DEN_ARMED → AUTHENTICATING → AUTHORIZED → IDLE → DEN_ARMED → AUTHENTICATING → AUTHORIZED
+
+1. Utför en fullständig aktiveringscykel med giltig autentisering.
+2. Verifiera AUTHORIZED och att behörighet beviljas på DEN.
+3. Låt behörigheten löpa ut (eller återställ manuellt).
+4. Verifiera återgång till IDLE.
+5. Utför en andra aktiveringscykel omedelbart.
+6. Verifiera att andra cykeln fungerar oberoende av den första.
+7. Verifiera att duty-cycle-budget bokförs kumulativt över båda cyklerna.
+8. Verifiera att LoRa är inaktiv mellan cyklerna.
+
+### TC-TGH-05: LoRa inaktiv utanför aktiveringsfönster
+
+**Förväntat tillstånd:** IDLE (LoRa inaktiv)
+
+1. Låt systemet vara i IDLE utan knapptryckning.
+2. Verifiera att ingen LoRa-sändning sker under 60 sekunder.
+3. Verifiera att inga paket mottages eller bearbetas.
+4. Verifiera att duty-cycle-budget inte förbrukas.
+
+### TC-TGH-06: DEN-aktiveringsfönster timeout
+
+**Förväntat tillstånd:** DEN_ARMED → IDLE
+
+1. Tryck DEN-knapp (DEN_ARMED).
+2. Håll DEN-knappen nedtryckt men tryck inte PAW-knappen.
+3. Vänta 5 sekunder.
+4. Verifiera att auktoriseringsfönstret stängs.
+5. Verifiera återgång till IDLE.
+6. Verifiera att ingen LoRa-sändning har skett.
+
+### TC-TGH-07: Behörighet återkallas efter giltighetstid
+
+**Förväntat tillstånd:** AUTHORIZED → IDLE
+
+1. Utför giltig autentisering (AUTHENTICATING → AUTHORIZED).
+2. Verifiera att behörighet beviljas på DEN.
+3. Vänta till giltighetstiden löper ut (standard 30 s).
+4. Verifiera att behörighet automatiskt återkallas.
+5. Verifiera återgång till IDLE.
+6. Verifiera att efter återkallelse krävs ny aktivering för ny behörighet.
+
+### TC-TGH-08: Duty cycle-budget överskriden under aktivering
+
+**Förväntat tillstånd:** AUTHENTICATING → FAILURE/LOCKED
+
+1. Förbruka sändningsbudgeten till nära 36 s per rullande 60 min.
+2. Initiera en aktiveringscykel.
+3. Verifiera att flödet avbryts när budgeten är uttömd.
+4. Verifiera FAILURE/LOCKED med fail-closed.
+5. Verifiera att ingen behörighet beviljas.
+6. Verifiera att budget bokföring är korrekt (summa ≤ 36 s).
+
+---
+
+## 13. Referenser
 
 - NIST SP 800-38A: Recommendation for Block Cipher Modes of Operation — CTR mode
 - RFC 3686: Using Advanced Encryption Standard (AES) Counter Mode with IP Encapsulating Security Payload (ESP)
