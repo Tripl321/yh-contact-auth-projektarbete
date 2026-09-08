@@ -212,6 +212,8 @@ Hanteras på USB-protokollnivå. Se PRO-46.
 
 Ej implementerad i Phase 1. Reserverad för framtida användning.
 
+Heartbeat-paket belastar sändningsbudgeten och ska vara avställda utanför aktiv session eller testning. När aktiv kan heartbeat förbruka högst 10 % av sändningsbudgeten (3,6 s per timme). Se `docs/06-radio-parametrar.md` för duty cycle-policy.
+
 ---
 
 ## 5. Autentiseringsflöde
@@ -294,6 +296,14 @@ Detta förhindrar att en attackerare uttömmer SeqWhitelist-slots med skräppake
 | LORA_RETRIES | 3 |
 | Cykel-intervall (edge) | 10 s |
 | RX-timeout (PAW loop) | 10 000 ms |
+
+### Duty cycle-budget och sändningsbegränsningar
+
+Alla sändningar över LoRa, inklusive returer och heartbeat, belastar en gemensam sändningsbudget enligt ETSI EN 300 220 (1 % duty cycle, maximalt 36 sekunder per rullande 60 minuter). Se `docs/06-radio-parametrar.md` för detaljerad policy och implementeringskrav.
+
+Returer kan begränsas eller fördröjas om sändningsbudgeten är uttömd. Heartbeat-paket kan undertryckas helt när budgeten är slut. Autentiseringspaket (CHALLENGE, RESPONSE) prioriteras framför heartbeat och testpaket vid budgetkonflikt.
+
+Returer ska ha exponentiell backoff (1 s, 2 s, 4 s) mellan försök för att sprida sändningar och minska risk för budgetötning. Kontinuerlig polling med 10 sekunders intervall överskrider budgeten och bör undvikas — autentisering ska vara händelsestyrd.
 
 ---
 
