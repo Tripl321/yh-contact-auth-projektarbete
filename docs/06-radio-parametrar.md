@@ -17,6 +17,8 @@ Dessa parametrar är konfigurerade och beslutade enligt PRO-78.
 
 ## Duty cycle-policy och sändningsbudget
 
+Detta är ett bindande krav för alla implementationer, tester och driftsättningar i detta repo. Se `AGENTS.md` ("Obligatoriskt krav: LoRa duty cycle och radiosäker drift") för den övergripande kravspecifikationen.
+
 ### Regulatorisk bakgrund
 
 ETSI EN 300 220 tillåter maximalt 1 % duty cycle i EU ISM-bandet (868,0–868,6 MHz) om ingen Listen-Before-Talk (LBT) implementeras. Detta motsvarar maximalt 36 sekunders sammanlagd sändtid per rullande 60-minutersfönster.
