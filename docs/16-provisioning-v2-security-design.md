@@ -151,6 +151,47 @@ Total:  57 bytes
 
 **If neither B-1 nor B-2 can be verified:** Report as a blocker. Do NOT implement a custom AES-GCM. Do NOT send any keys over USB until the MCU crypto path is proven.
 
+
+### 3.4a Root Cause Analysis: Zephyr LLEXT + BearSSL Incompatibility
+
+**Verified finding (2026-09-08):**
+
+The Zephyr LLEXT loader on UNO Q (ArduinoCore-zephyr v1.0.0) has `CONFIG_LLEXT_RODATA_NO_RELOC=1`.
+The build system's `gen-rodata-ld` tool splits `.rodata` into two sections:
+
+1. `.rodata` (relocated) — data with relocations (function pointers, cross-section refs)
+2. `.llext.rodata.noreloc` (NOT relocated) — data without relocations (lookup tables, strings)
+
+BearSSL's `br_aes_S` table (256-byte AES S-box) has no relocations and lands in `.llext.rodata.noreloc`.
+After LLEXT loading, `.text` references to `br_aes_S` are relocated but the table itself is at a
+fixed flash address that doesn't match the relocated address space. This causes AES-CTR to produce
+wrong ciphertext (`AES_CTR_FAIL` on hardware).
+
+Additionally, linking `gcm.cpp` (which defines `br_gcm_vtable` with 9 function pointers) causes the
+LLEXT loader to silently fail to load the sketch entirely. Bridge RPC becomes unresponsive.
+
+**Test matrix (all on physical UNO Q):**
+
+| Build | gcm.cpp | AES-CTR result | Bridge RPC | Sketch loads |
+|-------|---------|----------------|------------|-------------|
+| Baseline (no BearSSL) | No | N/A | OK | Yes |
+| BearSSL init only | No | N/A | OK | Yes |
+| BearSSL AES-CTR | No | FAIL (wrong output) | OK | Yes |
+| BearSSL GCM init | Yes | N/A | TIMEOUT | No |
+| BearSSL GCM full KAT | Yes | N/A | TIMEOUT | No |
+| aes_ct (no S-box) + GCM | Yes | N/A | TIMEOUT | No |
+
+**Conclusion:** BearSSL cannot be used on the UNO Q MCU with `CONFIG_LLEXT_RODATA_NO_RELOC=1`.
+The `gen-rodata-ld` tool moves BearSSL lookup tables to the non-relocatable section, breaking AES.
+Linking GCM code prevents the sketch from loading entirely.
+
+**Options:**
+- A. Loader rebuild with `CONFIG_LLEXT_RODATA_NO_RELOC=n` (production track, deferred)
+- B. Direct STM32 AES hardware register access (excluded by design decision)
+- C. Software AES implementation that doesn't use lookup tables in `.rodata` (not available in BearSSL)
+
+**Status:** MCU crypto path BLOCKED for V2 envelope implementation.
+
 ### 3.4 Encryption (MCU side)
 
 ```
