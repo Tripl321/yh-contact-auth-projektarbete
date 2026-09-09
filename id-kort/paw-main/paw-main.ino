@@ -130,6 +130,14 @@ static void setLoRaFlag(void) {
 #define EPD_HEIGHT       200
 #define EPD_BUFFER_SIZE  ((EPD_WIDTH / 8) * EPD_HEIGHT)
 
+// Max wait for the panel BUSY line. Measured full-screen refresh on the
+// bench panel (Waveshare 1.54" B V2) takes ~18 s, so the bound is set to
+// 90 s: safely above normal, still finite. A genuinely stuck BUSY (wedged
+// or disconnected panel) degrades instead of bricking the node — boot and
+// UART/LoRa auth continue without display updates. begin() aborts at the
+// FIRST stuck wait, so a dead panel costs one timeout, not one per step.
+#define EPD_BUSY_TIMEOUT_MS 90000
+
 // =============================================================
 // Key Storage
 // =============================================================
@@ -188,7 +196,8 @@ public:
 private:
     void sendCommand(uint8_t cmd);
     void sendData(uint8_t data);
-    void waitUntilIdle();
+    // Bounded BUSY wait: true when idle, false on timeout (never hangs).
+    bool waitUntilIdle(uint32_t timeoutMs = EPD_BUSY_TIMEOUT_MS);
     void reset();
     void setLut(const unsigned char* lut);
 
@@ -221,11 +230,17 @@ void ShallotEPD::sendData(uint8_t data) {
     digitalWrite(EPD_CS_PIN, HIGH);
 }
 
-void ShallotEPD::waitUntilIdle() {
+bool ShallotEPD::waitUntilIdle(uint32_t timeoutMs) {
+    uint32_t t0 = millis();
     while (digitalRead(EPD_BUSY_PIN) == HIGH) {
-        delay(100);
+        if (millis() - t0 > timeoutMs) {
+            Serial.println("[EPD] BUSY timeout - panel not responding, continuing degraded");
+            return false;
+        }
+        delay(10);
     }
     delay(200);
+    return true;
 }
 
 void ShallotEPD::reset() {
@@ -242,7 +257,7 @@ void ShallotEPD::setLut(const unsigned char* lut) {
     for (uint8_t i = 0; i < 153; i++) {
         sendData(lut[i]);
     }
-    waitUntilIdle();
+    if (!waitUntilIdle()) return;  // panel stuck: abort LUT upload, stay alive
     sendCommand(0x3F);
     sendData(lut[153]);
     sendCommand(0x03);
@@ -266,10 +281,10 @@ bool ShallotEPD::begin() {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 
     reset();
-    waitUntilIdle();
+    if (!waitUntilIdle()) return false;
 
     sendCommand(0x12);  // SWRESET
-    waitUntilIdle();
+    if (!waitUntilIdle()) return false;
 
     sendCommand(0x01);  // Driver output control
     sendData(0xC7);
@@ -304,9 +319,10 @@ bool ShallotEPD::begin() {
     sendCommand(0x4F);  // Set RAM-Y address counter
     sendData(0xC7);
     sendData(0x00);
-    waitUntilIdle();
+    if (!waitUntilIdle()) return false;
 
     setLut(WF_FULL_1IN54);
+    if (!waitUntilIdle()) return false;
     return true;
 }
 
@@ -329,7 +345,7 @@ void ShallotEPD::clear() {
     sendCommand(0x22);
     sendData(0xC7);
     sendCommand(0x20);
-    waitUntilIdle();
+    if (!waitUntilIdle()) return;  // panel stuck: skip update, stay alive
 }
 
 void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
@@ -347,7 +363,7 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
     sendCommand(0x22);
     sendData(0xC7);
     sendCommand(0x20);
-    waitUntilIdle();
+    if (!waitUntilIdle()) return;  // panel stuck: skip update, stay alive
 }
 
 void ShallotEPD::sleep() {

@@ -114,3 +114,14 @@ def test_split_single_serial1_begin():
     assert code.count('Serial1.begin(') == 1
     assert 'Serial1.begin(115200)' in src
     assert 'setTX(' not in src and 'setRX(' not in src
+
+
+def test_epd_busy_wait_bounded():
+    """Source guard (integration defect PRO-52): BUSY may only be polled
+    inside the bounded wait — a stuck panel must degrade, never hang
+    UART/LoRa. Exactly one BUSY poll site, guarded by a timeout."""
+    src = _paw_src()
+    assert 'EPD_BUSY_TIMEOUT_MS' in src
+    assert 'bool waitUntilIdle(uint32_t timeoutMs' in src
+    assert src.count('digitalRead(EPD_BUSY_PIN) == HIGH') == 1
+    assert 'millis() - t0 > timeoutMs' in src
