@@ -1,5 +1,5 @@
 /*
- * SHALLOT — PLC Complete Firmware (PRO-47 + PRO-49 + PRO-51 + PRO-52)
+ * SHALLOT — PLC Complete Firmware (PRO-47 + PRO-49 + PRO-51 + PRO-52 + PRO-53)
  * Edge enforcement node: Raspberry Pi Pico 2 (RP2350A) + Core1262-868M
  *
  * Complete implementation:
@@ -9,6 +9,10 @@
  *     timeout, bounded retries (lockout cooldown on exhaustion), and
  *     rejection of stray/duplicate/malformed packets (fail-closed)
  *   - PRO-49: HMAC-SHA256 verification of PAW responses
+ *   - PRO-53: Single fail-closed authentication decision (deny-by-default;
+ *     invalid HMAC, verification error, timeout or watchdog/internal fault
+ *     always denies, never default-open) + hardware watchdog with
+ *     fail-closed reboot
  *
  * Distribution protocol (matches UNO Q MCU firmware) - now via USB CDC:
  *   UNO Q -> PLC:  SHALLOT_MSG_HANDSHAKE (0xA1) + target_id (1 byte)  [USB]
@@ -121,6 +125,11 @@ static inline void secureWipePending() {
   pendingDeadlineMs = 0;
   pendingSeq = 0;
 }
+// PRO-53 fault latch: set on watchdog/internal errors (e.g. HMAC
+// allocation failure, where a zeroed MAC could otherwise compare equal
+// to an all-zero attacker response). While latched, plcDecideAccess()
+// denies every authentication until reboot. Fail-closed boot clears it.
+static bool plcInternalFault = false;
 // Device ID: see shared header ("PLC\x01")
 
 // =============================================================
@@ -369,7 +378,7 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
   }
 
   uint8_t* innerMsg = (uint8_t*)calloc(SHALLOT_HMAC_BLOCK_SIZE + msgLen, 1);
-  if (!innerMsg) { memset(mac, 0, 32); return; }
+  if (!innerMsg) { memset(mac, 0, 32); plcInternalFault = true; return; }  // PRO-53: deny until reboot
   memcpy(innerMsg, k_ipad, SHALLOT_HMAC_BLOCK_SIZE);
   memcpy(innerMsg + SHALLOT_HMAC_BLOCK_SIZE, msg, msgLen);
   sha256(innerMsg, SHALLOT_HMAC_BLOCK_SIZE + msgLen, innerHash);
@@ -496,6 +505,7 @@ bool receiveKey() {
   uint32_t stagedEpoch = 0;
   uint8_t stagedSeq = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
+    plcFeedWatchdog();  // PRO-53: the 10 s scan exceeds the 8 s watchdog
     if (Serial.available() >= 1) {
       int peek = Serial.peek();
       if (peek == SHALLOT_MSG_ID_CHALLENGE) {
@@ -589,6 +599,7 @@ bool receiveKey() {
   timeoutStart = millis();
   resyncSkips = 0;
   while (millis() - timeoutStart < TIMEOUT_MS) {
+    plcFeedWatchdog();  // PRO-53: the 10 s scan exceeds the 8 s watchdog
     if (Serial.available() >= 1) {
       int peek = Serial.peek();
       if (peek == SHALLOT_MSG_ID_CHALLENGE) {
@@ -789,6 +800,52 @@ static void authRecordFailure(uint32_t now) {
   }
 }
 
+// =============================================================
+// Authentication decision + watchdog (PRO-53, fail-closed)
+//
+// plcDecideAccess() is the single decision point for edge
+// enforcement. Deny-by-default: access is granted only when the HMAC
+// verified AND no timeout occurred AND no watchdog/internal fault is
+// latched AND a key is stored AND no lockout is active. Every other
+// combination denies. Never default-open.
+//
+// Hardware watchdog (RP2350, max ~8.3 s, same policy as PAW):
+// 8000 ms timeout, fed on every healthy loop pass and inside the
+// blocking key-reception scans. Any true lockup reboots into the
+// single fail-closed boot path in setup() (no key in SRAM, so the
+// decision denies until re-provisioned).
+// =============================================================
+
+#define PLC_WDT_TIMEOUT_MS 8000
+
+static inline void plcFeedWatchdog() {
+  rp2040.wdt_reset();
+}
+
+// Watchdog self-test (physical test plan, doc 15). Boot-window only:
+// shortens the timeout and blocks WITHOUT feeding, so the resulting
+// reset exercises exactly the same path as a real lockup trip (reboot,
+// WDT log line, fail-closed boot with empty SRAM). Reachable only with
+// physical USB access inside the 2 s boot window; effect equals a power
+// cycle, which needs no console at all.
+static void plcWdtSelfTest() {
+  Serial.println("[WDT] Self-test: 100 ms timeout, blocking 5 s without feed...");
+  Serial.flush();
+  rp2040.wdt_begin(100);
+  delay(5000);  // no feed: guaranteed trip
+  Serial.println("[WDT] ERROR: watchdog did not fire!");
+}
+
+// Central authentication decision. Deny-by-default: grant starts false
+// and is set only when every condition holds simultaneously.
+static bool plcDecideAccess(bool hmacOk, bool timedOut, bool watchdogFault, uint32_t now) {
+  bool grant = false;  // fail-closed default: never default-open
+  if (hmacOk && !timedOut && !watchdogFault && keyStored && !authInLockout(now)) {
+    grant = true;
+  }
+  return grant;
+}
+
 bool sendChallenge() {
   if (!keyStored) {
     Serial.println("[PRO-52] Cannot send challenge: no key stored.");
@@ -906,15 +963,27 @@ void initLoRa() {
 }
 
 void setup() {
-  Serial.begin(115200); while(!Serial) delay(10);
+  Serial.begin(115200);
+  rp2040.wdt_begin(PLC_WDT_TIMEOUT_MS);
+  while(!Serial) {
+    delay(10);
+    rp2040.wdt_reset();
+  }
 
   // Fail-closed boot: SRAM holds no key after power loss. State this
   // explicitly (belt-and-braces alongside BSS zero-init) so nothing
-  // below can run on stale key material.
+  // below can run on stale key material. A watchdog reboot lands here
+  // too, so recovery always starts unauthenticated.
   memset(aesKey, 0, SHALLOT_AES_KEY_SIZE);
   keyStored = false;
   activeEpoch = 0;
+  plcInternalFault = false;
   secureWipePending();
+
+  if (rp2040.getResetReason() == rp2040.WDT_RESET) {
+    Serial.println("[WDT] Rebooted by watchdog; starting unauthenticated (fail-closed).");
+  }
+  plcFeedWatchdog();
 
   loraSPI.setSCK(SPI1_SCK_PIN);
   loraSPI.setTX(SPI1_MOSI_PIN);
@@ -925,7 +994,19 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
-  delay(2000);
+  // Boot window for the watchdog self-test (doc 15). Doubles as the
+  // settle delay; the watchdog is fed throughout.
+  Serial.println("[PRO-53] Press 'w' (watchdog self-test) within 2s...");
+  uint32_t wdtWindowStart = millis();
+  int wdtKey = -1;
+  while (millis() - wdtWindowStart < 2000) {
+    plcFeedWatchdog();
+    if (Serial.available() > 0) { wdtKey = Serial.read(); break; }
+    delay(10);
+  }
+  if (wdtKey == 'w' || wdtKey == 'W') {
+    plcWdtSelfTest();
+  }
 
   Serial.println("============================================");
   Serial.println("SHALLOT — PLC Complete Firmware");
@@ -942,6 +1023,7 @@ void setup() {
     Serial.println("[PRO-47] Key distribution failed. No key stored.");
     for (int i = 0; i < 10; i++) {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+      plcFeedWatchdog();
       delay(200);
     }
   }
@@ -953,6 +1035,8 @@ void setup() {
 
 void loop() {
   static uint8_t rxBuffer[64];
+
+  plcFeedWatchdog();  // healthy loop pass: the last line of defense is fed here
 
   if (loraInitialized && loraPacketReceived) {
     loraPacketReceived = false;
@@ -997,7 +1081,10 @@ void loop() {
         }
 
         bool verified = verifyResponse(echoedNonce, echoedEpoch, responseHmac, SHALLOT_HMAC_SIZE);
-        if (verified) {
+        // PRO-53: single fail-closed decision point. The retry budget
+        // follows the actual decision, not the raw HMAC signal.
+        bool granted = plcDecideAccess(verified, false, plcInternalFault, nowRx);
+        if (granted) {
           nonceCacheRemember(echoedNonce, nowRx);
           authConsecFails = 0;
         } else {
@@ -1007,19 +1094,20 @@ void loop() {
         awaitingResponse = false;
         lastChallengeTime = millis();
 
+        // A live response existed, so the decision is carried explicitly.
         uint8_t resultPacket[SHALLOT_LORA_RESULT_LEN];
         resultPacket[0] = SHALLOT_MSG_RESULT;
-        resultPacket[1] = verified ? SHALLOT_RESULT_SUCCESS : SHALLOT_RESULT_FAILURE;
+        resultPacket[1] = granted ? SHALLOT_RESULT_SUCCESS : SHALLOT_RESULT_FAILURE;
 
         int txState = radio.transmit(resultPacket, sizeof(resultPacket));
         if (txState == RADIOLIB_ERR_NONE) {
           Serial.print("[PRO-52] Result sent to PAW: ");
-          Serial.println(verified ? "SUCCESS" : "FAILED");
+          Serial.println(granted ? "SUCCESS" : "FAILED");
         } else {
           Serial.printf("[PRO-52] Failed to send result: %d\n", txState);
         }
 
-        if (verified) {
+        if (granted) {
           for (int i = 0; i < 5; i++) {
             digitalWrite(LED_BUILTIN, HIGH);
             delay(100);
@@ -1053,6 +1141,11 @@ void loop() {
                  (nowAuth - lastChallengeTime >= SHALLOT_CHALLENGE_RESPONSE_TIMEOUT_MS);
     if (stale) {
       awaitingResponse = false;
+      // PRO-53: timeout denies access (tyst avslag). The decision is
+      // evaluated explicitly so this path can never grant; no RESULT is
+      // sent because there is no live response to answer.
+      const bool timeoutGranted = plcDecideAccess(false, true, plcInternalFault, nowAuth);
+      (void)timeoutGranted;  // always false by construction; kept explicit
       Serial.println("[PRO-52] Challenge response timed out; re-issuing.");
       authRecordFailure(nowAuth);  // bounded retries: exhaustion locks out
     }

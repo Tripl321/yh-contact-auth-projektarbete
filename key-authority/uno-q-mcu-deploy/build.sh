@@ -37,6 +37,7 @@ OUTPUT_ELF="$BUILD_DIR/uno-q-key-authority-mcu.elf"
 FQBN="arduino:zephyr:unoq"
 SKETCH_PATH="$REPO_ROOT/key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"
 LIBRARY_PATH="$REPO_ROOT/libraries/ShallotLoRa"
+BEARSSL_LIBRARY_PATH="$REPO_ROOT/libraries/BearSSL_GCM"
 PRJ_CONF="$REPO_ROOT/key-authority/uno-q-key-authority-mcu/prj.conf"
 
 # ============================================================
@@ -133,7 +134,8 @@ build_firmware() {
     arduino-cli compile \
         --fqbn "$FQBN" \
         --library "$LIBRARY_PATH" \
-        --build-property "build.path=$BUILD_DIR" \
+        --library "$BEARSSL_LIBRARY_PATH" \
+        --build-path "$BUILD_DIR" \
         --output-dir "$BUILD_DIR" \
         "$SKETCH_PATH" 2>&1 | grep -v "Downloading" || true
     

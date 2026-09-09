@@ -61,6 +61,7 @@ if [ "$METHOD" = "arduino" ]; then
     echo "Building for Arduino UNO Q (STM32U585)..."
     arduino-cli compile \
         --fqbn arduino:zephyr:unoq \
+        --library "$SCRIPT_DIR/../../libraries/ShallotLoRa" \
         --output-dir "$BUILD_DIR" \
         uno-q-key-authority-mcu.ino
     

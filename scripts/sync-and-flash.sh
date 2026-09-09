@@ -224,7 +224,7 @@ compile_component() {
   local sketch_dir="$SKETCHBOOK/$sketch_name"
 
   log "Kompilerar $comp (FQBN: $fqbn)..."
-  if comp_out="$(arduino-cli compile --fqbn "$fqbn" "$sketch_dir" 2>&1)"; then
+  if comp_out="$(arduino-cli compile --fqbn "$fqbn" --library "$REPO_DIR/libraries/ShallotLoRa" --library "$REPO_DIR/libraries/ShallotEpd" "$sketch_dir" 2>&1)"; then
     ok "Kompilering OK: $comp"
   else
     err "Kompilering misslyckades för $comp"

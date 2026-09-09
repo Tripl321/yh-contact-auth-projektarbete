@@ -93,6 +93,8 @@ elif [ "$METHOD" = "arduino" ]; then
     arduino-cli compile \
         --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
         --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+        --library "$SCRIPT_DIR/../../libraries/ShallotLoRa" \
+        --library "$SCRIPT_DIR/../../libraries/ShallotEpd" \
         --output-dir "$BUILD_DIR" \
         paw-main.ino
     

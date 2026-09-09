@@ -1,14 +1,20 @@
-name: Build PAW UF2 Firmware
+name: Build Firmware (PAW, PLC, UNO Q)
 
 on:
   push:
     branches: [ main ]
     paths:
       - 'id-kort/paw-main/**'
+      - 'plc/plc-key-receiver/**'
+      - 'key-authority/**'
+      - 'libraries/**'
       - '.github/workflows/build-paw-uf2.yml'
   pull_request:
     paths:
       - 'id-kort/paw-main/**'
+      - 'plc/plc-key-receiver/**'
+      - 'key-authority/**'
+      - 'libraries/**'
       - '.github/workflows/build-paw-uf2.yml'
   workflow_dispatch:
     inputs:
@@ -18,73 +24,60 @@ on:
         default: 'false'
 
 jobs:
-  build:
+  validate-mpu:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/earlephilhower/arduino-pico:latest
-      options: --privileged
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y git wget
+      - name: Syntax-check UNO Q MPU script
+        run: python3 -m py_compile key-authority/uno-q-key-authority-mpu/uno-q-key-authority-mpu.py
 
-      - name: Clone arduino-pico core
+  build-paw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arduino CLI
         run: |
-          cd /tmp
-          git clone --depth 1 https://github.com/earlephilhower/arduino-pico.git
-          cd arduino-pico
-          git submodule update --init --depth 1
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+
+      - name: Install RP2040 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install libraries (RadioLib, GxEPD2)
+        run: arduino-cli lib install RadioLib GxEPD2
 
       - name: Build PAW firmware (UF2)
         run: |
-          # Set up Arduino CLI
-          wget -q https://github.com/arduino/arduino-cli/releases/latest/download/arduino-cli_latest_Linux_64bit.tar.gz
-          tar -xzf arduino-cli_latest_Linux_64bit.tar.gz
-          mv arduino-cli /usr/local/bin/
-          
-          # Configure Arduino CLI
-          arduino-cli config init
-          arduino-cli core update-index
-          
-          # Install arduino-pico platform
-          arduino-cli core install arduino-pico:rp2040
-          
-          # Build for Adafruit Feather RP2350 HSTX
-          cd "$GITHUB_WORKSPACE"
           arduino-cli compile \
-            --fqbn arduino-pico:rp2040:adafruit_feather_rp2350_hstx \
+            --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
             --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+            --library "$GITHUB_WORKSPACE/libraries/ShallotLoRa" \
+            --library "$GITHUB_WORKSPACE/libraries/ShallotEpd" \
             --output-dir build/paw-main \
             id-kort/paw-main/paw-main.ino
-          
-          # Convert to UF2
-          # The arduino-pico toolchain should produce UF2 automatically for RP2350
-          # If not, we can use pico-sdk's uf2 tool
           ls -la build/paw-main/
 
-      - name: Rename UF2 file
+      - name: Verify build artifact exists
         run: |
-          # Find the UF2 file and rename it
           UF2_FILE=$(find build/paw-main -name "*.uf2" | head -n 1)
-          if [ -n "$UF2_FILE" ]; then
-            cp "$UF2_FILE" build/paw-main/paw-main.uf2
-            echo "UF2 file created: paw-main.uf2"
-          else
-            echo "No UF2 file found!"
-            # Try to find hex file and convert
-            HEX_FILE=$(find build/paw-main -name "*.hex" | head -n 1)
-            if [ -n "$HEX_FILE" ]; then
-              echo "Found HEX file, attempting conversion..."
-              # This would require elf2uf2 tool from pico-sdk
-            fi
+          if [ -z "$UF2_FILE" ]; then
+            echo "ERROR: No UF2 file produced by PAW build"
+            exit 1
           fi
+          cp "$UF2_FILE" build/paw-main/paw-main.uf2
+          test -f build/paw-main/paw-main.uf2
+          echo "UF2 file created: build/paw-main/paw-main.uf2"
 
       - name: Upload UF2 artifact
         uses: actions/upload-artifact@v4
@@ -92,6 +85,7 @@ jobs:
           name: paw-main-uf2
           path: build/paw-main/paw-main.uf2
           compression-level: 0
+          if-no-files-found: error
 
       - name: Create Release (on main branch)
         if: github.ref == 'refs/heads/main'
@@ -104,3 +98,103 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-plc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+
+      - name: Install RP2040 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040
+
+      - name: Install libraries (RadioLib)
+        run: arduino-cli lib install RadioLib
+
+      - name: Build PLC firmware (UF2)
+        run: |
+          arduino-cli compile \
+            --fqbn rp2040:rp2040:rpipico2 \
+            --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+            --library "$GITHUB_WORKSPACE/libraries/ShallotLoRa" \
+            --output-dir build/plc-key-receiver \
+            plc/plc-key-receiver/plc-key-receiver.ino
+          ls -la build/plc-key-receiver/
+
+      - name: Verify build artifact exists
+        run: |
+          UF2_FILE=$(find build/plc-key-receiver -name "*.uf2" | head -n 1)
+          if [ -z "$UF2_FILE" ]; then
+            echo "ERROR: No UF2 file produced by PLC build"
+            exit 1
+          fi
+          cp "$UF2_FILE" build/plc-key-receiver/plc-key-receiver.uf2
+          test -f build/plc-key-receiver/plc-key-receiver.uf2
+          echo "UF2 file created: build/plc-key-receiver/plc-key-receiver.uf2"
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plc-key-receiver-uf2
+          path: build/plc-key-receiver/plc-key-receiver.uf2
+          compression-level: 0
+          if-no-files-found: error
+
+  build-unoq-mcu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+
+      - name: Install UNO Q core
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install arduino:zephyr
+
+      - name: Install libraries (Arduino_RouterBridge)
+        run: arduino-cli lib install Arduino_RouterBridge
+
+      - name: Build UNO Q firmware (HEX)
+        run: |
+          arduino-cli compile \
+            --fqbn arduino:zephyr:unoq \
+            --library "$GITHUB_WORKSPACE/libraries/ShallotLoRa" \
+            --output-dir build/unoq-mcu \
+            key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino
+          ls -la build/unoq-mcu/
+
+      - name: Verify build artifact exists
+        run: |
+          HEX_FILE=$(find build/unoq-mcu -name "*.hex" | head -n 1)
+          if [ -z "$HEX_FILE" ]; then
+            echo "ERROR: No HEX file produced by UNO Q build"
+            exit 1
+          fi
+          cp "$HEX_FILE" build/unoq-mcu/uno-q-key-authority-mcu.hex
+          test -f build/unoq-mcu/uno-q-key-authority-mcu.hex
+          echo "HEX file created: build/unoq-mcu/uno-q-key-authority-mcu.hex"
+
+      - name: Upload HEX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unoq-mcu-hex
+          path: build/unoq-mcu/uno-q-key-authority-mcu.hex
+          compression-level: 0
+          if-no-files-found: error

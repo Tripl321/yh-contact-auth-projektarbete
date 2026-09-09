@@ -93,6 +93,7 @@ elif [ "$METHOD" = "arduino" ]; then
     arduino-cli compile \
         --fqbn rp2040:rp2040:rpipico2 \
         --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+        --library "$SCRIPT_DIR/../../libraries/ShallotLoRa" \
         --output-dir "$BUILD_DIR" \
         plc-key-receiver.ino
     
