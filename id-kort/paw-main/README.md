@@ -132,6 +132,36 @@ Kombinerad firmware för **Adafruit Feather RP2350 + Core1262-868M + 1.54" Waves
 2. Anslut LoRa-moduler (samma frekvens: 868MHz)
 3. PLC skickar challenge, PAW svarar med HMAC-SHA256
 
+## Dockad UART mot DEN (PRO-84/87)
+
+PAW är responder-only på Serial1 (115200): giltig CHALLENGE (16 B nonce)
+besvaras med RESPONSE (32 B HMAC, dev-nyckel); allt annat ignoreras
+fail-closed. Delar Serial1 med UNO Q-provisionering (en peer i taget).
+
+### Fysisk UART-koppling PAW↔DEN (+ delad GND)
+
+| Från | Till | Notering |
+|---|---|---|
+| DEN GPIO0 (TX) | PAW GPIO1 (RX) | RP2350 UART0-defaults, ingen remap |
+| DEN GPIO1 (RX) | PAW GPIO0 (TX) | |
+| GND | GND | gemensam jord krävs |
+
+### Bygg och upload (Feather RP2350)
+
+```bash
+arduino-cli compile \
+  --fqbn rp2040:rp2040:adafruit_feather_rp2350_hstx \
+  --build-property build.extra_flags="-DARDUINO_USB_CDC_ONLY" \
+  --library libraries/DenUartProtocol \
+  --output-dir build \
+  id-kort/paw-main/paw-main.ino
+```
+
+Håll BOOTSEL + anslut USB (RPI-RP2 visas), kopiera `build/paw-main.ino.uf2`
+dit; övervaka USB-loggen i 115200 baud. Bänkcheck utan DEN: tystnad på
+Serial1 ger ingen trafik; TX0↔RX1-loopback ger `FAILED: unexpected type`
+aldrig något svar på skräp.
+
 ## Säkerhetsnotiser
 
 - AES-128 nyckeln lagras i **volatilt SRAM** - försvinner vid strömbortfall
