@@ -9,7 +9,7 @@
  *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
- *   UART (UNO Q):  TX->1, RX->0 (Serial1)
+ *   UART (Serial1): TX=GPIO0, RX=GPIO1 (shared: UNO Q provisioning + DEN dock)
  *   LoRa (SPI1):   SCK=D10, MOSI=D11, MISO=D24, CS=D9, BUSY=pin7, RESET=pin4, DIO1=A2
  *   e-Paper (SPI0):DIN=MO, CLK=SCK, CS=5, DC=A0, RST=A1, BUSY=A3
  *
@@ -27,6 +27,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include <DenUartProtocol.h>  // PRO-84/87: docked UART framing (shared, no dup)
 
 // =============================================================
 // Configuration
@@ -66,8 +67,12 @@
 #define EPD_RST_PIN      A1  // A1 on Feather silkscreen (GPIO27)
 #define EPD_BUSY_PIN     A3  // A3 on Feather silkscreen (GPIO29)
 
-// --- UART to UNO Q ---
-// Hardware Serial1: TX->1, RX->0 on Feather silkscreen
+// --- UART (Serial1, shared) ---
+// TX=GPIO0, RX=GPIO1 (UART0 defaults, plain Serial1.begin).
+// Shared by UNO Q provisioning (PRO-48) and the DEN dock responder
+// (PRO-84); single peer at a time (one cable). Foreign tags are ignored
+// by both parsers (provisioning skips non-0xA1 pairs; DenScanner skips
+// non-SYNC bytes), so a stray peer can only cost one denied session.
 
 // =============================================================
 // SPI1 Instance for Core1262
@@ -745,6 +750,69 @@ static AuthState currentState = STATE_WAITING_FOR_KEY;
 static bool loraInitialized = false;
 
 // =============================================================
+// Docked UART responder (PRO-84, DEN link over Serial1)
+// =============================================================
+//
+// Responder-only: PAW never initiates UART traffic. Valid CHALLENGE
+// frames (exactly 16-byte nonce) are answered with a framed RESPONSE
+// carrying HMAC-SHA256(devkey, nonce) via the existing PRO-50
+// hmac_sha256 (reused, not duplicated). Everything else — malformed,
+// CRC-invalid, oversized, timed-out, unexpected type — is logged and
+// ignored with zero state change (fail-closed). LoRa flow untouched.
+//
+// =============================================================
+// DEVELOPMENT-ONLY shared key — MUST equal DEN_DEV_KEY in
+// plc/den-main/den-main.ino. Bring-up stub only: replace with the
+// provisioned key before production.
+// =============================================================
+#warning "PRO-84 development shared key - replace before production"
+static const uint8_t DEN_DEV_KEY[16] = {
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+  0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
+};
+
+static den_scanner_t denScanner;
+
+// e-Paper instance lives below (Global e-Paper Instance); declared here
+// so the responder can show AUTHENTICATING on dock activity.
+extern ShallotEPD epd;
+
+static void handleDockUart() {
+    uint32_t now = millis();
+    while (Serial1.available()) {
+        den_frame_t f;
+        den_status_t st = den_scanner_push(&denScanner, (uint8_t)Serial1.read(), now, &f);
+        if (st == DEN_INCOMPLETE) continue;
+        if (st != DEN_OK) {
+            Serial.print("[PRO-84] Dock frame rejected, code ");
+            Serial.println((int)st);
+            continue;  // fail-closed: keep seeking SYNC, change nothing
+        }
+        if (f.type != DEN_TYPE_CHALLENGE) {
+            Serial.print("[PRO-84] Dock frame ignored, type 0x");
+            Serial.println(f.type, HEX);
+            continue;  // responder-only: only CHALLENGE is accepted
+        }
+        // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
+        uint8_t mac[DEN_HMAC_LEN];
+        hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY), f.payload, f.payloadLen, mac);
+        uint8_t resp[DEN_MAX_FRAME];
+        size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
+        memset(mac, 0, sizeof(mac));
+        if (!n) {
+            Serial.println("[PRO-84] Response encode failed");
+            continue;
+        }
+        Serial1.write(resp, n);
+        Serial1.flush();
+        memset(resp, 0, sizeof(resp));
+        Serial.println("[PRO-84] CHALLENGE answered over dock UART");
+        epd.begin();
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
+    }
+}
+
+// =============================================================
 // Global e-Paper Instance
 // =============================================================
 
@@ -756,7 +824,8 @@ ShallotEPD epd;
 
 void setup() {
     Serial.begin(115200);
-    Serial1.begin(115200);  // UART to UNO Q
+    Serial1.begin(115200);  // UART: UNO Q provisioning + DEN dock (TX=GPIO0, RX=GPIO1)
+    den_scanner_init(&denScanner);
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);
@@ -914,6 +983,11 @@ void loop() {
             }
         }
     }
+
+    // 2b. Docked UART (DEN) responder poll — passive, never initiates.
+    // Runs every pass so dock challenges are answered promptly; shares
+    // Serial1 with provisioning (see pin note) without disturbing it.
+    handleDockUart();
 
     // 3. Main State Machine Execution
     switch (currentState) {
