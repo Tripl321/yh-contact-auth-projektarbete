@@ -136,7 +136,11 @@ Kombinerad firmware för **Adafruit Feather RP2350 + Core1262-868M + 1.54" Waves
 
 PAW är responder-only på Serial1 (115200): giltig CHALLENGE (16 B nonce)
 besvaras med RESPONSE (32 B HMAC, dev-nyckel); allt annat ignoreras
-fail-closed. Delar Serial1 med UNO Q-provisionering (en peer i taget).
+fail-closed.
+
+**Transporter (delade, aldrig gemensamma):** Mama Bear-provisionering går
+över USB Serial (USB-C); Serial1 (GPIO0/1) tillhör exklusivt DEN-dockan.
+Ingen parser läser någonsin den andras transport.
 
 ### Fysisk UART-koppling PAW↔DEN (+ delad GND)
 

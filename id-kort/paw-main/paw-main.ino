@@ -9,12 +9,13 @@
  *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
- *   UART (Serial1): TX=GPIO0, RX=GPIO1 (shared: UNO Q provisioning + DEN dock)
+ *   USB Serial (Mama Bear): key provisioning over USB-C (no GPIO)
+ *   UART Serial1 (DEN dock): TX=GPIO0, RX=GPIO1 (UART0 defaults, dock only)
  *   LoRa (SPI1):   SCK=D10, MOSI=D11, MISO=D24, CS=D9, BUSY=pin7, RESET=pin4, DIO1=A2
  *   e-Paper (SPI0):DIN=MO, CLK=SCK, CS=5, DC=A0, RST=A1, BUSY=A3
  *
  * Architecture:
- *   1. Wait for key from UNO Q at startup via Serial1
+ *   1. Wait for key from Mama Bear at startup over USB Serial
  *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
  *   3. Listen for challenge (nonce) from PLC over LoRa
  *   4. Compute HMAC-SHA256(key, nonce) and transmit response
@@ -27,7 +28,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
-#include <DenUartProtocol.h>  // PRO-84/87: docked UART framing (shared, no dup)
+#include <DenUartProtocol.h>  // PRO-84/87: dock framing from shared module
 
 // =============================================================
 // Configuration
@@ -67,12 +68,9 @@
 #define EPD_RST_PIN      A1  // A1 on Feather silkscreen (GPIO27)
 #define EPD_BUSY_PIN     A3  // A3 on Feather silkscreen (GPIO29)
 
-// --- UART (Serial1, shared) ---
-// TX=GPIO0, RX=GPIO1 (UART0 defaults, plain Serial1.begin).
-// Shared by UNO Q provisioning (PRO-48) and the DEN dock responder
-// (PRO-84); single peer at a time (one cable). Foreign tags are ignored
-// by both parsers (provisioning skips non-0xA1 pairs; DenScanner skips
-// non-SYNC bytes), so a stray peer can only cost one denied session.
+// --- Transports (split, never shared) ---
+// USB Serial: Mama Bear key provisioning (PRO-48) + logs.
+// Serial1: DEN dock ONLY, TX=GPIO0, RX=GPIO1 (UART0 defaults).
 
 // =============================================================
 // SPI1 Instance for Core1262
@@ -645,11 +643,13 @@ bool receiveKeyFromUNOQ() {
 
     Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
 
+    // NOTE: Mama Bear provisioning arrives over USB Serial (Serial),
+    // NOT Serial1. Serial1 (GPIO0/1) belongs exclusively to the DEN dock.
     // Step 1: Wait for handshake
     while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        if (Serial1.available() >= 2) {
-            uint8_t msgType = Serial1.read();
-            uint8_t targetId = Serial1.read();
+        if (Serial.available() >= 2) {
+            uint8_t msgType = Serial.read();
+            uint8_t targetId = Serial.read();
 
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
                 Serial.println("[PRO-48] Handshake received.");
@@ -667,46 +667,46 @@ bool receiveKeyFromUNOQ() {
     for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
     Serial.println();
 
-    Serial1.write(MSG_READY);
-    Serial1.write(deviceId, 4);
-    Serial1.flush();
+    Serial.write(MSG_READY);
+    Serial.write(deviceId, 4);
+    Serial.flush();
 
     // Step 3: Wait for key data (22 bytes: type(1) + len(1) + key(16) + crc(4))
     timeoutStart = millis();
-    while (Serial1.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
+    while (Serial.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
         delay(1);
     }
-    if (Serial1.available() < 22) {
+    if (Serial.available() < 22) {
         Serial.println("[PRO-48] Timeout waiting for key data.");
         return false;
     }
 
-    uint8_t msgType = Serial1.read();
+    uint8_t msgType = Serial.read();
     if (msgType != MSG_KEY_DATA) {
         Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
         return false;
     }
 
-    uint8_t receivedKeyLen = Serial1.read();
+    uint8_t receivedKeyLen = Serial.read();
     if (receivedKeyLen != AES_KEY_SIZE) {
         Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
         return false;
     }
 
     uint8_t receivedKey[AES_KEY_SIZE];
-    Serial1.readBytes(receivedKey, AES_KEY_SIZE);
+    Serial.readBytes(receivedKey, AES_KEY_SIZE);
 
     // Read CRC32
-    uint32_t receivedCrc = ((uint32_t)Serial1.read() << 24)
-                         | ((uint32_t)Serial1.read() << 16)
-                         | ((uint32_t)Serial1.read() << 8)
-                         | ((uint32_t)Serial1.read());
+    uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
+                         | ((uint32_t)Serial.read() << 16)
+                         | ((uint32_t)Serial.read() << 8)
+                         | ((uint32_t)Serial.read());
 
     // Verify CRC32
     uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
     if (computedCrc != receivedCrc) {
         Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n", computedCrc, receivedCrc);
-        Serial1.write(MSG_ERROR);
+        Serial.write(MSG_ERROR);
         memset(receivedKey, 0, AES_KEY_SIZE);
         return false;
     }
@@ -723,9 +723,9 @@ bool receiveKeyFromUNOQ() {
     uint8_t keyHash[KEY_HASH_SIZE];
     memcpy(keyHash, fullHash, KEY_HASH_SIZE);
 
-    Serial1.write(MSG_STORED);
-    Serial1.write(keyHash, KEY_HASH_SIZE);
-    Serial1.flush();
+    Serial.write(MSG_STORED);
+    Serial.write(keyHash, KEY_HASH_SIZE);
+    Serial.flush();
 
     Serial.print("[PRO-48] Key stored. Hash sent: ");
     for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
@@ -777,7 +777,7 @@ static den_scanner_t denScanner;
 // so the responder can show AUTHENTICATING on dock activity.
 extern ShallotEPD epd;
 
-static void handleDockUart() {
+static void handleDockAuth() {
     uint32_t now = millis();
     while (Serial1.available()) {
         den_frame_t f;
@@ -824,7 +824,7 @@ ShallotEPD epd;
 
 void setup() {
     Serial.begin(115200);
-    Serial1.begin(115200);  // UART: UNO Q provisioning + DEN dock (TX=GPIO0, RX=GPIO1)
+    Serial1.begin(115200);  // DEN dock only (TX=GPIO0, RX=GPIO1)
     den_scanner_init(&denScanner);
 
     pinMode(LED_BUILTIN, OUTPUT);
@@ -956,38 +956,12 @@ void loop() {
         radio.startReceive();
     }
 
-    // 2. Serial fallback / debug simulation for testing
-    if (Serial.available() > 0) {
-        uint8_t msgType = Serial.read();
-        if (msgType == MSG_CHALLENGE) {
-            Serial.println("[PRO-50] (Debug Serial) Challenge received");
-            if (Serial.available() >= CHALLENGE_SIZE) {
-                Serial.readBytes(challenge, CHALLENGE_SIZE);
-                lastChallengeTime = millis();
-                currentState = STATE_COMPUTING_RESPONSE;
-                epd.begin();
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            }
-        } else if (msgType == MSG_RESULT && Serial.available() > 0) {
-            uint8_t res = Serial.read();
-            if (res == 0x01) {
-                Serial.println("[PRO-50] (Debug Serial) Authentication SUCCESS");
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                epd.begin();
-                epd.showStatus(EPD_STATUS_AUTHENTICATED);
-            } else {
-                Serial.println("[PRO-50] (Debug Serial) Authentication FAILED");
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                epd.begin();
-                epd.showStatus(EPD_STATUS_FAILED);
-            }
-        }
-    }
-
-    // 2b. Docked UART (DEN) responder poll — passive, never initiates.
-    // Runs every pass so dock challenges are answered promptly; shares
-    // Serial1 with provisioning (see pin note) without disturbing it.
-    handleDockUart();
+    // 2. Docked UART (DEN) responder poll — passive, never initiates.
+    // Serial1 belongs exclusively to the DEN dock; provisioning lives on
+    // USB Serial, so this parser can run every pass unconditionally.
+    // (Removed: legacy USB-Serial debug simulator — it consumed arbitrary
+    // USB bytes and would corrupt Mama Bear provisioning traffic.)
+    handleDockAuth();
 
     // 3. Main State Machine Execution
     switch (currentState) {
