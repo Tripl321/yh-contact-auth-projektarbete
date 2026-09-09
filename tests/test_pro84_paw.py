@@ -141,7 +141,7 @@ def test_pro84_source_guards():
     assert 'hmac_sha256(DEN_DEV_KEY' in src  # existing HMAC reused
     assert 'epd.showStatus(EPD_STATUS_AUTHENTICATING)' in src  # e-paper kept
     assert '#include <RadioLib.h>' in src and 'radio.transmit' in src  # LoRa kept
-    assert 'handleDockUart();' in src
+    assert 'handleDockAuth();' in src
     den = (root / 'plc/den-main/den-main.ino').read_text()
     assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in den
     assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in src  # same dev key

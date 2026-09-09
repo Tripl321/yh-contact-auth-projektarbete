@@ -777,7 +777,18 @@ static den_scanner_t denScanner;
 // so the responder can show AUTHENTICATING on dock activity.
 extern ShallotEPD epd;
 
-static void handleDockUart() {
+// Serial1 ownership (mutually exclusive runtime modes):
+//   PROVISIONING (!hasValidStoredKey): handleProvisioning() is the SOLE
+//     Serial1 reader (UNO Q key distribution).
+//   OPERATIONAL (hasValidStoredKey): handleDockAuth() is the SOLE
+//     Serial1 reader (DEN dock challenges).
+// loop() dispatches exactly one of them per iteration — the inactive
+// handler never runs, so it can neither inspect nor consume UART bytes.
+static inline bool hasValidStoredKey() {
+    return keyStored;  // set only after CRC-verified key storage
+}
+
+static void handleDockAuth() {
     uint32_t now = millis();
     while (Serial1.available()) {
         den_frame_t f;
@@ -809,6 +820,20 @@ static void handleDockUart() {
         Serial.println("[PRO-84] CHALLENGE answered over dock UART");
         epd.begin();
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
+    }
+}
+
+// Provisioning-mode handler: the SOLE Serial1 reader while no valid key
+// is stored. Wraps the key-reception attempt and its success transition;
+// invalid/incomplete/malformed data never touches stored key material
+// (receiveKeyFromUNOQ fails closed) and the mode is unchanged.
+static void handleProvisioning() {
+    if (receiveKeyFromUNOQ()) {
+        currentState = STATE_WAITING_FOR_CHALLENGE;
+        digitalWrite(LED_BUILTIN, HIGH);
+        epd.begin();
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
+        Serial.println("[PAW] Mode: OPERATIONAL (key stored, dock responder owns Serial1)");
     }
 }
 
@@ -867,11 +892,16 @@ void setup() {
         Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
     }
 
+    // SRAM holds no key across reboot, so boot always starts in
+    // provisioning mode (sole Serial1 reader: handleProvisioning).
+    Serial.println("[PAW] Boot mode: PROVISIONING (no stored key)");
+
     // Step 1: Receive key from UNO Q
     Serial.println("[PRO-48] Starting key reception...");
     if (receiveKeyFromUNOQ()) {
         currentState = STATE_WAITING_FOR_CHALLENGE;
         Serial.println("[PRO-48] Key received successfully.");
+        Serial.println("[PAW] Mode: OPERATIONAL (key stored, dock responder owns Serial1)");
         digitalWrite(LED_BUILTIN, HIGH);
 
         // Update e-Paper to show waiting for challenge
@@ -984,20 +1014,18 @@ void loop() {
         }
     }
 
-    // 2b. Docked UART (DEN) responder poll — passive, never initiates.
-    // Runs every pass so dock challenges are answered promptly; shares
-    // Serial1 with provisioning (see pin note) without disturbing it.
-    handleDockUart();
+    // 2b. Serial1 ownership: exactly one parser per pass (fail-closed).
+    if (!hasValidStoredKey()) {
+        handleProvisioning();  // sole Serial1 reader
+    } else {
+        handleDockAuth();      // sole Serial1 reader
+    }
 
     // 3. Main State Machine Execution
     switch (currentState) {
         case STATE_WAITING_FOR_KEY:
-            if (receiveKeyFromUNOQ()) {
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                digitalWrite(LED_BUILTIN, HIGH);
-                epd.begin();
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            }
+            // Handled by the mode dispatch above (handleProvisioning).
+            // Kept empty so Serial1 keeps exactly one reader per pass.
             break;
 
         case STATE_WAITING_FOR_CHALLENGE:

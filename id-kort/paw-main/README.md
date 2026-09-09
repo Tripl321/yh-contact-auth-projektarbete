@@ -138,6 +138,11 @@ PAW är responder-only på Serial1 (115200): giltig CHALLENGE (16 B nonce)
 besvaras med RESPONSE (32 B HMAC, dev-nyckel); allt annat ignoreras
 fail-closed. Delar Serial1 med UNO Q-provisionering (en peer i taget).
 
+**Lägesexklusivitet:** utan lagrad nyckel äger provisioneringsparsern
+Serial1 ensam (`Boot mode: PROVISIONING`); med lagrad nyckel äger
+dock-parsern den ensam (`Mode: OPERATIONAL`). Den inaktiva parsern körs
+aldrig och kan varken läsa eller konsumera UART-byte.
+
 ### Fysisk UART-koppling PAW↔DEN (+ delad GND)
 
 | Från | Till | Notering |
