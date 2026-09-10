@@ -119,6 +119,30 @@ RESULT:FAIL wipes the committed key and shows REJECTED. A failed render
 fails the ceremony closed (DISP:FAIL, nothing committed, no E3) and never
 falls back to TOFU.
 
+Proof-of-reading: after the automatic string match, the MPU prompts for
+the LAST 4 glass chars before env_confirm. A bare OK is rubber-stampable;
+typing the chars proves the operator actually read the glass. Empty line
+or 3 strikes aborts with RESULT:FAIL.
+
+Operator failure matrix (all fail closed):
+- Honest FAIL on a valid session: key wiped both sides (PAW wipe plus an
+  orphaned MCU wrap whose key nobody retains), re-run costs ~1 min.
+  Availability loss only; audit shows match + operator abort.
+- Honest or malicious OK on a MISMATCHED session: impossible through the
+  tooling — the automatic compare sends RESULT:FAIL before any verdict
+  is accepted. A log pairing mismatch with OK can therefore never occur
+  honestly; its presence alone is an incident.
+- Honest OK on a valid but MISRENDERED session: key is legitimate
+  (crypto consistent), record slightly untrue. Bounded by the glyph
+  confusability floor (tests) and the proof-of-reading prompt.
+- Malicious FAIL (sabotage): availability only, detectable as a pattern.
+- Threat boundary, stated plainly: the ceremony assumes an honest-but-
+  buggy relay and operator. A malicious MPU operator with shell access
+  can fake both displays consistently; that residual belongs to physical
+  access control and append-only off-device audit, not to this protocol.
+  Duress-FAIL (silent alert on coerced approval) is a future production
+  option, not specified here.
+
 Test-only fixture flow (never a production fallback): inside a physically
 secured fixture, with the build flag on and the fixture interlock engaged,
 an operator may run the envelope without the visual check for bring-up and
@@ -154,7 +178,11 @@ must match this table.
 - Phase 2 (in progress): MCU wrap + PAW open firmware behind
   `ENVELOPE_PHASE2` (default OFF); MPU public-fields-only relay with source
   guard; fixture end-to-end with TEST-ONLY keys + audit; display restoration
-  in parallel. Flag on is allowed in the fixture only.
+  in parallel. Flag on is allowed in the fixture only. Fixture mode latches
+  from the confirm button at boot where present, otherwise from the audited
+  `env_fixture_arm` operator RPC (the bench UNO Q has no button); SRAM-only,
+  reboot clears. The fixture flow wraps fresh TEST-ONLY keys, so arming
+  without a button cannot expose production material.
 - Phase 3: production ceremony on restored e-paper; negative bench (tamper,
   replay, wrong-device, wrong-epoch rigs); audit review.
 - Phase 4 (gate, before any non-fixture enablement): remove all remaining

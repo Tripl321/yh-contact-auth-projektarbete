@@ -127,6 +127,10 @@ static inline void printHex(const uint8_t* data, size_t len) {
   #include <zephyr/random/random.h>
   #define HAS_ZEPHYR_CSRAND 1
 #endif
+#if __has_include(<zephyr/drivers/entropy.h>)
+  #include <zephyr/drivers/entropy.h>
+  #define HAS_ZEPHYR_ENTROPY_DRV 1
+#endif
 
 #if defined(CONFIG_HARDWARE_DEVICE_CS_GENERATOR) && !defined(CONFIG_TEST_RANDOM_GENERATOR)
   #define USE_ZEPHYR_CSRAND 1
@@ -138,6 +142,15 @@ static inline void printHex(const uint8_t* data, size_t len) {
 static bool generateSecureRandomBytes(uint8_t* buffer, size_t length) {
 #if USE_ZEPHYR_CSRAND
   return (sys_csrand_get(buffer, length) == 0);
+#elif defined(HAS_ZEPHYR_ENTROPY_DRV)
+  // Preferred on-device path: the Zephyr STM32 RNG entropy driver
+  // (present and initialized in this build). Raw register access is NOT
+  // used: on STM32U585 hardware it faults the MCU (bench-proven 2026-09-10
+  // via disassembly + deterministic wedge on first RNG touch; the KAT
+  // probe never touched TRNG, which is why vetting passed).
+  const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_entropy));
+  if (!device_is_ready(dev)) return false;
+  return entropy_get_entropy(dev, buffer, (uint16_t)length) == 0;
 #else
   STM32_RNG_CR |= RNG_CR_RNGEN;
 
@@ -528,14 +541,33 @@ static bool distributeKey(uint8_t targetId) {
 // =============================================================
 #if ENVELOPE_PHASE2
 
-// Fixture interlock: latched in setup() iff the confirm button is held at
-// boot. Envelope RPCs refuse everything unless latched (SRAM, reboot clears).
+// Fixture interlock: latched when the confirm button is held at boot
+// (if present) OR when the MPU operator explicitly arms via env_fixture_arm
+// (the UNO Q bench unit has no button; the RPC arm is the operable path).
+// SRAM-only, reboot clears, monotonic (no disarm except reboot). Every arm
+// is audit-logged via Bridge.notify. Fixture builds wrap TEST-ONLY keys,
+// so a spurious arm cannot leak production material (none exists here).
 static bool envFixtureMode = false;
 // SRAM epoch counter, first wrap uses epoch 1 (spec §7).
 static uint32_t envEpoch = 0;
 // Fingerprint of the last wrapped key, for E3 confirmation (public, 4 B).
 static uint8_t envLastFingerprint[KEY_HASH_SIZE];
 static bool envHasWrapped = false;
+
+// Async wrap staging (transport constraint: crypto runs on the loop
+// thread, never in an RPC handler). Single session at a time; the worker
+// thread only flips envReqPending, loop() owns the rest. Volatile flags
+// follow the existing pendingDistributionTarget precedent.
+static volatile bool envReqPending = false;
+static volatile bool envResReady = false;
+static bool envResConsumed = true;
+// E1 assembly: 3 x 15 bytes (30 hex chars each, transport constraint 2).
+static uint8_t envReqE1[ENV_E1_LEN];
+static uint8_t envReqHave = 0;  // bitmask: bit i == part i received
+static uint8_t envReqTarget = 0;
+static uint8_t envResE2[ENV_E2_LEN];
+static char envResVerify[ENV_VERIFY_LEN + 1];
+static bool envResOk = false;
 
 static inline void envLatchFixtureMode() {
   envFixtureMode = (digitalRead(CONFIRM_BUTTON_PIN) == LOW);
@@ -638,8 +670,10 @@ static bool envelopeWrap(const uint8_t e1[ENV_E1_LEN], uint8_t targetId,
     Serial.print(epoch);
     Serial.print(", VERIFY ");
     Serial.println(verify17);
-    Bridge.notify("key_authority_event", "envelope_wrapped",
-                  String("TEST-ONLY epoch ") + String(epoch));
+    // NOTE: no Bridge.notify here. A notify interleaved with the in-flight
+    // RPC response corrupts the daemon's MessagePack stream (bench-proven
+    // wedge: "invalid packet, expected array", all later RPCs hang). The
+    // MPU audit-logs the wrap outcome itself from the poll result.
   } while (0);
 
   envWipe(secM, sizeof(secM));
@@ -687,39 +721,124 @@ static void setupBridgeRPC() {
   });
 
 #if ENVELOPE_PHASE2
-  // Envelope RPCs: hex-encoded public fields only (E1 in, E2 out).
-  // env_wrap takes "<e1hex>:<targetId>" and returns "<e2hex>.<verify16>"
-  // or "" on any failure. No key material crosses the Bridge.
+// Envelope RPCs: hex-encoded public fields only (E1 in, E2 out).
+//
+// TRANSPORT CONSTRAINTS (bench-proven 2026-09-10, three wedge incidents):
+// 1. Worker handlers stay tiny. Every RPC that reached crypto/TRNG stack
+//    depth wedged deterministically while small handlers answer instantly;
+//    the identical code runs fine on the main thread (Phase 0 KAT probe
+//    computed everything in setup()). So e1a/e1b/e1c/go stage only,
+//    loop() runs envelopeWrap on the main thread (same pattern as
+//    pendingDistributionTarget), env_wrap_poll collects. No key material
+//    crosses the Bridge.
+// 2. No Bridge.notify from any worker handler: a notify interleaved with
+//    the in-flight RPC response corrupts the daemon's MessagePack stream
+//    ("invalid packet, expected array", all later RPCs hang). The MPU
+//    audit-logs outcomes from poll results instead.
+// 3. String ARGS stay <=30 chars: 93-char args wedged three times while
+//    <=82 always answered instantly, so the 90-hex E1 travels as three
+//    30-hex parts (uint8 go assembles). Responses to ~300 chars are proven
+//    fine (Phase 0 kat_run), so the 183-char poll response stays whole.
+//
+// e1a/e1b/e1c take 30 hex chars ("ok"/""/"busy"). env_wrap_go takes a
+// uint8 target ("queued"/"busy"/""). env_wrap_poll returns "pending",
+// "fail", or "ok:<e2hex>.<verify16>".
   Bridge.provide_safe("env_fixture_armed", []() -> bool {
     return envFixtureMode;
   });
 
-  Bridge.provide_safe("env_wrap", [](String req) -> String {
-    int sep = req.indexOf(':');
-    if (sep < 0) return String("");
-    String e1hex = req.substring(0, sep);
-    uint8_t targetId = (uint8_t)req.substring(sep + 1).toInt();
-    uint8_t e1[ENV_E1_LEN];
-    if (!envHexDecode(e1hex, e1, sizeof(e1))) {
-      Serial.println("[ENV] Refused: malformed E1 hex.");
+  // Operator arm (audited by the MPU caller; no notify from the worker
+  // thread — worker handlers stay tiny and side-effect-free apart from
+  // staging). The only operable path on buttonless units.
+  Bridge.provide_safe("env_fixture_arm", []() -> bool {
+    envFixtureMode = true;
+    Serial.println("[ENV] Fixture mode ARMED by operator RPC (TEST-ONLY).");
+    return true;
+  });
+
+// Async wrap staging (constraints documented at the section header above).
+// Rejects overlap with "busy" (fail-closed; one session at a time).
+  // One E1 third: exactly 30 hex chars into bytes [15*i, 15*i+15).
+  // Idempotent (re-sending a part overwrites it); refused while a wrap
+  // is in flight or its result uncollected.
+  Bridge.provide_safe("env_wrap_e1a", [](String hex) -> String {
+    if (!envFixtureMode) return String("");
+    if (envReqPending || !envResConsumed) return String("busy");
+    if (hex.length() != 30) return String("");
+    for (size_t i = 0; i < 15; i++) {
+      int hi = envHexVal(hex.charAt(2 * i));
+      int lo = envHexVal(hex.charAt(2 * i + 1));
+      if (hi < 0 || lo < 0) return String("");
+      envReqE1[i] = (uint8_t)((hi << 4) | lo);
+    }
+    envReqHave |= 0x01;
+    return String("ok");
+  });
+
+  Bridge.provide_safe("env_wrap_e1b", [](String hex) -> String {
+    if (!envFixtureMode) return String("");
+    if (envReqPending || !envResConsumed) return String("busy");
+    if (hex.length() != 30) return String("");
+    for (size_t i = 0; i < 15; i++) {
+      int hi = envHexVal(hex.charAt(2 * i));
+      int lo = envHexVal(hex.charAt(2 * i + 1));
+      if (hi < 0 || lo < 0) return String("");
+      envReqE1[15 + i] = (uint8_t)((hi << 4) | lo);
+    }
+    envReqHave |= 0x02;
+    return String("ok");
+  });
+
+  Bridge.provide_safe("env_wrap_e1c", [](String hex) -> String {
+    if (!envFixtureMode) return String("");
+    if (envReqPending || !envResConsumed) return String("busy");
+    if (hex.length() != 30) return String("");
+    for (size_t i = 0; i < 15; i++) {
+      int hi = envHexVal(hex.charAt(2 * i));
+      int lo = envHexVal(hex.charAt(2 * i + 1));
+      if (hi < 0 || lo < 0) return String("");
+      envReqE1[30 + i] = (uint8_t)((hi << 4) | lo);
+    }
+    envReqHave |= 0x04;
+    return String("ok");
+  });
+
+  // Assemble + queue. Requires all three parts (bitmask 0x07); clears the
+  // mask so the next session starts clean. Refuses a malformed E1 or a
+  // busy pipeline. Structural check only (tiny frame); the crypto runs
+  // on the loop thread.
+  Bridge.provide_safe("env_wrap_go", [](uint8_t targetId) -> String {
+    if (!envFixtureMode) return String("");
+    if (envReqPending || !envResConsumed) return String("busy");
+    if (envReqHave != 0x07) return String("");
+    envReqHave = 0;
+    if (targetId != TARGET_PLC && targetId != TARGET_PAW) return String("");
+    uint8_t dev[4], pub[ENV_PUB_LEN], nonce[ENV_NONCE_P];
+    if (!env_parse_e1(envReqE1, sizeof(envReqE1), dev, pub, nonce)) {
+      Serial.println("[ENV] Refused: malformed E1.");
       return String("");
     }
-    uint8_t e2[ENV_E2_LEN];
-    char verify17[ENV_VERIFY_LEN + 1];
-    if (!envelopeWrap(e1, targetId, e2, verify17)) {
-      envWipe(e1, sizeof(e1));
-      return String("");
-    }
-    envWipe(e1, sizeof(e1));
-    String out = envHexEncode(e2, sizeof(e2));
-    envWipe(e2, sizeof(e2));
+    envReqTarget = targetId;
+    envResConsumed = false;
+    envReqPending = true;
+    return String("queued");
+  });
+
+  Bridge.provide_safe("env_wrap_poll", []() -> String {
+    if (!envResReady) return String("pending");
+    envResReady = false;
+    envResConsumed = true;
+    if (!envResOk) return String("fail");
+    String out("ok:");
+    out += envHexEncode(envResE2, sizeof(envResE2));
     out += '.';
-    out += verify17;
+    out += envResVerify;
     return out;
   });
 
   // env_confirm compares the PAW-returned E3 hash against the last wrapped
-  // key fingerprint (constant-time). Both are public fingerprints.
+  // key fingerprint (constant-time). Both are public fingerprints. No
+  // notify from the worker thread (transport constraint above).
   Bridge.provide_safe("env_confirm", [](String hashHex) -> bool {
     if (!envHasWrapped) return false;
     uint8_t claimed[KEY_HASH_SIZE];
@@ -727,12 +846,7 @@ static void setupBridgeRPC() {
     volatile uint8_t diff = 0;
     for (int i = 0; i < KEY_HASH_SIZE; i++) diff |= claimed[i] ^ envLastFingerprint[i];
     envWipe(claimed, sizeof(claimed));
-    if (diff == 0) {
-      Bridge.notify("key_authority_event", "envelope_confirmed",
-                    "TEST-ONLY envelope confirmed");
-      return true;
-    }
-    return false;
+    return diff == 0;
   });
 #endif  // ENVELOPE_PHASE2
 }
@@ -851,6 +965,29 @@ void loop() {
       printStatus();
     }
   }
+
+#if ENVELOPE_PHASE2
+  // Async envelope wrap on the main thread (transport constraint: the RPC
+  // worker stack cannot hold crypto/TRNG depth). Handoff is interrupt-
+  // guarded so the worker thread can never leave a torn request.
+  if (envReqPending) {
+    uint8_t e1[ENV_E1_LEN];
+    uint8_t targetId;
+    noInterrupts();
+    memcpy(e1, envReqE1, sizeof(e1));
+    targetId = envReqTarget;
+    envReqPending = false;
+    interrupts();
+    digitalWrite(STATUS_LED_PIN, HIGH);
+    char verify17[ENV_VERIFY_LEN + 1];
+    envResOk = envelopeWrap(e1, targetId, envResE2, verify17);
+    if (envResOk) memcpy(envResVerify, verify17, sizeof(envResVerify));
+    envWipe(e1, sizeof(e1));
+    envWipe(verify17, sizeof(verify17));
+    digitalWrite(STATUS_LED_PIN, LOW);
+    envResReady = true;
+  }
+#endif
 
   // LED heartbeat with timer debounce to avoid digitalWrite on every loop pass
   static uint32_t lastBlinkMs = 0;

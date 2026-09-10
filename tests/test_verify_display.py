@@ -100,7 +100,7 @@ def test_lifecycle_tokens_present():
                   'DISP:FAIL', '"CANCEL"', '"RESULT:', 'envCommitted',
                   'envHaveStage', 'EPDT_WORD_VERIFIED', 'EPDT_WORD_REJECTED',
                   'EPDT_WORD_TIMEDOUT', 'EPDT_WORD_CANCELLED',
-                  'EPDT_WORD_SESSION', '#include <EpdText.h>'):
+                  '#include <EpdText.h>'):
         assert token in PAW, f'missing: {token}'
     # E3 is emitted only after the render completes (commit), never before.
     disp_block = PAW[PAW.index('if (epd.updateDone()) {'):]
@@ -113,10 +113,62 @@ def test_mpu_display_plumbing():
     assert '_envelope_wait_e3' in MPU
     assert 'RESULT:OK' in MPU and 'RESULT:FAIL' in MPU
     assert 'envelope_display_fail' in MPU
+    assert 'operator_confirm' in MPU
     code = re.sub(r'#.*', '', MPU)
     for word in ('sec_M', 'sec_P', 'op_key', 'x25519', 'X25519', 'hkdf',
                  'HKDF', 'gcm_seal', 'gcm_open', 'KEK', 'aesKey'):
         assert word not in code, f'MPU names key material: {word}'
+
+
+def _mpu_function(name):
+    """Load a pure helper out of the MPU script (which is not importable
+    on host: it needs arduino.app_utils). Fails if the helper gains
+    module-level dependencies, keeping it testable by construction."""
+    import ast
+    tree = ast.parse((ROOT / 'key-authority/uno-q-key-authority-mpu' /
+                      'uno-q-key-authority-mpu.py').read_text())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            ns = {}
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         '<mpu>', 'exec'), ns)
+            return ns[name]
+    raise AssertionError(f'MPU helper missing: {name}')
+
+
+def test_operator_confirm_proof_of_reading():
+    oc = _mpu_function('operator_confirm')
+    calls = []
+
+    def reader_ok(prompt):
+        calls.append(prompt)
+        return 'ca01'
+
+    assert oc('3b4bd122b0fcca01', reader_ok) is True
+    assert len(calls) == 1  # first try, no retries needed
+
+    answers = iter(['0000', ' ca01 '])
+    assert oc('3b4bd122b0fcca01', lambda p: next(answers)) is True
+
+    assert oc('3b4bd122b0fcca01', lambda p: '') is False  # abort
+
+    def reader_eof(prompt):
+        raise EOFError
+
+    assert oc('3b4bd122b0fcca01', reader_eof) is False
+    assert oc('3b4bd122b0fcca01', lambda p: 'zzzz') is False  # 3 strikes
+
+
+def test_operator_confirm_gates_confirmation():
+    """The human gate sits between auto-match and env_confirm: no
+    proof-of-reading, no confirmation, no RESULT:OK."""
+    idx_match = MPU.index('if paw_verify != verify:')
+    idx_gate = MPU.index('if not operator_confirm(paw_verify):')
+    idx_confirm = MPU.index('Bridge.call("env_confirm"')
+    assert idx_match < idx_gate < idx_confirm
+    gate_block = MPU[idx_gate:MPU.index('confirmed = Bridge.call')]
+    assert 'RESULT:FAIL' in gate_block
+    assert 'envelope_operator_abort' in gate_block
 
 
 # ---------------------------------------------------------------- mirror
@@ -204,7 +256,8 @@ class EnvGlassMirror:
             self.e1 = self.paw.e1()
             self.phase = 'E2'
             self.t0 = self.t
-            self.in_flight = 'SESSION'
+            # No glass render at START by firmware design (speed): the
+            # glass keeps the previous result word until VERIFY.
 
     def _complete_flight(self, ok):
         """Finish the in-flight frame; start the queued one if any."""
@@ -214,9 +267,7 @@ class EnvGlassMirror:
             self.degraded = True
             self.queued = []
             return None
-        if tag == 'SESSION':
-            self.glass.append(('WORD', 'SESSION'))
-        elif isinstance(tag, tuple):
+        if isinstance(tag, tuple):
             self.glass.append(tag)
         if self.queued:
             nxt = self.queued.pop(0)
@@ -311,32 +362,12 @@ def test_mirror_happy_path():
     assert m.serial == [f'VERIFY:{ver}'] and len(ver) == 16
     assert m.glass == []  # staged, not yet shown
     assert m.events == []
-    m.render_done(True)  # SESSION completes, VERIFY starts
-    assert m.glass == [('WORD', 'SESSION')]
-    assert m.events == [] and not m.committed
     m.render_done(True)  # VERIFY completes: commit
     assert m.glass[-1] == ('VERIFY', ver)  # full value on glass
     assert m.events == ['E3', 'DISP:OK']
     assert m.key == T_OP and m.committed
     m.command('RESULT:OK')
     assert m.glass[-1] == ('WORD', 'VERIFIED')
-
-
-def test_mirror_serializes_back_to_back_renders():
-    """E2 arriving mid-SESSION-render: single commit, E3 once, ordered."""
-    m = EnvGlassMirror()
-    m.command('FIXTURE')
-    m.command('ENVELOPE_START')
-    e2, ver = _wrap_for(m)
-    m.deliver_e2(e2)  # SESSION still in flight: VERIFY must queue
-    assert m.events == [] and not m.committed
-    m.render_done(True)
-    assert m.glass == [('WORD', 'SESSION')]
-    assert m.events == []  # still no commit, no E3
-    m.render_done(True)
-    assert m.glass[-1] == ('VERIFY', ver)
-    assert m.events == ['E3', 'DISP:OK']
-    assert m.events.count('E3') == 1
 
 
 def test_mirror_tamper_never_shows_value():
@@ -347,8 +378,7 @@ def test_mirror_tamper_never_shows_value():
     m.deliver_e2(e2)
     assert m.events == [] and m.key is None and not m.committed
     assert m.serial == []
-    m.render_done(True)  # flush queued frames
-    m.render_done(True)
+    assert m.glass == [('WORD', 'REJECTED')]
     shown = [v for k, v in m.glass if k == 'VERIFY']
     assert shown == [], 'tampered session must never reach the glass'
     assert m.glass[-1] == ('WORD', 'REJECTED')
@@ -359,24 +389,19 @@ def test_mirror_timeout_and_cancel():
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
     m.tick(11.0)
-    m.render_done(True)  # flush: SESSION, then TIMED OUT
-    m.render_done(True)
-    assert m.glass[-1] == ('WORD', 'TIMED OUT')
+    assert m.glass == [('WORD', 'TIMED OUT')]
     assert m.events == [] and m.key is None
 
     m = EnvGlassMirror()
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
     m.command('CANCEL')
-    m.render_done(True)
-    m.render_done(True)
-    assert m.glass[-1] == ('WORD', 'CANCELLED')
+    assert m.glass == [('WORD', 'CANCELLED')]
     assert m.key is None and m.events == []
 
     m = EnvGlassMirror()
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
-    m.render_done(True)  # SESSION shown, panel idle
     e2, ver = _wrap_for(m)
     m.deliver_e2(e2)
     m.command('CANCEL')  # preempt during DISP
@@ -395,17 +420,17 @@ def test_mirror_degraded_render():
     e2, ver = _wrap_for(m)
     m.deliver_e2(e2)
     assert m.serial == [f'VERIFY:{ver}']  # serial still emitted
-    m.render_done(False)  # SESSION dies mid-flight
-    m.render_done(False) if m.in_flight else None
+    m.render_done(False)  # VERIFY render dies
     assert m.events == ['DISP:FAIL']
     assert m.key is None and not m.committed
     assert all(v != ver for k, v in m.glass if k == 'VERIFY')
 
-    # Panel already dead when E2 arrives: fail at render start.
+    # Panel already dead when E2 arrives (begin-failure modelled by preset
+    # degraded flag): fail at render start.
     m = EnvGlassMirror()
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
-    m.render_done(False)
+    m.degraded = True
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
     assert m.events == ['DISP:FAIL']
@@ -416,7 +441,6 @@ def test_mirror_disp_timeout_overwrites_stale():
     m = EnvGlassMirror()
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
-    m.render_done(True)  # SESSION shown
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
     m.tick(m.DISP_TIMEOUT + 1.0)
@@ -433,7 +457,6 @@ def test_mirror_operator_reject_wipes():
     m.command('ENVELOPE_START')
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
-    m.render_done(True)
     m.render_done(True)
     assert m.committed and m.key == T_OP
     m.command('RESULT:FAIL')

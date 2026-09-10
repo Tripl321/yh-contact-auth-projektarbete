@@ -78,7 +78,7 @@ def on_key_authority_event(event, message):
         message: Human-readable status message.
     """
     print(f"[MCU EVENT] {event}: {message}")
-    write_audit_log(event, {"message": message}}
+    write_audit_log(event, {"message": message})
 
 
 def get_key_state():
@@ -310,6 +310,26 @@ def _envelope_wait_e3(ser, timeout_s):
     return e3, verify, None
 
 
+def operator_confirm(paw_verify, reader=input):
+    """Proof-of-reading: the operator types the LAST 4 chars shown on the
+    PAW glass. Forces actual reading (a bare OK is rubber-stampable);
+    mismatch-proofing stays automatic (string compare precedes this).
+    Returns True iff the entry matches. Empty line or 3 strikes aborts.
+    `reader` is injectable for tests (defaults to console input)."""
+    for _ in range(3):
+        try:
+            entry = reader("Type LAST 4 chars from PAW glass (empty=abort): ")
+        except EOFError:
+            return False
+        entry = entry.strip().lower()
+        if entry == "":
+            return False
+        if entry == paw_verify[-4:]:
+            return True
+        print("Not matching - look at the glass again.")
+    return False
+
+
 def envelope_fixture_session(serial_port, target_id, timeout_s=75):
     """Run one TEST-ONLY fixture envelope session.
 
@@ -357,12 +377,40 @@ def envelope_fixture_session(serial_port, target_id, timeout_s=75):
             write_audit_log("envelope_timeout", {"stage": "E1"})
             return False
 
-        resp = Bridge.call("env_wrap", f"{e1_hex}:{target_id}")
-        if not resp or "." not in resp:
-            print("[ENVELOPE] MCU wrap refused.")
-            write_audit_log("envelope_refused", {"reason": "mcu_wrap"})
+        # E1 travels as three 30-hex parts (transport constraint: String
+        # args above ~82 chars wedge the Bridge; see MCU comment).
+        for part, rpc_name in ((e1_hex[0:30], "env_wrap_e1a"),
+                               (e1_hex[30:60], "env_wrap_e1b"),
+                               (e1_hex[60:90], "env_wrap_e1c")):
+            ack = Bridge.call(rpc_name, part)
+            if ack != "ok":
+                print(f"[ENVELOPE] MCU E1 part refused ({rpc_name}: {ack}).")
+                write_audit_log("envelope_refused", {"reason": rpc_name})
+                return False
+        go = Bridge.call("env_wrap_go", target_id)
+        if go != "queued":
+            print(f"[ENVELOPE] MCU wrap refused ({go}).")
+            write_audit_log("envelope_refused", {"reason": "mcu_wrap_go"})
             return False
-        e2_hex, verify = resp.split(".", 1)
+        # The MCU wraps on its main thread (RPC worker stack cannot hold
+        # crypto depth); poll for completion.
+        e2_hex, verify = None, None
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            time.sleep(1)
+            poll = Bridge.call("env_wrap_poll")
+            if poll == "pending":
+                continue
+            if poll.startswith("ok:") and "." in poll:
+                e2_hex, verify = poll[3:].split(".", 1)
+                break
+            print(f"[ENVELOPE] MCU wrap failed ({poll}).")
+            write_audit_log("envelope_refused", {"reason": "mcu_wrap_fail"})
+            return False
+        if e2_hex is None:
+            print("[ENVELOPE] MCU wrap timed out.")
+            write_audit_log("envelope_timeout", {"stage": "wrap"})
+            return False
         if len(e2_hex) != 2 * ENVELOPE_E2_LEN or len(verify) != 16:
             print("[ENVELOPE] Malformed MCU response.")
             return False
@@ -387,6 +435,14 @@ def envelope_fixture_session(serial_port, target_id, timeout_s=75):
             ser.write(b"RESULT:FAIL\n")
             write_audit_log("envelope_verify_mismatch",
                             {"mcu": verify, "paw": paw_verify})
+            return False
+        # Human gate: the automatic compare above covers accidents, but
+        # only a person reading the glass covers a lying MPU UI and
+        # rubber-stamping. Proof-of-reading before any confirmation.
+        if not operator_confirm(paw_verify):
+            print("[ENVELOPE] Operator did not confirm — aborting.")
+            ser.write(b"RESULT:FAIL\n")
+            write_audit_log("envelope_operator_abort", {})
             return False
 
         confirmed = Bridge.call("env_confirm", e3_hex)

@@ -1158,7 +1158,10 @@ static uint8_t pollEnvelope() {
                         envHaveSec = true;
                         envPhase = ENV_PH_E2;
                         envT0 = millis();
-                        epd.showEnvWord(EPDT_WORD_SESSION);
+                        // NOTE: no glass render here by design (speed): the
+                        // glass keeps the previous result word until VERIFY.
+                        // A stale VERIFY can only cause a safe mismatch
+                        // (fresh keys differ), never a false accept.
                     }
                 }
             }
