@@ -469,3 +469,26 @@ def test_font_hex_glyphs_distinct():
     rows = _font_rows()
     patterns = [tuple(rows[ord(c) - 0x20]) for c in '0123456789abcdef']
     assert len(set(patterns)) == 16, 'duplicate hex glyphs would mislead'
+
+
+def _hamming(a, b):
+    return sum(bin(x ^ y).count('1') for x, y in zip(a, b))
+
+
+def test_font_hex_glyphs_not_confusable():
+    """Glyph accuracy is ceremony security: the operator distinguishes all
+    16 hex chars by eye on e-paper (3x scale, ghosting). Minimum pairwise
+    distance is a/e at 4 bits (top-bar vs descender-tail position), i.e. at
+    least 4x9=36 physical pixels differ between any two chars. A font edit
+    that closes this gap fails here and must be re-justified, not just
+    re-pinned: below 4 bits two values become operator-confusable and a
+    substituted envelope could pass comparison."""
+    rows = _font_rows()
+    glyphs = {c: rows[ord(c) - 0x20] for c in '0123456789abcdef'}
+    worst = min(
+        (_hamming(glyphs[a], glyphs[b]), a, b)
+        for i, a in enumerate('0123456789abcdef')
+        for b in '0123456789abcdef'[i + 1:]
+    )
+    assert worst[0] >= 4, f'confusable pair {worst[1]}/{worst[2]}: {worst[0]} bits'
+    assert (worst[1], worst[2]) == ('a', 'e'), f'changed worst pair: {worst}'
