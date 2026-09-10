@@ -5,10 +5,11 @@
 ## Prioritetsordning
 
 1. **Upprätthåll verifierad DEN↔PAW UART-dockautentisering.**
-   Happy path + fail-closed-negativtester är hårdvarubevisade (se
-   `docs/12-dock-uart-integration.md`). Ändringar här får aldrig bryta
-   2 s-deadline, konstanttidsjämförelse, K_mac-användning eller
-   responder-only-beteende.
+    Happy path + fail-closed-negativtester är hårdvarubevisade (se
+    `docs/12-dock-uart-integration.md` och `docs/13-pro-53-fail-closed`).
+    Ändringar här får aldrig bryta 2 s-deadline, konstanttidsjämförelse,
+    K_mac-användning eller responder-only-beteende.
+    **Transporten är UART (Serial1) — LoRa är explicit ur scope.**
 2. **Slutför Mama Bear USB-C-nyckelprovisionering** när sändarsidan är klar
    (issue #9). PAW lyssnar redan på USB Serial; ingen provisionering över
    Serial1 (GPIO0/1 tillhör exklusivt DEN-dockan).
