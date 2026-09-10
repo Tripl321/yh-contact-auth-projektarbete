@@ -40,6 +40,7 @@
 #define ENVELOPE_PHASE2 0
 #if ENVELOPE_PHASE2
 #include <envelope.h>
+#include <EpdText.h>
 #endif
 
 // =============================================================
@@ -206,6 +207,17 @@ public:
     // the refresh, run the post-BLANK sleep, or degrade on BUSY timeout.
     void showStatus(EpdStatus status);
     void poll();
+    bool updateDone() const { return !_updateBusy; }
+    bool isDegraded() const { return _degraded; }
+#if ENVELOPE_PHASE2
+    // VERIFY ceremony rendering (fixture-only). Async like showStatus:
+    // draws and STARTS the refresh, completion via poll(). Returns false
+    // immediately when degraded (caller must fail closed, never fall back).
+    bool showVerifyText(const char ver17[16]);
+    // Result/state word screen (VERIFIED/REJECTED/TIMED OUT/CANCELLED/
+    // SESSION). Best effort: no-op when degraded.
+    void showEnvWord(const char *word);
+#endif
 
 private:
     void sendCommand(uint8_t cmd);
@@ -222,6 +234,10 @@ private:
     void drawCircle(int cx, int cy, int r, bool white);
     void drawCircleFilled(int cx, int cy, int r, bool white);
     void drawIcon(int cx, int cy, int size, EpdStatus status);
+#if ENVELOPE_PHASE2
+    void drawChar5x7(int x, int y, char c, int scale);
+    void drawText5x7(int x, int y, const char *s, int scale);
+#endif
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
     // Async refresh state (PRO-11): transmit starts in showStatus/clear,
@@ -531,6 +547,70 @@ void ShallotEPD::poll() {
     }
 }
 
+#if ENVELOPE_PHASE2
+// Glyph ink is always black on the white buffer. Out-of-range chars are
+// skipped (blank advance) so a corrupt byte can never crash the renderer.
+void ShallotEPD::drawChar5x7(int x, int y, char c, int scale) {
+    const uint8_t *g = epdtGlyph(c);
+    if (!g) return;
+    for (int col = 0; col < EPDT_GLYPH_W; col++) {
+        uint8_t bits = g[col];
+        for (int row = 0; row < EPDT_GLYPH_H; row++) {
+            if (!(bits & (uint8_t)(1u << row))) continue;
+            for (int sx = 0; sx < scale; sx++) {
+                for (int sy = 0; sy < scale; sy++) {
+                    drawPixel(x + col * scale + sx, y + row * scale + sy, false);
+                }
+            }
+        }
+    }
+}
+
+void ShallotEPD::drawText5x7(int x, int y, const char *s, int scale) {
+    int cx = x;
+    while (*s) {
+        drawChar5x7(cx, y, *s, scale);
+        cx += EPDT_GLYPH_W * scale + EPDT_VERIFY_TRACK;
+        s++;
+    }
+}
+
+// Full 16-hex VERIFY, two rows of eight. Never truncated, never icons-only:
+// EPDT_VERIFY_COLS * EPDT_VERIFY_ROWS == 16 is asserted by tests.
+bool ShallotEPD::showVerifyText(const char ver17[16]) {
+    if (_degraded) return false;
+    clearBuffer();
+    drawRect(4, 4, EPD_WIDTH - 8, EPD_HEIGHT - 8, false);
+    char row[EPDT_VERIFY_COLS + 1];
+    memcpy(row, ver17, EPDT_VERIFY_COLS);
+    row[EPDT_VERIFY_COLS] = '\0';
+    int w = epdtTextWidth(EPDT_VERIFY_COLS, EPDT_VERIFY_SCALE, EPDT_VERIFY_TRACK);
+    drawText5x7((EPD_WIDTH - w) / 2, EPDT_VERIFY_Y0, row, EPDT_VERIFY_SCALE);
+    memcpy(row, ver17 + EPDT_VERIFY_COLS, EPDT_VERIFY_COLS);
+    row[EPDT_VERIFY_COLS] = '\0';
+    drawText5x7((EPD_WIDTH - w) / 2,
+                EPDT_VERIFY_Y0 + EPDT_GLYPH_H * EPDT_VERIFY_SCALE + 12,
+                row, EPDT_VERIFY_SCALE);
+    displayFrame(_buffer);
+    // Sleep after completion; the image persists without power (e-paper),
+    // so VERIFY stays visible until the next state overwrites it.
+    _pendingSleep = true;
+    return true;
+}
+
+void ShallotEPD::showEnvWord(const char *word) {
+    if (_degraded) return;
+    clearBuffer();
+    drawRect(4, 4, EPD_WIDTH - 8, EPD_HEIGHT - 8, false);
+    int len = strlen(word);
+    int w = epdtTextWidth(len, 2, 2);
+    drawText5x7((EPD_WIDTH - w) / 2, (EPD_HEIGHT - EPDT_GLYPH_H * 2) / 2,
+                word, 2);
+    displayFrame(_buffer);
+    _pendingSleep = true;
+}
+#endif  // ENVELOPE_PHASE2
+
 // =============================================================
 // SHA-256 Implementation
 // =============================================================
@@ -825,7 +905,9 @@ static uint8_t pollProvisioning() {
 
 #define ENV_PH_IDLE 0
 #define ENV_PH_E2   1
+#define ENV_PH_DISP 2
 #define ENV_E2_TIMEOUT_MS 10000
+#define ENV_DISP_TIMEOUT_MS 25000  // panel refresh 2.8 s measured, bound 25 s
 
 static bool envFixtureMode = false;
 static uint8_t envSecP[ENV_SEC_LEN];
@@ -838,6 +920,17 @@ static uint8_t envPhase = ENV_PH_IDLE;
 static uint32_t envT0 = 0;
 static char envLine[178];  // longest: "E2:" + 162 hex + NUL
 static uint8_t envLineLen = 0;
+// Staged plaintext: held ONLY between a verified open and the completed
+// VERIFY render. Never committed without DISP:OK; wiped on every exit.
+static uint8_t envStage[AES_KEY_SIZE];
+static bool envHaveStage = false;
+static bool envCommitted = false;  // a key is live in aesKey from envelope
+static char envVer17[ENV_VERIFY_LEN + 1];
+
+// Global e-paper instance is defined near setup(); the envelope section
+// above it sees it through this declaration (same pattern as the dock
+// handler's extern below).
+extern ShallotEPD epd;
 
 #define ENV_DONE 1
 #define ENV_WAIT 0
@@ -885,12 +978,17 @@ static void envHexEmit(const char *prefix, const uint8_t *data, size_t len) {
     Serial.flush();
 }
 
-// VERIFY call site: serial always; e-paper render lands here once the
-// display driver is restored (display track owns the driver fix).
+// VERIFY call site (single site by test guard): the SAME session-derived
+// ver17 buffer feeds the serial line and the glass, so they cannot diverge.
+// The display start here never blocks; completion is polled in ENV_PH_DISP.
 static void showVerify(const char ver17[ENV_VERIFY_LEN + 1]) {
     Serial.print("VERIFY:");
     Serial.println(ver17);
     Serial.flush();
+    memcpy(envVer17, ver17, sizeof(envVer17));
+    if (!epd.showVerifyText(envVer17)) {
+        Serial.println("[ENV] Display refused at render start (degraded).");
+    }
 }
 
 static void envAbort(const char *why) {
@@ -901,6 +999,16 @@ static void envAbort(const char *why) {
     envHaveSec = false;
     envPhase = ENV_PH_IDLE;
     envLineLen = 0;
+}
+
+// Fail-closed session end: wipe staging + secrets, back to IDLE, and
+// best-effort overwrite of the glass so no stale VERIFY persists. A NULL
+// word skips the glass (used when the panel itself is the failure).
+static void envFail(const char *why, const char *word) {
+    envAbort(why);
+    envWipeP(envStage, sizeof(envStage));
+    envHaveStage = false;
+    if (word) epd.showEnvWord(word);
 }
 
 static uint8_t pollEnvelope() {
@@ -915,6 +1023,32 @@ static uint8_t pollEnvelope() {
         envLineLen = 0;
         if (lineLen == 0) continue;
 
+        // Global commands, any phase. CANCEL aborts an in-flight session
+        // only (never a committed key — operator rejection is RESULT:FAIL).
+        if (strcmp(envLine, "CANCEL") == 0) {
+            if (envPhase == ENV_PH_IDLE && !envHaveStage) {
+                Serial.println("[ENV] Nothing in flight.");
+            } else {
+                envFail("cancelled", EPDT_WORD_CANCELLED);
+            }
+            continue;
+        }
+        // Operator verdict from the MPU after comparing VERIFY values.
+        if (strncmp(envLine, "RESULT:", 7) == 0) {
+            if (!envCommitted) {
+                Serial.println("[ENV] RESULT ignored: no committed session.");
+            } else if (strcmp(envLine + 7, "OK") == 0) {
+                epd.showEnvWord(EPDT_WORD_VERIFIED);
+            } else {
+                envWipeP(aesKey, sizeof(aesKey));
+                keyStored = false;
+                envCommitted = false;
+                epd.showEnvWord(EPDT_WORD_REJECTED);
+                Serial.println("[ENV] Operator rejected: key wiped.");
+            }
+            continue;
+        }
+
         if (envPhase == ENV_PH_IDLE) {
             if (strcmp(envLine, "FIXTURE") == 0) {
                 envFixtureMode = true;
@@ -923,6 +1057,7 @@ static uint8_t pollEnvelope() {
                 if (!envFixtureMode) {
                     Serial.println("[ENV] Refused: fixture not armed.");
                 } else {
+                    envCommitted = false;  // a new session supersedes display
                     envFillRandom(envSecP, sizeof(envSecP));
                     envFillRandom(envNonceP, sizeof(envNonceP));
                     if (!env_x25519_pub(envSecP, envPubP)) {
@@ -935,11 +1070,16 @@ static uint8_t pollEnvelope() {
                         envHaveSec = true;
                         envPhase = ENV_PH_E2;
                         envT0 = millis();
+                        epd.showEnvWord(EPDT_WORD_SESSION);
                     }
                 }
             }
             // Any other line (logs from our own prints are never read back;
             // foreign lines) is ignored: responder passivity on USB too.
+        } else if (envPhase == ENV_PH_DISP) {
+            // Render in flight: only CANCEL/RESULT (handled above) preempt.
+            // Late E2 lines or noise are ignored, never reprocessed.
+            continue;
         } else {
             // ENV_PH_E2: exactly one "E2:<162 hex>" line, bounded by timeout.
             if (strncmp(envLine, "E2:", 3) != 0 || lineLen != 3 + 2 * ENV_E2_LEN) {
@@ -952,13 +1092,13 @@ static uint8_t pollEnvelope() {
             uint8_t ct[AES_KEY_SIZE], tag[ENV_TAG_LEN];
             if (!env_parse_e2(e2, sizeof(e2), &epoch, pubM, nonceM, ct, tag)) {
                 envWipeP(e2, sizeof(e2));
-                envAbort("malformed E2");
+                envFail("malformed E2", EPDT_WORD_REJECTED);
                 return ENV_WAIT;
             }
             envWipeP(e2, sizeof(e2));
             if (envHasEpoch && epoch <= envLastEpoch) {
                 Serial.println("[ENV] Epoch rule violated.");
-                envAbort("epoch");
+                envFail("epoch", EPDT_WORD_REJECTED);
                 return ENV_WAIT;
             }
             uint8_t shared[ENV_SEC_LEN];
@@ -979,19 +1119,15 @@ static uint8_t pollEnvelope() {
                     Serial.println("[ENV] Tag verify failed.");
                     break;
                 }
-                memcpy(aesKey, pt, AES_KEY_SIZE);
+                // Stage, do NOT commit: the key goes live only after the
+                // VERIFY render completes (DISP:OK). Fail-closed otherwise.
+                memcpy(envStage, pt, AES_KEY_SIZE);
                 envWipeP(pt, sizeof(pt));
-                keyStored = true;
                 envHasEpoch = true;
                 envLastEpoch = epoch;
-                uint8_t fullHash[32];
-                sha256(aesKey, AES_KEY_SIZE, fullHash);
-                envHexEmit("E3:", fullHash, KEY_HASH_SIZE);
-                memset(fullHash, 0, sizeof(fullHash));
                 char ver17[ENV_VERIFY_LEN + 1];
                 env_verify_hex(envPubP, pubM, ver17);
-                showVerify(ver17);
-                Serial.println("[ENV] TEST-ONLY key stored.");
+                showVerify(ver17);  // serial line + glass render start
                 ok = 1;
                 envWipeP(kek, sizeof(kek));
                 envWipeP(aad, sizeof(aad));
@@ -1003,13 +1139,49 @@ static uint8_t pollEnvelope() {
             envWipeP(tag, sizeof(tag));
             envWipeP(envSecP, sizeof(envSecP));
             envHaveSec = false;
-            envPhase = ENV_PH_IDLE;
-            if (ok) return ENV_DONE;
+            if (!ok) {
+                envFail("open failed", EPDT_WORD_REJECTED);
+                return ENV_WAIT;
+            }
+            if (epd.isDegraded()) {
+                // Render never started: fail now, never commit, no E3.
+                envFail("display degraded at start", NULL);
+                Serial.println("DISP:FAIL degraded");
+                return ENV_WAIT;
+            }
+            envHaveStage = true;
+            envPhase = ENV_PH_DISP;
+            envT0 = millis();
             return ENV_WAIT;
         }
     }
     if (envPhase == ENV_PH_E2 && millis() - envT0 > ENV_E2_TIMEOUT_MS) {
-        envAbort("E2 timeout");
+        envFail("E2 timeout", EPDT_WORD_TIMEDOUT);
+    }
+    if (envPhase == ENV_PH_DISP) {
+        if (epd.isDegraded()) {
+            Serial.println("[ENV] Display degraded during render.");
+            envFail("display degraded", NULL);  // glass dead; serial carries it
+            Serial.println("DISP:FAIL degraded");
+        } else if (epd.updateDone()) {
+            // DISP:OK — commit the staged key and confirm to the MPU.
+            memcpy(aesKey, envStage, AES_KEY_SIZE);
+            envWipeP(envStage, sizeof(envStage));
+            envHaveStage = false;
+            keyStored = true;
+            envCommitted = true;
+            uint8_t fullHash[32];
+            sha256(aesKey, AES_KEY_SIZE, fullHash);
+            envHexEmit("E3:", fullHash, KEY_HASH_SIZE);
+            memset(fullHash, 0, sizeof(fullHash));
+            Serial.println("[ENV] TEST-ONLY key stored.");
+            Serial.println("DISP:OK");
+            envPhase = ENV_PH_IDLE;
+            return ENV_DONE;
+        } else if (millis() - envT0 > ENV_DISP_TIMEOUT_MS) {
+            envFail("display timeout", EPDT_WORD_TIMEDOUT);
+            Serial.println("DISP:FAIL timeout");
+        }
     }
     return ENV_WAIT;
 }

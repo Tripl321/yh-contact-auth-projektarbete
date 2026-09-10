@@ -55,7 +55,12 @@ USB-CDC framing (MPU↔device leg): self-delimiting hex lines, exact lengths,
 so binary frames survive a log-sharing stream:
 `E1:<90 hex>\n`, `E2:<162 hex>\n`, `E3:<8 hex>\n`, `VERIFY:<16 hex>\n`.
 Session control lines: `FIXTURE\n` (arm fixture mode), `ENVELOPE_START\n`
-(begin attempt). Anything else on the line channel is ignored.
+(begin attempt), `CANCEL\n` (abort in-flight session only, never a
+committed key), `RESULT:OK` / `RESULT:FAIL` (MPU→PAW operator verdict
+after comparing VERIFY values). Display gate lines (PAW→MPU):
+`DISP:OK` (glass render completed, key committed, E3 follows),
+`DISP:FAIL <reason>` (render failed, nothing committed, no E3).
+Anything else on the line channel is ignored.
 
 ## 5. Key schedule
 
@@ -104,10 +109,15 @@ shows its copy, the operator compares before pressing the provision button.
 
 ## 9. Confirmation ceremony
 
-Primary and only production ceremony: PAW renders VERIFY on the e-paper;
-operator compares with the MPU UI and confirms with the provision button.
-The e-paper is currently dead (BUSY stuck HIGH), so this ceremony is NOT yet
-runnable — and therefore no production operational key may be provisioned.
+Primary and only production ceremony: PAW renders the full 16-hex VERIFY
+on the e-paper after a verified open; the operator compares with the MPU
+UI and confirms. The value stays on glass until the session completes
+(RESULT:OK → VERIFIED screen), expires, or is cancelled — never replaced
+by icons alone, never truncated. E3 is emitted only after the render
+completes, so the MPU can only confirm a ceremony the operator could see.
+RESULT:FAIL wipes the committed key and shows REJECTED. A failed render
+fails the ceremony closed (DISP:FAIL, nothing committed, no E3) and never
+falls back to TOFU.
 
 Test-only fixture flow (never a production fallback): inside a physically
 secured fixture, with the build flag on and the fixture interlock engaged,
@@ -126,11 +136,14 @@ because none on current hardware meets the bar.
 
 | Event | Behaviour |
 |-------|-----------|
-| Tag verify fails (any cause) | wipe KEK/shared/pt, no store, E3 never sent, session aborted |
-| All-zero shared secret | abort before wrap (MCU) / before open (PAW) |
-| Epoch rule violated | wipe, abort, operator re-runs ceremony |
-| Timeout (no E2 within window) | PAW wipes `sec_P`, aborts |
-| VERIFY mismatch | operator aborts; nothing stored |
+| Tag verify fails (any cause) | wipe KEK/shared/pt, no store, E3 never sent, session aborted, glass REJECTED |
+| All-zero shared secret | abort before wrap (MCU) / before open (PAW), glass REJECTED |
+| Epoch rule violated | wipe, abort, operator re-runs ceremony, glass REJECTED |
+| Timeout (no E2 within window) | PAW wipes `sec_P`, aborts, glass TIMED OUT |
+| Display render fails or times out | staged key wiped, never committed, E3 never sent, `DISP:FAIL`, no TOFU fallback |
+| Operator rejects (RESULT:FAIL) | committed key wiped, glass REJECTED |
+| Cancel (in-flight only) | wipe staging/secrets, glass CANCELLED, committed keys untouched |
+| VERIFY mismatch | operator aborts; MPU sends RESULT:FAIL; PAW wipes, glass REJECTED |
 | Any AAD field mismatch | identical to tag failure |
 
 Timeouts, retry limits, and audit-log format are Phase 2 firmware work and

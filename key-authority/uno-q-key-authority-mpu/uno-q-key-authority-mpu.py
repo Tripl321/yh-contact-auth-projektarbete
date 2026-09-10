@@ -265,13 +265,63 @@ def _envelope_read_line(ser, prefix, hex_len, timeout_s):
     return None
 
 
-def envelope_fixture_session(serial_port, target_id, timeout_s=15):
+def _envelope_wait_e3(ser, timeout_s):
+    """Wait for the PAW post-render outcome: E3 (committed) or DISP:FAIL.
+
+    VERIFY lines are swept along the way. Returns (e3_hex_or_None,
+    paw_verify_or_None, disp_fail_or_None). DISP:FAIL returns immediately
+    (fast-fail); E3 waits for its VERIFY sibling (already buffered, since
+    the PAW emits VERIFY before rendering).
+    """
+    def split(line):
+        for prefix, hex_len in (("E3:", 8), ("VERIFY:", 16)):
+            if line.startswith(prefix) and len(line) == len(prefix) + hex_len:
+                body = line[len(prefix):]
+                if all(c in "0123456789abcdefABCDEF" for c in body):
+                    return prefix, body.lower()
+        if line.startswith("DISP:"):
+            return "DISP:", line[5:11]
+        return None, None
+
+    deadline = time.time() + timeout_s
+    buf = b""
+    e3, verify = None, None
+    while time.time() < deadline:
+        chunk = ser.read(1)
+        if not chunk:
+            continue
+        if chunk in b"\r\n":
+            if not buf:
+                continue
+            kind, body = split(buf.decode("ascii", errors="replace"))
+            buf = b""
+            if kind == "E3:":
+                e3 = body
+            elif kind == "VERIFY:":
+                verify = body
+            elif kind == "DISP:" and body.startswith("FAIL"):
+                return None, verify, body
+            if e3 is not None and verify is not None:
+                return e3, verify, None
+            continue
+        buf += chunk
+        if len(buf) > 200:
+            buf = b""
+    return e3, verify, None
+
+
+def envelope_fixture_session(serial_port, target_id, timeout_s=30):
     """Run one TEST-ONLY fixture envelope session.
+
+    The PAW commits its key only after its VERIFY glass render completes
+    (DISP:OK), so E3 may arrive up to a full panel refresh after E2 —
+    hence the 30 s budget (was 15 s before the glass gate).
 
     Args:
         serial_port: PAW USB serial device (e.g. /dev/ttyACM0).
         target_id: 1 for PLC, 2 for PAW.
-    Returns True iff the MCU confirms the PAW fingerprint.
+    Returns True iff the operator confirms matching VERIFY values and the
+    MCU confirms the PAW fingerprint (RESULT:OK relayed to the PAW).
     """
     import serial
 
@@ -320,20 +370,28 @@ def envelope_fixture_session(serial_port, target_id, timeout_s=15):
               f"(compare with PAW VERIFY below)")
 
         ser.write(f"E2:{e2_hex}\n".encode())
-        e3_hex = _envelope_read_line(ser, "E3:", 8, timeout_s)
-        paw_verify = _envelope_read_line(ser, "VERIFY:", 16, 5)
+        # E3 arrives only after the PAW glass render completes (DISP:OK);
+        # DISP:FAIL arrives instead when the render fails — fail fast.
+        e3_hex, paw_verify, disp_fail = _envelope_wait_e3(ser, timeout_s)
         if e3_hex is None:
-            print("[ENVELOPE] No E3 from PAW (tag verify failed on PAW?).")
-            write_audit_log("envelope_timeout", {"stage": "E3"})
+            if disp_fail is not None:
+                print(f"[ENVELOPE] PAW display failed ({disp_fail}) — aborting.")
+                write_audit_log("envelope_display_fail", {"detail": disp_fail})
+            else:
+                print("[ENVELOPE] No E3 from PAW (tag verify failed on PAW?).")
+                write_audit_log("envelope_timeout", {"stage": "E3"})
             return False
         print(f"[ENVELOPE] PAW VERIFY: {paw_verify}")
         if paw_verify != verify:
             print("[ENVELOPE] VERIFY MISMATCH — operator aborts.")
+            ser.write(b"RESULT:FAIL\n")
             write_audit_log("envelope_verify_mismatch",
                             {"mcu": verify, "paw": paw_verify})
             return False
 
         confirmed = Bridge.call("env_confirm", e3_hex)
+        # Relay the verdict so the PAW shows VERIFIED or wipes + REJECTED.
+        ser.write(f"RESULT:{'OK' if confirmed else 'FAIL'}\n".encode())
         write_audit_log("envelope_fixture_session", {
             "fixture": "TEST-ONLY",
             "target": target_name,
