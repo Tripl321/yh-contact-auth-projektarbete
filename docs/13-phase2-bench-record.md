@@ -4,32 +4,43 @@ Date: 2026-09-10. Bench: mamabear (Feather `...AE5E` on ttyACM1, UNO Q via
 openocd). Both devices restored to live firmware afterwards (MCU backup
 `535604750cd7b9b8`, PAW `lora-paw-restore.uf2`).
 
-## 1. E-paper BUSY-stuck diagnosis: panel electrically absent
+## 1. E-paper diagnosis: panel alive, BUSY/RST found, CS wire missing
 
-Symptom: BUSY stuck HIGH with plain `INPUT` (no pull).
+History: PRO-29 (Sep 9) verified the panel on CS=5/DC=26/RST=27/BUSY=29
+with visible output. Sep 10: BUSY=29 floats dead; something changed on the
+bench between the two dates.
 
-Probe (`/tmp/epdprobe`, kept off-tree as a bench tool): for each
-RST {25=D25, 27=A1} × BUSY {7=D7, 29=A3} — BUSY to `INPUT_PULLDOWN`, pulse
-RST, sample 400 ms. Then minimal init + update trigger per DC {24, 26} ×
-CS {5, 24} watching BUSY.
+Probe (`/tmp/epdprobe`, off-tree bench tool, commands r/c/t/b/n/d over
+115200 baud USB serial) established on 2026-09-10 over ~10 flashes:
 
-Result (all pairs): `idle=LOW high_ms=0 maxrun=0`; init/update trigger
-produced `went_high=0` on every DC/CS combo.
+- Wide sweep (all free GPIOs, INPUT_PULLDOWN): only GPIO2/3 (I2C pull-ups)
+  and GPIO8 (LoRa RESET pull-up, matches README D8) idle HIGH. GPIO7/29
+  (all documented BUSY pins) float LOW — nothing there.
+- DRAIN (5 s pulldown, kills passive charge): GPIO5 stays HIGH = actively
+  driven. First GPIO27-LOW transition releases GPIO5 to LOW permanently
+  (repeatable): panel BUSY → GPIO5, panel RST → GPIO27. The output stage
+  works (releases on reset), so the panel is powered and alive.
+- SPI search with BUSY=5/RST=27 over CS × DC {24,26,29,28,12–21,2,3,4,6,9}:
+  30+ combos, all silent (no BUSY response to init + update trigger).
+  DIN=23/CLK=22 trusted from PRO-29.
 
-Conclusion: nothing drives either BUSY candidate — the lines float (the
-old "stuck HIGH" was a floating input, not a driven panel). The panel is
-electrically absent: unseated HAT/FPC, or missing VCC/GND. This is NOT a
-firmware pin-mapping issue, so no pin mapping was changed: paw-main keeps
-A0/A1/A3 until the panel answers the probe.
+Conclusion: HAT BUSY is on Feather D5 and HAT RST on A1, but HAT CS is NOT
+on any tried pin — its wire is most likely dangling/loose (panel never
+selected, hence deaf), and Feather D5 must NEVER be driven as CS output
+again: all current firmware (paw-main + old probes) drives GPIO5 as CS,
+fighting the BUSY output and wedging the panel HIGH. That contention is
+the "BUSY stuck HIGH" symptom, not a dead panel.
 
-Physical checklist (needs hands on the bench):
-1. Reseat the e-paper HAT on the Feather header and the FPC in its
-   connector (locking bar closed).
-2. Verify panel VCC LED / 3V3 present.
-3. Re-run: flash `/tmp/epdprobe.uf2` (or rebuild `epdprobe.ino`), open
-   USB serial 115200, send `r`, expect `high_ms>0` on the true RST×BUSY
-   pair. Only then unify the in-tree mappings (README vs docs/04 vs
-   paw-main disagree on DC/CS — the probe result decides, not the docs).
+Needed hands on the bench (nothing more can be done remotely):
+1. Look at the 8 HAT→Feather wires; report/confirm each landing. Prime
+   suspect: HAT CS dangling or mis-landed; HAT BUSY on D5; HAT RST on A1.
+2. Reseat HAT/FPC, verify 3V3, power-cycle the Feather (USB unplug 10 s —
+   unwedges the controller fully).
+3. Re-flash the probe (`/tmp/epdprobe.uf2` on mamabear, or rebuild
+   `/tmp/epdprobe/epdprobe.ino`), send `d`: a correct CS shows
+   `saw_high=1` + multi-second `busy_ms`. Only then unify the pin docs
+   (README vs docs/04 vs paw-main vs architektur-02 all disagree) and fix
+   paw-main (BUSY A3→D5, CS off GPIO5, DC/RST per probe result).
 
 ## 2. Phase 2 PAW envelope: proven on hardware
 
