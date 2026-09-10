@@ -13,6 +13,7 @@
 
 | Nr | Dokument | Status | Linear | Deadline |
 |----|----------|--------|--------|---------|
+| 00 | Scope (post-pivot) | v1.0 — Aktiv | — | — |
 | 01 | Kravspecifikation | v2.0 — Aktiv | PRO-30 | 2026-09-04 |
 | 02 | Arkitektur | v2.0 — Aktiv | PRO-31 | 2026-09-04 |
 | 03 | Komponentval | v1.0 — Utkast | PRO-32 | 2026-09-05 |
