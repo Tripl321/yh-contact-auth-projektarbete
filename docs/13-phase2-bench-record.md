@@ -46,7 +46,24 @@ Superseded by the recovery above — kept as a record of the wrong turn:
 the "electrically absent" verdict and the CS-dangling theory were
 artefacts of F1–F4, not of the hardware.
 
-## 2. Phase 2 PAW envelope: proven on hardware
+## 2. E-paper root cause found: wrong update mode 0xC7 vs 0xF7 (2026-09-10 pm)
+
+The panel was never broken. paw-main's driver (inherited from the B V1
+`epaper-status-display.ino`) triggers updates with 0x22/0xC7/0x20, but the
+B V2 panel needs the official 0x22/0xF7/0x20 full update (PRO-29 verified
+2.8 s completions with 0xF7). With 0xC7 the V2 controller starts BUSY and
+never finishes — the historic "BUSY stuck HIGH / dead display" (issue
+#11). begin()/reset/SPI were always fine, which is why every probe of
+wiring/pins contradicted itself.
+
+Fixed in paw-main `displayFrame()` (+`clear()`): 0xF7 update mode, red
+plane (0x26) cleared to 0x00 for strictly black-on-white ceremony frames,
+RAM counters (0x4E/0x4F) rewound before every staging (PRO-29 proven
+symptom: frames landing outside RAM are silently lost), SPI kept at the
+verified 400 kHz. First cold double-render after the fix: E3 + DISP:OK at
+36.7 s (bounds: DISP 60 s, MPU E3 75 s).
+
+## 3. Phase 2 PAW envelope: proven on hardware
 
 Flashed flag-ON PAW build (103172 B). USB serial 115200:
 - `ENVELOPE_START` without `FIXTURE` → `Refused: fixture not armed` ✓

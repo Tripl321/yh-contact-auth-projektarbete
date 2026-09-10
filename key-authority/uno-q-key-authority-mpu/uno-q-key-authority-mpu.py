@@ -310,12 +310,12 @@ def _envelope_wait_e3(ser, timeout_s):
     return e3, verify, None
 
 
-def envelope_fixture_session(serial_port, target_id, timeout_s=30):
+def envelope_fixture_session(serial_port, target_id, timeout_s=75):
     """Run one TEST-ONLY fixture envelope session.
 
     The PAW commits its key only after its VERIFY glass render completes
-    (DISP:OK), so E3 may arrive up to a full panel refresh after E2 —
-    hence the 30 s budget (was 15 s before the glass gate).
+    (DISP:OK): SESSION+VERIFY take ~37 s back-to-back on a cold panel
+    (measured 2026-09-10), hence the 75 s budget over the 60 s PAW bound.
 
     Args:
         serial_port: PAW USB serial device (e.g. /dev/ttyACM0).

@@ -109,7 +109,7 @@ def test_lifecycle_tokens_present():
 
 
 def test_mpu_display_plumbing():
-    assert 'timeout_s=30' in MPU
+    assert 'timeout_s=75' in MPU  # cold-panel double render budget
     assert '_envelope_wait_e3' in MPU
     assert 'RESULT:OK' in MPU and 'RESULT:FAIL' in MPU
     assert 'envelope_display_fail' in MPU
@@ -131,7 +131,8 @@ class EnvGlassMirror:
     """
 
     E2_TIMEOUT = 10.0
-    DISP_TIMEOUT = 25.0
+    # Measurement bound; tune down together with the firmware define.
+    DISP_TIMEOUT = 60.0
 
     def __init__(self):
         assert self.E2_TIMEOUT * 1000 == self._fw_ms('ENV_E2_TIMEOUT_MS')
@@ -418,7 +419,7 @@ def test_mirror_disp_timeout_overwrites_stale():
     m.render_done(True)  # SESSION shown
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
-    m.tick(26.0)
+    m.tick(m.DISP_TIMEOUT + 1.0)
     assert 'DISP:FAIL' in m.events
     m.render_done(True)  # wedged VERIFY finishes...
     m.render_done(True)  # ...then TIMED OUT overwrites it

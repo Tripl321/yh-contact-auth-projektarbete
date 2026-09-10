@@ -330,7 +330,11 @@ bool ShallotEPD::begin() {
 
     // SPI0 is hardware-wired on Feather RP2350: SCK (GP22), MO (GP23), MI (GP20)
     SPI.begin();
-    SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
+    // 400 kHz bring-up speed, NOT 2 MHz: the verified PRO-29 sequence runs
+    // 400 kHz (bench 2026-09-10: 2.8 s completions), while 2 MHz update
+    // triggers hang the panel on this wiring (DuPont length). Keep in sync
+    // with the PRO-29 bring-up test.
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
 
     reset();
     if (!waitUntilIdle(EPD_INIT_TIMEOUT_MS)) return false;
@@ -382,14 +386,23 @@ bool ShallotEPD::begin() {
 // poll(). Never waits — call poll() every loop pass.
 void ShallotEPD::clear() {
     clearBuffer();
-    sendCommand(0x26);  // red plane white (preserves original clear behavior)
-    for (int i = 0; i < EPD_BUFFER_SIZE; i++) sendData(0xFF);
+    sendCommand(0x26);  // red plane: 0x00 = no red pixels (B V2)
+    for (int i = 0; i < EPD_BUFFER_SIZE; i++) sendData(0x00);
     displayFrame(_buffer);
 }
 
 void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
     int w = (EPD_WIDTH % 8 == 0) ? (EPD_WIDTH / 8) : (EPD_WIDTH / 8 + 1);
     int h = EPD_HEIGHT;
+
+    // Rewind RAM counters before every staging: after a 5000-byte write
+    // they sit at the window end and further bytes would land outside RAM
+    // (proven symptom in the PRO-29 bring-up: silently lost frames).
+    sendCommand(0x4E);
+    sendData(0x00);
+    sendCommand(0x4F);
+    sendData(0xC7);
+    sendData(0x00);
 
     if (frameBuffer != nullptr) {
         sendCommand(0x24);
@@ -398,9 +411,20 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
                 sendData(frameBuffer[i + j * w]);
             }
         }
+        // B V2 has a red plane (0x26): clear it so ceremony frames are
+        // strictly black-on-white (1-bit = red, so 0x00 = no red).
+        sendCommand(0x26);
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                sendData(0x00);
+            }
+        }
     }
+    // Display update mode 0xF7 (official B V2 full update, PRO-29
+    // verified). The older 0xC7 mode never completes on V2 panels
+    // (BUSY stuck HIGH — the historic "dead display").
     sendCommand(0x22);
-    sendData(0xC7);
+    sendData(0xF7);
     sendCommand(0x20);
     // No wait here: poll() completes the refresh (or degrades on timeout).
     _updateBusy = true;
@@ -968,7 +992,10 @@ static uint8_t pollProvisioning() {
 #define ENV_PH_E2   1
 #define ENV_PH_DISP 2
 #define ENV_E2_TIMEOUT_MS 10000
-#define ENV_DISP_TIMEOUT_MS 25000  // panel refresh 2.8 s measured, bound 25 s
+// Panel refresh is 2.8 s warm; a cold panel needs ~15-18 s per full
+// update (measured 36.7 s for SESSION+VERIFY back-to-back on 2026-09-10).
+// 60 s covers two cold renders with margin; the MPU E3 budget is 75 s.
+#define ENV_DISP_TIMEOUT_MS 60000
 
 static bool envFixtureMode = false;
 static uint8_t envSecP[ENV_SEC_LEN];
