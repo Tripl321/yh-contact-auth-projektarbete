@@ -130,6 +130,12 @@ static void setLoRaFlag(void) {
 #define EPD_HEIGHT       200
 #define EPD_BUFFER_SIZE  ((EPD_WIDTH / 8) * EPD_HEIGHT)
 
+// BUSY bounds (PRO-11). Bench-measured full refresh on the 1.54" B V2 is
+// ~18 s: completion may take up to 90 s, init-phase steps only 2 s each.
+// A stuck BUSY (wedged/disconnected panel) must degrade, never hang.
+#define EPD_REFRESH_TIMEOUT_MS 90000
+#define EPD_INIT_TIMEOUT_MS    2000
+
 // =============================================================
 // Key Storage
 // =============================================================
@@ -183,12 +189,17 @@ public:
     void sleep();
     void clear();
     void displayFrame(const uint8_t* frameBuffer);
+    // showStatus draws the icon and STARTS the refresh, then returns
+    // immediately (never waits). Call poll() every loop pass to complete
+    // the refresh, run the post-BLANK sleep, or degrade on BUSY timeout.
     void showStatus(EpdStatus status);
+    void poll();
 
 private:
     void sendCommand(uint8_t cmd);
     void sendData(uint8_t data);
-    void waitUntilIdle();
+    // Bounded BUSY wait: true when idle, false on timeout (never hangs).
+    bool waitUntilIdle(uint32_t timeoutMs);
     void reset();
     void setLut(const unsigned char* lut);
 
@@ -201,6 +212,12 @@ private:
     void drawIcon(int cx, int cy, int size, EpdStatus status);
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
+    // Async refresh state (PRO-11): transmit starts in showStatus/clear,
+    // completion (or BUSY-timeout degrade) happens in poll(). Never blocks.
+    bool _degraded = false;      // latched on BUSY timeout: skip all future work
+    bool _updateBusy = false;    // refresh in flight
+    uint32_t _updateStart = 0;   // millis at trigger
+    bool _pendingSleep = false;  // BLANK path sleeps after completion
 };
 
 ShallotEPD::ShallotEPD() {
@@ -221,11 +238,14 @@ void ShallotEPD::sendData(uint8_t data) {
     digitalWrite(EPD_CS_PIN, HIGH);
 }
 
-void ShallotEPD::waitUntilIdle() {
+bool ShallotEPD::waitUntilIdle(uint32_t timeoutMs) {
+    uint32_t t0 = millis();
     while (digitalRead(EPD_BUSY_PIN) == HIGH) {
-        delay(100);
+        if (millis() - t0 > timeoutMs) return false;
+        delay(10);
     }
     delay(200);
+    return true;
 }
 
 void ShallotEPD::reset() {
@@ -242,7 +262,8 @@ void ShallotEPD::setLut(const unsigned char* lut) {
     for (uint8_t i = 0; i < 153; i++) {
         sendData(lut[i]);
     }
-    waitUntilIdle();
+    // Best-effort wait: begin() re-checks idleness with its own bound.
+    waitUntilIdle(EPD_INIT_TIMEOUT_MS);
     sendCommand(0x3F);
     sendData(lut[153]);
     sendCommand(0x03);
@@ -266,10 +287,10 @@ bool ShallotEPD::begin() {
     SPI.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
 
     reset();
-    waitUntilIdle();
+    if (!waitUntilIdle(EPD_INIT_TIMEOUT_MS)) return false;
 
     sendCommand(0x12);  // SWRESET
-    waitUntilIdle();
+    if (!waitUntilIdle(EPD_INIT_TIMEOUT_MS)) return false;
 
     sendCommand(0x01);  // Driver output control
     sendData(0xC7);
@@ -304,32 +325,20 @@ bool ShallotEPD::begin() {
     sendCommand(0x4F);  // Set RAM-Y address counter
     sendData(0xC7);
     sendData(0x00);
-    waitUntilIdle();
+    if (!waitUntilIdle(EPD_INIT_TIMEOUT_MS)) return false;
 
     setLut(WF_FULL_1IN54);
+    if (!waitUntilIdle(EPD_INIT_TIMEOUT_MS)) return false;
     return true;
 }
 
+// Transmit-only frame update: sends the buffer and arms completion for
+// poll(). Never waits — call poll() every loop pass.
 void ShallotEPD::clear() {
-    int w = (EPD_WIDTH % 8 == 0) ? (EPD_WIDTH / 8) : (EPD_WIDTH / 8 + 1);
-    int h = EPD_HEIGHT;
-
-    sendCommand(0x24);
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            sendData(0xFF);
-        }
-    }
-    sendCommand(0x26);
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            sendData(0xFF);
-        }
-    }
-    sendCommand(0x22);
-    sendData(0xC7);
-    sendCommand(0x20);
-    waitUntilIdle();
+    clearBuffer();
+    sendCommand(0x26);  // red plane white (preserves original clear behavior)
+    for (int i = 0; i < EPD_BUFFER_SIZE; i++) sendData(0xFF);
+    displayFrame(_buffer);
 }
 
 void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
@@ -347,7 +356,9 @@ void ShallotEPD::displayFrame(const uint8_t* frameBuffer) {
     sendCommand(0x22);
     sendData(0xC7);
     sendCommand(0x20);
-    waitUntilIdle();
+    // No wait here: poll() completes the refresh (or degrades on timeout).
+    _updateBusy = true;
+    _updateStart = millis();
 }
 
 void ShallotEPD::sleep() {
@@ -467,10 +478,11 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
 }
 
 void ShallotEPD::showStatus(EpdStatus status) {
+    if (_degraded) return;  // fail silent: display stays as-is, loop stays fast
     if (status == EPD_STATUS_BLANK) {
         clearBuffer();
         displayFrame(_buffer);
-        sleep();
+        _pendingSleep = true;
         return;
     }
 
@@ -483,7 +495,28 @@ void ShallotEPD::showStatus(EpdStatus status) {
 
     drawIcon(centerX, centerY, iconRadius, status);
     displayFrame(_buffer);
-    sleep();
+    _pendingSleep = false;
+}
+
+// Background completion for an armed refresh. Cheap when idle: one GPIO
+// read per pass. On BUSY timeout latches degraded mode (log once) so all
+// future display work is skipped and auth/LoRa timing is unaffected.
+void ShallotEPD::poll() {
+    if (_degraded || !_updateBusy) return;
+    if (digitalRead(EPD_BUSY_PIN) == LOW) {
+        _updateBusy = false;
+        if (_pendingSleep) {
+            _pendingSleep = false;
+            sleep();
+        }
+        return;
+    }
+    if (millis() - _updateStart > EPD_REFRESH_TIMEOUT_MS) {
+        _degraded = true;
+        _updateBusy = false;
+        _pendingSleep = false;
+        Serial.println("[EPD] BUSY timeout - degraded display mode, dock auth continues");
+    }
 }
 
 // =============================================================
@@ -635,104 +668,120 @@ void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t m
 }
 
 // =============================================================
-// Key Reception from UNO Q (PRO-48)
+// Key Reception from Mama Bear over USB Serial (PRO-48, PRO-11 poll)
 // =============================================================
+//
+// Non-blocking poll: each call consumes only already-available USB
+// bytes and returns immediately, so the Serial1 dock parser is never
+// delayed. Partial state lives in static storage and is wiped on every
+// failure/timeout (fail-closed: nothing staged, nothing stored).
+// Wire behavior identical to the old blocking version: handshake pair
+// scan -> READY -> exactly 22 key-data bytes -> strict tag/len/CRC
+// checks -> store + fingerprint + STORED.
 
-bool receiveKeyFromUNOQ() {
-    uint32_t timeoutStart = millis();
+ // Poll result codes (uint8_t to keep the Arduino preprocessor happy).
+#define PROV_PENDING 0  // no complete attempt yet this pass; call again
+#define PROV_DONE    1  // key validated, stored, STORED sent
+#define PROV_FAILED  2  // attempt concluded negatively; state reset, retry next pass
 
-    Serial.println("[PRO-48] Waiting for key distribution from UNO Q...");
+#define PROV_PH_HANDSHAKE 0
+#define PROV_PH_KEYDATA   1
+#define PROV_KEYDATA_LEN  22  // type(1) + len(1) + key(16) + crc(4)
 
-    // NOTE: Mama Bear provisioning arrives over USB Serial (Serial),
-    // NOT Serial1. Serial1 (GPIO0/1) belongs exclusively to the DEN dock.
-    // Step 1: Wait for handshake
-    while (millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        if (Serial.available() >= 2) {
+static uint8_t provPhase = PROV_PH_HANDSHAKE;
+static uint32_t provT0 = 0;
+static uint8_t provBuf[PROV_KEYDATA_LEN];
+static uint8_t provGot = 0;
+
+static uint8_t pollProvisioning() {
+    if (provPhase == PROV_PH_HANDSHAKE) {
+        // Scan pairs exactly like the original step 1 (non-matching pairs
+        // are skipped, same as before).
+        while (Serial.available() >= 2) {
             uint8_t msgType = Serial.read();
             uint8_t targetId = Serial.read();
-
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
                 Serial.println("[PRO-48] Handshake received.");
-                break;
+                Serial.print("[PRO-48] Sending READY with device ID: ");
+                for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
+                Serial.println();
+                Serial.write(MSG_READY);
+                Serial.write(deviceId, 4);
+                Serial.flush();
+                provPhase = PROV_PH_KEYDATA;
+                provT0 = millis();
+                provGot = 0;
+                memset(provBuf, 0, sizeof(provBuf));
+                return PROV_PENDING;
             }
         }
-    }
-    if (millis() - timeoutStart >= KEY_DISTRIBUTION_TIMEOUT) {
-        Serial.println("[PRO-48] Timeout waiting for handshake.");
-        return false;
+        return PROV_PENDING;
     }
 
-    // Step 2: Send READY + device ID
-    Serial.print("[PRO-48] Sending READY with device ID: ");
-    for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-    Serial.println();
-
-    Serial.write(MSG_READY);
-    Serial.write(deviceId, 4);
-    Serial.flush();
-
-    // Step 3: Wait for key data (22 bytes: type(1) + len(1) + key(16) + crc(4))
-    timeoutStart = millis();
-    while (Serial.available() < 22 && millis() - timeoutStart < KEY_DISTRIBUTION_TIMEOUT) {
-        delay(1);
+    // PROV_PH_KEYDATA: accumulate exactly 22 bytes, bounded by the same
+    // 10 s window the old blocking wait used.
+    while (provGot < PROV_KEYDATA_LEN && Serial.available()) {
+        provBuf[provGot++] = (uint8_t)Serial.read();
     }
-    if (Serial.available() < 22) {
-        Serial.println("[PRO-48] Timeout waiting for key data.");
-        return false;
+    if (provGot < PROV_KEYDATA_LEN) {
+        if (millis() - provT0 > KEY_DISTRIBUTION_TIMEOUT) {
+            Serial.println("[PRO-48] Timeout waiting for key data.");
+            provPhase = PROV_PH_HANDSHAKE;
+            provGot = 0;
+            memset(provBuf, 0, sizeof(provBuf));
+            return PROV_FAILED;
+        }
+        return PROV_PENDING;
     }
 
-    uint8_t msgType = Serial.read();
-    if (msgType != MSG_KEY_DATA) {
-        Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", msgType);
-        return false;
-    }
+    uint8_t outcome = PROV_FAILED;
+    do {
+        if (provBuf[0] != MSG_KEY_DATA) {
+            Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", provBuf[0]);
+            break;
+        }
+        if (provBuf[1] != AES_KEY_SIZE) {
+            Serial.printf("[PRO-48] Unexpected key length: %d\n", provBuf[1]);
+            break;
+        }
+        uint32_t receivedCrc = ((uint32_t)provBuf[18] << 24)
+                             | ((uint32_t)provBuf[19] << 16)
+                             | ((uint32_t)provBuf[20] << 8)
+                             | ((uint32_t)provBuf[21]);
+        uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
+        if (computedCrc != receivedCrc) {
+            Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
+                          computedCrc, receivedCrc);
+            Serial.write(MSG_ERROR);
+            break;
+        }
+        Serial.println("[PRO-48] CRC verified OK.");
 
-    uint8_t receivedKeyLen = Serial.read();
-    if (receivedKeyLen != AES_KEY_SIZE) {
-        Serial.printf("[PRO-48] Unexpected key length: %d\n", receivedKeyLen);
-        return false;
-    }
+        // Store key securely
+        memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
+        keyStored = true;
 
-    uint8_t receivedKey[AES_KEY_SIZE];
-    Serial.readBytes(receivedKey, AES_KEY_SIZE);
+        // Send confirmation with hash (fingerprint only, never key bytes)
+        uint8_t fullHash[32];
+        sha256(aesKey, AES_KEY_SIZE, fullHash);
+        uint8_t keyHash[KEY_HASH_SIZE];
+        memcpy(keyHash, fullHash, KEY_HASH_SIZE);
+        memset(fullHash, 0, 32);
 
-    // Read CRC32
-    uint32_t receivedCrc = ((uint32_t)Serial.read() << 24)
-                         | ((uint32_t)Serial.read() << 16)
-                         | ((uint32_t)Serial.read() << 8)
-                         | ((uint32_t)Serial.read());
+        Serial.write(MSG_STORED);
+        Serial.write(keyHash, KEY_HASH_SIZE);
+        Serial.flush();
 
-    // Verify CRC32
-    uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
-    if (computedCrc != receivedCrc) {
-        Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n", computedCrc, receivedCrc);
-        Serial.write(MSG_ERROR);
-        memset(receivedKey, 0, AES_KEY_SIZE);
-        return false;
-    }
-    Serial.println("[PRO-48] CRC verified OK.");
+        Serial.print("[PRO-48] Key stored. Hash sent: ");
+        for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
+        Serial.println();
+        outcome = PROV_DONE;
+    } while (0);
 
-    // Store key securely
-    memcpy(aesKey, receivedKey, AES_KEY_SIZE);
-    keyStored = true;
-    memset(receivedKey, 0, AES_KEY_SIZE);
-
-    // Send confirmation with hash
-    uint8_t fullHash[32];
-    sha256(aesKey, AES_KEY_SIZE, fullHash);
-    uint8_t keyHash[KEY_HASH_SIZE];
-    memcpy(keyHash, fullHash, KEY_HASH_SIZE);
-
-    Serial.write(MSG_STORED);
-    Serial.write(keyHash, KEY_HASH_SIZE);
-    Serial.flush();
-
-    Serial.print("[PRO-48] Key stored. Hash sent: ");
-    for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
-    Serial.println();
-
-    memset(fullHash, 0, 32);
-    return true;
+    memset(provBuf, 0, sizeof(provBuf));
+    provGot = 0;
+    provPhase = PROV_PH_HANDSHAKE;
+    return outcome;
 }
 
 // =============================================================
@@ -807,7 +856,6 @@ static void handleDockAuth() {
         Serial1.flush();
         memset(resp, 0, sizeof(resp));
         Serial.println("[PRO-84] CHALLENGE answered over dock UART");
-        epd.begin();
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 }
@@ -838,15 +886,15 @@ void setup() {
     Serial.println("Components: Core1262 LoRa + e-Paper");
     Serial.println("============================================");
 
-    // Initialize e-Paper
+    // Initialize e-Paper (bounded init; a dead panel degrades instead of
+    // hanging boot — dock auth starts on the first loop passes regardless).
     Serial.println("[PRO-57] Initializing e-Paper...");
     if (!epd.begin()) {
-        Serial.println("[PRO-57] e-Paper initialization FAILED!");
+        Serial.println("[PRO-57] e-Paper initialization FAILED (degraded mode).");
     } else {
         Serial.println("[PRO-57] e-Paper initialized.");
-        epd.clear();
-        epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
+    epd.showStatus(EPD_STATUS_AUTHENTICATING);  // request only, returns fast
 
     // Initialize SPI1 for Core1262
     loraSPI.begin();
@@ -867,22 +915,11 @@ void setup() {
         Serial.printf("[PRO-58] LoRa initialization FAILED, code: %d\n", state);
     }
 
-    // Step 1: Receive key from UNO Q
-    Serial.println("[PRO-48] Starting key reception...");
-    if (receiveKeyFromUNOQ()) {
-        currentState = STATE_WAITING_FOR_CHALLENGE;
-        Serial.println("[PRO-48] Key received successfully.");
-        digitalWrite(LED_BUILTIN, HIGH);
-
-        // Update e-Paper to show waiting for challenge
-        epd.begin();
-        epd.showStatus(EPD_STATUS_AUTHENTICATING);
-    } else {
-        Serial.println("[PRO-48] Key reception FAILED / Waiting...");
-        currentState = STATE_WAITING_FOR_KEY;
-        epd.begin();
-        epd.showStatus(EPD_STATUS_FAILED);
-    }
+    // Key reception runs via pollProvisioning() in loop() (non-blocking);
+    // boot never waits for a key, so dock auth starts immediately.
+    Serial.println("[PRO-48] Key reception via loop poll (non-blocking)...");
+    currentState = STATE_WAITING_FOR_KEY;
+    epd.showStatus(EPD_STATUS_AUTHENTICATING);
 }
 
 // =============================================================
@@ -895,7 +932,15 @@ void loop() {
     static uint8_t response[HMAC_SIZE];
     static uint8_t rxBuffer[64];
 
-    // 1. Check for incoming LoRa packet via interrupt flag
+    // 1. Docked UART (DEN) responder poll FIRST: keeps challenge->answer
+    // latency minimal so a slow LoRa pass cannot push it past the 2 s
+    // session deadline. Passive, never initiates.
+    handleDockAuth();
+
+    // 2. e-Paper background completion (microseconds when idle; never waits).
+    epd.poll();
+
+    // 3. Check for incoming LoRa packet via interrupt flag
     if (loraInitialized && loraPacketReceived) {
         loraPacketReceived = false;
 
@@ -915,7 +960,6 @@ void loop() {
                 lastChallengeTime = millis();
                 currentState = STATE_COMPUTING_RESPONSE;
 
-                epd.begin();
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
 
                 Serial.print("[PRO-50] Challenge nonce: ");
@@ -928,7 +972,6 @@ void loop() {
                 if (result == 0x01) {
                     Serial.println("[PRO-50] Authentication SUCCESS (LoRa)");
                     currentState = STATE_WAITING_FOR_CHALLENGE;
-                    epd.begin();
                     epd.showStatus(EPD_STATUS_AUTHENTICATED);
 
                     for (int i = 0; i < 5; i++) {
@@ -940,7 +983,6 @@ void loop() {
                 } else {
                     Serial.println("[PRO-50] Authentication FAILED (LoRa)");
                     currentState = STATE_WAITING_FOR_CHALLENGE;
-                    epd.begin();
                     epd.showStatus(EPD_STATUS_FAILED);
 
                     for (int i = 0; i < 10; i++) {
@@ -956,29 +998,25 @@ void loop() {
         radio.startReceive();
     }
 
-    // 2. Docked UART (DEN) responder poll — passive, never initiates.
-    // Serial1 belongs exclusively to the DEN dock; provisioning lives on
-    // USB Serial, so this parser can run every pass unconditionally.
-    // (Removed: legacy USB-Serial debug simulator — it consumed arbitrary
-    // USB bytes and would corrupt Mama Bear provisioning traffic.)
-    handleDockAuth();
+    // 4. Docked UART poll already ran first (see section 1).
 
-    // 3. Main State Machine Execution
+    // 5. Main State Machine Execution
     switch (currentState) {
-        case STATE_WAITING_FOR_KEY:
-            if (receiveKeyFromUNOQ()) {
+        case STATE_WAITING_FOR_KEY: {
+            uint8_t pr = pollProvisioning();
+            if (pr == PROV_DONE) {
                 currentState = STATE_WAITING_FOR_CHALLENGE;
                 digitalWrite(LED_BUILTIN, HIGH);
-                epd.begin();
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
             }
+            // PROV_PENDING/PROV_FAILED: keep waiting, retry next pass.
             break;
+        }
 
         case STATE_WAITING_FOR_CHALLENGE:
             if (lastChallengeTime > 0 && (millis() - lastChallengeTime > CHALLENGE_TIMEOUT)) {
                 lastChallengeTime = 0;
                 Serial.println("[PRO-50] Challenge timeout.");
-                epd.begin();
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
             }
             break;
@@ -1016,7 +1054,6 @@ void loop() {
             } else {
                 Serial.println("[PRO-50] ERROR: No key stored!");
                 currentState = STATE_WAITING_FOR_KEY;
-                epd.begin();
                 epd.showStatus(EPD_STATUS_FAILED);
             }
             break;

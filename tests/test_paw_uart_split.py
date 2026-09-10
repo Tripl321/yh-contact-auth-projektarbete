@@ -80,11 +80,11 @@ def _function_range(src, signature):
 def test_split_provisioning_on_usb_only():
     """Source guard: provisioning touches USB Serial, never Serial1."""
     src = _paw_src()
-    start, end = _function_range(src, 'bool receiveKeyFromUNOQ()')
+    start, end = _function_range(src, 'uint8_t pollProvisioning()')
     body = re.sub(r'//.*', '', '\n'.join(src.splitlines()[start:end + 1]))
     assert 'Serial1.' not in body
-    for api in ('Serial.available()', 'Serial.read(', 'Serial.readBytes',
-                'Serial.write(', 'Serial.flush()'):
+    for api in ('Serial.available()', 'Serial.read(', 'Serial.write(',
+                'Serial.flush()'):
         assert api in body, f'provisioning lost USB Serial use: {api}'
 
 
