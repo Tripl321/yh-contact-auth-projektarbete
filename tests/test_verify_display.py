@@ -150,6 +150,11 @@ class EnvGlassMirror:
         self.glass = []
         self.serial = []
         self.events = []
+        # Render pipeline mirror (firmware one-slot queue): a frame is
+        # in_flight while the panel is busy; a second request waits.
+        self.in_flight = None
+        self.queued = []
+        self.degraded = False
 
     @staticmethod
     def _fw_ms(name):
@@ -157,24 +162,37 @@ class EnvGlassMirror:
         assert m, name
         return int(m.group(1))
 
+    def _show_word(self, word):
+        """Glass word via the render pipeline: immediate when the panel is
+        idle, queued behind the in-flight frame otherwise (firmware
+        showEnvWord behaves exactly so)."""
+        if self.in_flight is None and not self.degraded:
+            self.glass.append(('WORD', word))
+        else:
+            self.queued.append(('WORD', word))
+
     def command(self, line):
         if line == 'FIXTURE':
             self.fixture = True
             return
         if line == 'CANCEL':
             if self.phase != 'IDLE' or self.staged is not None:
+                if self.in_flight == 'VERIFY' and self.pending_verify:
+                    # The VERIFY frame was already on the panel/in flight:
+                    # visible transiently, then overwritten below.
+                    self.glass.append(('VERIFY', self.pending_verify))
                 self._wipe()
                 self.phase = 'IDLE'
-                self.glass.append(('WORD', 'CANCELLED'))
+                self._show_word('CANCELLED')
             return
         if line.startswith('RESULT:'):
             if self.committed:
                 if line == 'RESULT:OK':
-                    self.glass.append(('WORD', 'VERIFIED'))
+                    self._show_word('VERIFIED')
                 else:
                     self.key = None
                     self.committed = False
-                    self.glass.append(('WORD', 'REJECTED'))
+                    self._show_word('REJECTED')
             return
         if self.phase != 'IDLE':
             return
@@ -185,7 +203,25 @@ class EnvGlassMirror:
             self.e1 = self.paw.e1()
             self.phase = 'E2'
             self.t0 = self.t
+            self.in_flight = 'SESSION'
+
+    def _complete_flight(self, ok):
+        """Finish the in-flight frame; start the queued one if any."""
+        tag = self.in_flight
+        self.in_flight = None
+        if not ok:
+            self.degraded = True
+            self.queued = []
+            return None
+        if tag == 'SESSION':
             self.glass.append(('WORD', 'SESSION'))
+        elif isinstance(tag, tuple):
+            self.glass.append(tag)
+        if self.queued:
+            nxt = self.queued.pop(0)
+            self.in_flight = nxt
+            return nxt
+        return None
 
     def deliver_e2(self, e2):
         assert self.phase == 'E2'
@@ -194,43 +230,62 @@ class EnvGlassMirror:
         except EnvelopeError:
             self._wipe()
             self.phase = 'IDLE'
-            self.glass.append(('WORD', 'REJECTED'))
+            self._show_word('REJECTED')
             return
         self.staged = pt
         # Value staged for the glass but NOT shown: the operator sees it
-        # only when the render completes (render_done True).
+        # only when its render completes. Serial goes out immediately.
         self.pending_verify = ver
         self.serial.append(f'VERIFY:{ver}')
-        self.phase = 'DISP'
-        self.t0 = self.t
-
-    def render_done(self, ok):
-        assert self.phase == 'DISP'
-        if not ok:
+        if self.degraded:
+            # Panel already dead: firmware fails at render start.
             self._wipe()
             self.pending_verify = None
             self.phase = 'IDLE'
             self.events.append('DISP:FAIL')
             return
-        self.glass.append(('VERIFY', self.pending_verify))
-        self.pending_verify = None
-        self.key = self.staged
-        self.committed = True
-        self.events.append('E3')
-        self.events.append('DISP:OK')
-        self.phase = 'IDLE'
+        if self.in_flight is None:
+            self.in_flight = 'VERIFY'
+        else:
+            # SESSION render still running: VERIFY waits its turn.
+            self.queued.append('VERIFY')
+        self.phase = 'DISP'
+        self.t0 = self.t
+
+    def render_done(self, ok):
+        assert self.in_flight is not None
+        self._complete_flight(ok)
+        if self.degraded:
+            if self.phase == 'DISP':
+                self._wipe()
+                self.pending_verify = None
+                self.phase = 'IDLE'
+                self.events.append('DISP:FAIL')
+            return
+        if self.phase == 'DISP' and self.in_flight is None \
+                and self.pending_verify is not None:
+            # The VERIFY render just completed: commit.
+            self.glass.append(('VERIFY', self.pending_verify))
+            self.pending_verify = None
+            self.key = self.staged
+            self.committed = True
+            self.events.append('E3')
+            self.events.append('DISP:OK')
+            self.phase = 'IDLE'
+        # Otherwise the completed frame was SESSION's (glass updated inside
+        # _complete_flight) and VERIFY is now rendering.
 
     def tick(self, dt):
         self.t += dt
         if self.phase == 'E2' and self.t - self.t0 > self.E2_TIMEOUT:
             self._wipe()
             self.phase = 'IDLE'
-            self.glass.append(('WORD', 'TIMED OUT'))
+            self._show_word('TIMED OUT')
         elif self.phase == 'DISP' and self.t - self.t0 > self.DISP_TIMEOUT:
             self._wipe()
             self.phase = 'IDLE'
             self.events.append('DISP:FAIL')
-            self.glass.append(('WORD', 'TIMED OUT'))
+            self._show_word('TIMED OUT')
 
     def _wipe(self):
         self.staged = None
@@ -253,14 +308,34 @@ def test_mirror_happy_path():
     e2, ver = _wrap_for(m)
     m.deliver_e2(e2)
     assert m.serial == [f'VERIFY:{ver}'] and len(ver) == 16
-    assert m.glass == [('WORD', 'SESSION')]  # staged, not yet shown
+    assert m.glass == []  # staged, not yet shown
     assert m.events == []
-    m.render_done(True)
+    m.render_done(True)  # SESSION completes, VERIFY starts
+    assert m.glass == [('WORD', 'SESSION')]
+    assert m.events == [] and not m.committed
+    m.render_done(True)  # VERIFY completes: commit
     assert m.glass[-1] == ('VERIFY', ver)  # full value on glass
     assert m.events == ['E3', 'DISP:OK']
     assert m.key == T_OP and m.committed
     m.command('RESULT:OK')
     assert m.glass[-1] == ('WORD', 'VERIFIED')
+
+
+def test_mirror_serializes_back_to_back_renders():
+    """E2 arriving mid-SESSION-render: single commit, E3 once, ordered."""
+    m = EnvGlassMirror()
+    m.command('FIXTURE')
+    m.command('ENVELOPE_START')
+    e2, ver = _wrap_for(m)
+    m.deliver_e2(e2)  # SESSION still in flight: VERIFY must queue
+    assert m.events == [] and not m.committed
+    m.render_done(True)
+    assert m.glass == [('WORD', 'SESSION')]
+    assert m.events == []  # still no commit, no E3
+    m.render_done(True)
+    assert m.glass[-1] == ('VERIFY', ver)
+    assert m.events == ['E3', 'DISP:OK']
+    assert m.events.count('E3') == 1
 
 
 def test_mirror_tamper_never_shows_value():
@@ -269,11 +344,13 @@ def test_mirror_tamper_never_shows_value():
     m.command('ENVELOPE_START')
     e2, _ = _wrap_for(m, mutate=lambda b: (b.__setitem__(55, b[55] ^ 1), b)[1])
     m.deliver_e2(e2)
-    assert m.glass[-1] == ('WORD', 'REJECTED')
     assert m.events == [] and m.key is None and not m.committed
+    assert m.serial == []
+    m.render_done(True)  # flush queued frames
+    m.render_done(True)
     shown = [v for k, v in m.glass if k == 'VERIFY']
     assert shown == [], 'tampered session must never reach the glass'
-    assert m.serial == []
+    assert m.glass[-1] == ('WORD', 'REJECTED')
 
 
 def test_mirror_timeout_and_cancel():
@@ -281,20 +358,33 @@ def test_mirror_timeout_and_cancel():
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
     m.tick(11.0)
+    m.render_done(True)  # flush: SESSION, then TIMED OUT
+    m.render_done(True)
     assert m.glass[-1] == ('WORD', 'TIMED OUT')
     assert m.events == [] and m.key is None
 
+    m = EnvGlassMirror()
+    m.command('FIXTURE')
     m.command('ENVELOPE_START')
     m.command('CANCEL')
+    m.render_done(True)
+    m.render_done(True)
     assert m.glass[-1] == ('WORD', 'CANCELLED')
     assert m.key is None and m.events == []
 
+    m = EnvGlassMirror()
+    m.command('FIXTURE')
     m.command('ENVELOPE_START')
-    e2, _ = _wrap_for(m)
+    m.render_done(True)  # SESSION shown, panel idle
+    e2, ver = _wrap_for(m)
     m.deliver_e2(e2)
     m.command('CANCEL')  # preempt during DISP
-    assert m.glass[-1] == ('WORD', 'CANCELLED')
     assert m.key is None and 'E3' not in m.events
+    m.render_done(True)  # in-flight VERIFY finishes...
+    m.render_done(True)  # ...then CANCELLED overwrites it
+    assert m.glass[-1] == ('WORD', 'CANCELLED')
+    assert ('VERIFY', ver) in m.glass, \
+        'cancelled-after-open flashes the value but must overwrite it'
 
 
 def test_mirror_degraded_render():
@@ -304,21 +394,34 @@ def test_mirror_degraded_render():
     e2, ver = _wrap_for(m)
     m.deliver_e2(e2)
     assert m.serial == [f'VERIFY:{ver}']  # serial still emitted
-    m.render_done(False)  # panel dead: render never completes
+    m.render_done(False)  # SESSION dies mid-flight
+    m.render_done(False) if m.in_flight else None
     assert m.events == ['DISP:FAIL']
     assert m.key is None and not m.committed
-    assert m.glass == [('WORD', 'SESSION')]  # value never reached glass
     assert all(v != ver for k, v in m.glass if k == 'VERIFY')
+
+    # Panel already dead when E2 arrives: fail at render start.
+    m = EnvGlassMirror()
+    m.command('FIXTURE')
+    m.command('ENVELOPE_START')
+    m.render_done(False)
+    e2, _ = _wrap_for(m)
+    m.deliver_e2(e2)
+    assert m.events == ['DISP:FAIL']
+    assert m.key is None and not m.committed
 
 
 def test_mirror_disp_timeout_overwrites_stale():
     m = EnvGlassMirror()
     m.command('FIXTURE')
     m.command('ENVELOPE_START')
+    m.render_done(True)  # SESSION shown
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
     m.tick(26.0)
     assert 'DISP:FAIL' in m.events
+    m.render_done(True)  # wedged VERIFY finishes...
+    m.render_done(True)  # ...then TIMED OUT overwrites it
     assert m.glass[-1] == ('WORD', 'TIMED OUT')  # no stale VERIFY persists
     assert m.key is None
 
@@ -329,6 +432,7 @@ def test_mirror_operator_reject_wipes():
     m.command('ENVELOPE_START')
     e2, _ = _wrap_for(m)
     m.deliver_e2(e2)
+    m.render_done(True)
     m.render_done(True)
     assert m.committed and m.key == T_OP
     m.command('RESULT:FAIL')

@@ -207,7 +207,13 @@ public:
     // the refresh, run the post-BLANK sleep, or degrade on BUSY timeout.
     void showStatus(EpdStatus status);
     void poll();
-    bool updateDone() const { return !_updateBusy; }
+    bool updateDone() const {
+#if ENVELOPE_PHASE2
+        return !_updateBusy && !_pendActive;
+#else
+        return !_updateBusy;
+#endif
+    }
     bool isDegraded() const { return _degraded; }
 #if ENVELOPE_PHASE2
     // VERIFY ceremony rendering (fixture-only). Async like showStatus:
@@ -237,6 +243,9 @@ private:
 #if ENVELOPE_PHASE2
     void drawChar5x7(int x, int y, char c, int scale);
     void drawText5x7(int x, int y, const char *s, int scale);
+    void renderVerifyFrame(const char ver17[16]);
+    void renderWordFrame(const char *word);
+    void startPending();
 #endif
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
@@ -246,6 +255,15 @@ private:
     bool _updateBusy = false;    // refresh in flight
     uint32_t _updateStart = 0;   // millis at trigger
     bool _pendingSleep = false;  // BLANK path sleeps after completion
+#if ENVELOPE_PHASE2
+    // One-slot render queue: a new ceremony frame requested while one is
+    // in flight waits its turn instead of colliding on the panel (overlap
+    // wedges BUSY). updateDone() covers queue + flight.
+    bool _pendActive = false;
+    bool _pendIsVerify = false;
+    char _pendVer17[ENV_VERIFY_LEN + 1];
+    char _pendWord[16];
+#endif
 };
 
 ShallotEPD::ShallotEPD() {
@@ -533,6 +551,13 @@ void ShallotEPD::poll() {
     if (_degraded || !_updateBusy) return;
     if (digitalRead(EPD_BUSY_PIN) == LOW) {
         _updateBusy = false;
+#if ENVELOPE_PHASE2
+        if (_pendActive) {
+            _pendActive = false;
+            startPending();
+            return;
+        }
+#endif
         if (_pendingSleep) {
             _pendingSleep = false;
             sleep();
@@ -543,6 +568,9 @@ void ShallotEPD::poll() {
         _degraded = true;
         _updateBusy = false;
         _pendingSleep = false;
+#if ENVELOPE_PHASE2
+        _pendActive = false;  // queued frame can never run; caller fails
+#endif
         Serial.println("[EPD] BUSY timeout - degraded display mode, dock auth continues");
     }
 }
@@ -577,8 +605,7 @@ void ShallotEPD::drawText5x7(int x, int y, const char *s, int scale) {
 
 // Full 16-hex VERIFY, two rows of eight. Never truncated, never icons-only:
 // EPDT_VERIFY_COLS * EPDT_VERIFY_ROWS == 16 is asserted by tests.
-bool ShallotEPD::showVerifyText(const char ver17[16]) {
-    if (_degraded) return false;
+void ShallotEPD::renderVerifyFrame(const char ver17[16]) {
     clearBuffer();
     drawRect(4, 4, EPD_WIDTH - 8, EPD_HEIGHT - 8, false);
     char row[EPDT_VERIFY_COLS + 1];
@@ -591,6 +618,36 @@ bool ShallotEPD::showVerifyText(const char ver17[16]) {
     drawText5x7((EPD_WIDTH - w) / 2,
                 EPDT_VERIFY_Y0 + EPDT_GLYPH_H * EPDT_VERIFY_SCALE + 12,
                 row, EPDT_VERIFY_SCALE);
+}
+
+void ShallotEPD::renderWordFrame(const char *word) {
+    clearBuffer();
+    drawRect(4, 4, EPD_WIDTH - 8, EPD_HEIGHT - 8, false);
+    int len = strlen(word);
+    int w = epdtTextWidth(len, 2, 2);
+    drawText5x7((EPD_WIDTH - w) / 2, (EPD_HEIGHT - EPDT_GLYPH_H * 2) / 2,
+                word, 2);
+}
+
+void ShallotEPD::startPending() {
+    if (_pendIsVerify) renderVerifyFrame(_pendVer17);
+    else renderWordFrame(_pendWord);
+    displayFrame(_buffer);
+    _pendingSleep = true;
+}
+
+bool ShallotEPD::showVerifyText(const char ver17[16]) {
+    if (_degraded) return false;
+    if (_updateBusy) {
+        // A ceremony frame is in flight (e.g. SESSION): queue behind it
+        // instead of colliding on the panel.
+        memcpy(_pendVer17, ver17, sizeof(_pendVer17));
+        _pendIsVerify = true;
+        _pendActive = true;
+        Serial.println("[EPD] VERIFY render queued behind in-flight frame.");
+        return true;
+    }
+    renderVerifyFrame(ver17);
     displayFrame(_buffer);
     // Sleep after completion; the image persists without power (e-paper),
     // so VERIFY stays visible until the next state overwrites it.
@@ -600,12 +657,16 @@ bool ShallotEPD::showVerifyText(const char ver17[16]) {
 
 void ShallotEPD::showEnvWord(const char *word) {
     if (_degraded) return;
-    clearBuffer();
-    drawRect(4, 4, EPD_WIDTH - 8, EPD_HEIGHT - 8, false);
-    int len = strlen(word);
-    int w = epdtTextWidth(len, 2, 2);
-    drawText5x7((EPD_WIDTH - w) / 2, (EPD_HEIGHT - EPDT_GLYPH_H * 2) / 2,
-                word, 2);
+    if (_updateBusy) {
+        size_t n = strlen(word);
+        if (n > sizeof(_pendWord) - 1) n = sizeof(_pendWord) - 1;
+        memcpy(_pendWord, word, n);
+        _pendWord[n] = '\0';
+        _pendIsVerify = false;
+        _pendActive = true;
+        return;
+    }
+    renderWordFrame(word);
     displayFrame(_buffer);
     _pendingSleep = true;
 }
