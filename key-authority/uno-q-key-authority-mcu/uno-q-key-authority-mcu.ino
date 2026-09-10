@@ -3,17 +3,19 @@
  * MCU side: STM32U585 via Arduino IDE + ArduinoCore-zephyr
  *
  * Architecture (three-layer model):
- *   Layer 1 (MCU/STM32U585): TRNG key generation, secure storage,
- *           UART key distribution. No MPU involvement with key material.
- *   Layer 2 (MPU/QRB2210/Linux): Orchestration UI, audit log, validation.
- *           Communicates with MCU via Bridge RPC. Never touches key material.
- *   Layer 3 (Bridge RPC): Status and confirmation messages only.
+ *   Layer 1 (MCU/STM32U585): TRNG key generation, secure storage, one-shot
+ *           USB-C key export (armed + button-gated), fingerprint + state.
+ *   Layer 2 (MPU/QRB2210/Linux): Orchestration UI, audit log, validation,
+ *           and the USB-CDC byte transport to /dev/ttyACM* devices.
+ *           Communicates with MCU via Bridge RPC.
+ *   Layer 3 (Bridge RPC): Status, arming, one-shot export and confirmation.
  *           Uses Arduino_RouterBridge.h (MessagePack RPC over internal socket).
  *
  * Security principles:
  *   - Key generated with hardware TRNG (analog noise entropy)
- *   - Key never leaves MCU domain until UART distribution
- *   - Key never exposed to Linux/MPU side
+ *   - Key leaves the MCU only as a one-shot Bridge export per armed round
+ *     with a fresh button press; the MPU transport buffer is wiped at once
+ *     and key material is never logged, stored, or audited (fingerprint only)
  *   - Distribution requires operator confirmation (physical button)
  *   - Fail-closed: if TRNG health check fails, no key is generated
  *
@@ -22,7 +24,8 @@
  *   - Edge enforcement node: Raspberry Pi Pico 2 (RP2350A)
  *   - PAW: Adafruit Feather RP2350
  *
- * Linear: PRO-45 (key generation), PRO-46 (key distribution via UART)
+ * Linear: PRO-45 (key generation), PRO-46 USB-C (MPU USB-CDC distributor;
+ *   legacy MCU Serial1 sender removed)
  *
  * CRITICAL — prj.conf override required:
  *   The UNO Q variant config ships with CONFIG_TEST_RANDOM_GENERATOR=y
@@ -76,6 +79,13 @@ static uint8_t aesKey[AES_KEY_SIZE];
 static uint8_t keyHash[KEY_HASH_SIZE];
 static KeyState keyState = KeyState::UNINITIALIZED;
 static volatile uint8_t pendingDistributionTarget = 0;
+
+// One-shot USB-C export gate (PRO-46 USB-C): the staged key is released
+// to the MPU distributor at most once per arming, and only with a fresh
+// physical button press. See export_staged_key.
+#define BUTTON_FRESH_MS 5000
+static uint32_t lastButtonLowMs = 0;
+static bool exportConsumed = true;
 
 // =============================================================
 // Hex output helpers (Serial.printf unavailable on Zephyr core)
@@ -346,6 +356,8 @@ static bool generateKey() {
 
   computeKeyHash(aesKey, keyHash);
   keyState = KeyState::GENERATED;
+  pendingDistributionTarget = 0;  // fresh round invalidates old arming
+  exportConsumed = true;
 
   Serial.println("[PRO-45] Key generated successfully.");
   Serial.print("[PRO-45] Key fingerprint (SHA-256[:4]): ");
@@ -360,145 +372,42 @@ static bool generateKey() {
 // Key Distribution Protocol (PRO-46)
 // =============================================================
 //
-// Transport: UART (Serial1 on UNO Q D0/D1)
+// Transport: USB-CDC via the MPU distributor (Serial1 sender REMOVED —
+// see deprecation note below). The wire frames are unchanged and
+// byte-identical to the legacy UART protocol:
 //
 // Protocol:
 //   UNO Q -> Target:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
 //   Target -> UNO Q:  MSG_READY (0xA2) + device_id (4 bytes)
 //   UNO Q -> Target:  MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4)
 //   Target -> UNO Q:  MSG_STORED (0xA4) + stored_hash (4 bytes)
-//   UNO Q verifies:   stored_hash matches keyHash
+//   Distributor verifies:   stored_hash matches keyHash (constant-time)
+//
+// DEPRECATION (PRO-46 USB-C): the MCU Serial1 sender (distributeKey and
+// its wait helpers below) is removed further down this file. There is
+// exactly one sender: the MPU UsbCdcDistributor, fed by the one-shot
+// export_staged_key RPC and confirmed via confirm_distribution.
+// Serial1 is no longer initialized.
+//
+// MCU-side lifecycle:
+//   request_key_distribution (Bridge, MPU) -> arms target, opens export
+//   physical button (fresh <= BUTTON_FRESH_MS) -> authorizes release
+//   export_staged_key (Bridge, MPU) -> releases key hex EXACTLY ONCE
+//   confirm_distribution (Bridge, MPU) -> advances key state on success
 
-static inline bool waitForByte(uint8_t* byte, uint32_t timeoutMs) {
-  uint32_t start = millis();
-  do {
-    if (Serial1.available()) { *byte = Serial1.read(); return true; }
-  } while (millis() - start < timeoutMs);
-  return false;
+static inline bool keyAvailableForDistribution() {
+  return keyState == KeyState::GENERATED ||
+         keyState == KeyState::DISTRIBUTED_PLC ||
+         keyState == KeyState::DISTRIBUTED_PAW;
 }
 
-static inline bool waitForBytes(uint8_t* buffer, size_t count, uint32_t timeoutMs) {
-  size_t received = 0;
-  uint32_t start = millis();
-  while (received < count && millis() - start < timeoutMs) {
-    if (Serial1.available()) { buffer[received++] = Serial1.read(); }
-  }
-  return (received == count);
-}
+// (Serial1 wait helpers and distributeKey() deleted here — PRO-46 USB-C.)
 
-static bool distributeKey(uint8_t targetId) {
-  if (keyState != KeyState::GENERATED &&
-      keyState != KeyState::DISTRIBUTED_PLC &&
-      keyState != KeyState::DISTRIBUTED_PAW) {
-    Serial.println("[PRO-46] No key available for distribution.");
-    return false;
-  }
+// distributeKey() DELETED (PRO-46 USB-C): the MCU no longer sends key
+// material over Serial1. Distribution runs through the MPU
+// UsbCdcDistributor over USB-CDC, gated by export_staged_key and
+// confirmed via confirm_distribution below.
 
-  const char* targetName = (targetId == TARGET_PLC) ? "PLC" : "PAW";
-
-  if (targetId != TARGET_PLC && targetId != TARGET_PAW) {
-    Serial.println("[PRO-46] Invalid target ID.");
-    return false;
-  }
-
-  Serial.print("[PRO-46] Distributing key to ");
-  Serial.print(targetName);
-  Serial.println(" via UART...");
-
-  // Step 1: Handshake (2 bytes, single write)
-  Serial.print("[PRO-46] Sending handshake... ");
-  uint8_t handshake[2] = { MSG_HANDSHAKE, targetId };
-  Serial1.write(handshake, 2);
-  Serial1.flush();
-
-  uint8_t response;
-  if (!waitForByte(&response, DISTRIB_TIMEOUT_MS) || response != MSG_READY) {
-    Serial.println("FAILED (no READY response)");
-    Bridge.notify("key_authority_event", "distribution_failed",
-                 String(targetName) + " did not respond");
-    return false;
-  }
-
-  uint8_t deviceId[4];
-  if (!waitForBytes(deviceId, 4, DISTRIB_TIMEOUT_MS)) {
-    Serial.println("FAILED (no device ID)");
-    Bridge.notify("key_authority_event", "distribution_failed",
-                 String(targetName) + " did not send device ID");
-    return false;
-  }
-  Serial.print("OK (device: ");
-  printHex(deviceId, 4);
-  Serial.println(")");
-
-  // Step 2: Send key + CRC32 in a single batched write (22 bytes)
-  // Format: MSG_KEY_DATA(1) + key_len(1) + key(16) + crc32(4) = 22 bytes
-  Serial.print("[PRO-46] Sending key data... ");
-  uint8_t keyPacket[22];
-  keyPacket[0] = MSG_KEY_DATA;
-  keyPacket[1] = (uint8_t)AES_KEY_SIZE;
-  memcpy(&keyPacket[2], aesKey, AES_KEY_SIZE);
-  uint32_t crc = crc32(aesKey, AES_KEY_SIZE);
-  keyPacket[18] = (uint8_t)(crc >> 24);
-  keyPacket[19] = (uint8_t)(crc >> 16);
-  keyPacket[20] = (uint8_t)(crc >> 8);
-  keyPacket[21] = (uint8_t)(crc & 0xFF);
-  Serial1.write(keyPacket, 22);
-  Serial1.flush();
-  Serial.println("sent");
-
-  // Step 3: Wait for storage confirmation
-  Serial.print("[PRO-46] Waiting for storage confirmation... ");
-  if (!waitForByte(&response, DISTRIB_TIMEOUT_MS) || response != MSG_STORED) {
-    Serial.println("FAILED (no STORED response)");
-    Bridge.notify("key_authority_event", "distribution_failed",
-                 String(targetName) + " did not confirm storage");
-    return false;
-  }
-
-  uint8_t storedHash[KEY_HASH_SIZE];
-  if (!waitForBytes(storedHash, KEY_HASH_SIZE, DISTRIB_TIMEOUT_MS)) {
-    Serial.println("FAILED (no hash received)");
-    Bridge.notify("key_authority_event", "distribution_failed",
-                 String(targetName) + " did not return hash");
-    return false;
-  }
-
-  // Step 4: Verify stored hash (constant-time comparison)
-  volatile uint8_t hashDiff = 0;
-  for (int i = 0; i < KEY_HASH_SIZE; i++) {
-    hashDiff |= storedHash[i] ^ keyHash[i];
-  }
-
-  if (hashDiff != 0) {
-    Serial.println("FAILED (hash mismatch)");
-    Serial.print("[PRO-46] Expected: ");
-    printHex(keyHash, KEY_HASH_SIZE);
-    Serial.print("  Got: ");
-    printHex(storedHash, KEY_HASH_SIZE);
-    Serial.println();
-    Bridge.notify("key_authority_event", "distribution_failed",
-                 String(targetName) + " hash mismatch");
-    return false;
-  }
-
-  Serial.println("OK (hash verified)");
-  Serial.print("[PRO-46] Key successfully distributed to ");
-  Serial.print(targetName);
-  Serial.println(".");
-
-  // Update state machine
-  if (targetId == TARGET_PLC) {
-    keyState = (keyState == KeyState::DISTRIBUTED_PAW)
-             ? KeyState::DISTRIBUTED_BOTH : KeyState::DISTRIBUTED_PLC;
-  } else {
-    keyState = (keyState == KeyState::DISTRIBUTED_PLC)
-             ? KeyState::DISTRIBUTED_BOTH : KeyState::DISTRIBUTED_PAW;
-  }
-
-  Bridge.notify("key_authority_event", "distribution_success",
-               String(targetName) + " provisioned successfully");
-  return true;
-}
 
 // =============================================================
 // Bridge RPC — MPU communication (status only, no key material)
@@ -527,10 +436,70 @@ static void setupBridgeRPC() {
   });
 
   Bridge.provide_safe("request_key_distribution", [](uint8_t targetId) -> bool {
-    Serial.print("[PRO-46] MPU requested distribution to target ");
+    if ((targetId != TARGET_PLC && targetId != TARGET_PAW) ||
+        !keyAvailableForDistribution()) {
+      return false;
+    }
+    Serial.print("[PRO-46] MPU armed USB-C distribution to target ");
     Serial.print(targetId);
     Serial.println(". Awaiting button press.");
     pendingDistributionTarget = targetId;
+    exportConsumed = false;
+    return true;
+  });
+
+  // One-shot staged-key export for the MPU USB-CDC distributor.
+  // Releases the 16-byte key as 32 hex chars EXACTLY ONCE per arming and
+  // only with a fresh physical button press (<= BUTTON_FRESH_MS). Any
+  // other call returns "". The MPU must wipe the bytes immediately after
+  // the USB transfer and must never log them (fingerprint only).
+  Bridge.provide_safe("export_staged_key", []() -> String {
+    if (!keyAvailableForDistribution() || pendingDistributionTarget == 0 ||
+        exportConsumed ||
+        (millis() - lastButtonLowMs > BUTTON_FRESH_MS)) {
+      return String("");
+    }
+    exportConsumed = true;
+    String out;
+    out.reserve(33);
+    for (int i = 0; i < AES_KEY_SIZE; i++) {
+      out += HEX_CHARS[(aesKey[i] >> 4) & 0x0F];
+      out += HEX_CHARS[aesKey[i] & 0x0F];
+    }
+    Serial.println("[PRO-46] Staged key exported to MPU distributor (one-shot).");
+    Bridge.notify("key_authority_event", "key_exported",
+                  "one-shot USB-C export released");
+    return out;
+  });
+
+  // Outcome confirmation from the MPU distributor. Advances the key
+  // state machine on verified success (same transitions the legacy
+  // sender used); clears the arming either way so a new round needs a
+  // fresh arm + button press.
+  Bridge.provide_safe("confirm_distribution", [](uint8_t targetId, uint8_t ok) -> bool {
+    if (targetId != pendingDistributionTarget || !exportConsumed) {
+      return false;
+    }
+    uint8_t target = pendingDistributionTarget;
+    pendingDistributionTarget = 0;
+    const char* targetName = (target == TARGET_PLC) ? "PLC" : "PAW";
+    if (target != TARGET_PLC && target != TARGET_PAW) {
+      return false;
+    }
+    if (ok) {
+      if (target == TARGET_PLC) {
+        keyState = (keyState == KeyState::DISTRIBUTED_PAW)
+                 ? KeyState::DISTRIBUTED_BOTH : KeyState::DISTRIBUTED_PLC;
+      } else {
+        keyState = (keyState == KeyState::DISTRIBUTED_PLC)
+                 ? KeyState::DISTRIBUTED_BOTH : KeyState::DISTRIBUTED_PAW;
+      }
+      Bridge.notify("key_authority_event", "distribution_success",
+                    String(targetName) + " provisioned successfully");
+      return true;
+    }
+    Bridge.notify("key_authority_event", "distribution_failed",
+                  String(targetName) + " USB-C transfer failed");
     return true;
   });
 }
@@ -560,7 +529,7 @@ static void printStatus() {
     printHex(keyHash, KEY_HASH_SIZE);
     Serial.println();
   }
-  Serial.println("Commands: g=generate  1=dist PLC  2=dist PAW  s=status");
+  Serial.println("Commands: g=generate  s=status  (distribution via MPU USB-C)");
   Serial.println("=====================================\n");
 }
 
@@ -570,7 +539,8 @@ static void printStatus() {
 
 void setup() {
   Serial.begin(UART_BAUD);
-  Serial1.begin(UART_BAUD);
+  // NOTE: Serial1 is intentionally NOT initialized (PRO-46 USB-C removed
+  // the MCU UART sender; Serial1 GPIO0/1 belongs to the DEN dock).
 
   pinMode(CONFIRM_BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED_PIN, OUTPUT);
@@ -590,6 +560,12 @@ void setup() {
 }
 
 void loop() {
+  // Button freshness for the one-shot USB-C export gate. Tracked every
+  // pass; export_staged_key requires a press within BUTTON_FRESH_MS.
+  if (digitalRead(CONFIRM_BUTTON_PIN) == LOW) {
+    lastButtonLowMs = millis();
+  }
+
   // Serial command processing
   if (Serial.available()) {
     char cmd = Serial.read();
@@ -602,32 +578,11 @@ void loop() {
         printStatus();
         break;
 
-      case '1':
-        if (keyState == KeyState::GENERATED ||
-            keyState == KeyState::DISTRIBUTED_PAW) {
-          Serial.println("\n>> Distributing to PLC. Connect UART and press button.");
-          while (digitalRead(CONFIRM_BUTTON_PIN) == HIGH) delay(10);
-          digitalWrite(STATUS_LED_PIN, HIGH);
-          distributeKey(TARGET_PLC);
-          digitalWrite(STATUS_LED_PIN, LOW);
-          printStatus();
-        } else {
-          Serial.println("No key generated or already distributed to PLC.");
-        }
-        break;
-
-      case '2':
-        if (keyState == KeyState::GENERATED ||
-            keyState == KeyState::DISTRIBUTED_PLC) {
-          Serial.println("\n>> Distributing to PAW. Connect UART and press button.");
-          while (digitalRead(CONFIRM_BUTTON_PIN) == HIGH) delay(10);
-          digitalWrite(STATUS_LED_PIN, HIGH);
-          distributeKey(TARGET_PAW);
-          digitalWrite(STATUS_LED_PIN, LOW);
-          printStatus();
-        } else {
-          Serial.println("No key generated or already distributed to PAW.");
-        }
+      case '1': case '2':
+        // Serial1 sender removed (PRO-46 USB-C): distribution runs through
+        // the MPU UsbCdcDistributor (arm via Bridge, button, USB-C).
+        Serial.println("Serial1 distribution removed; use the MPU menu.");
+        printStatus();
         break;
 
       case 's': case 'S':
@@ -636,16 +591,8 @@ void loop() {
     }
   }
 
-  // MPU-requested distribution (requires physical button press)
-  if (pendingDistributionTarget != 0) {
-    if (digitalRead(CONFIRM_BUTTON_PIN) == LOW) {
-      digitalWrite(STATUS_LED_PIN, HIGH);
-      distributeKey(pendingDistributionTarget);
-      digitalWrite(STATUS_LED_PIN, LOW);
-      pendingDistributionTarget = 0;
-      printStatus();
-    }
-  }
+  // (Legacy MPU-pending UART block removed — the MPU flow now exports via
+  // Bridge RPC gated on the button timestamp above.)
 
   // LED heartbeat with timer debounce to avoid digitalWrite on every loop pass
   static uint32_t lastBlinkMs = 0;

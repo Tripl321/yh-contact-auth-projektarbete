@@ -49,6 +49,23 @@
 
 USB-anslutning till PAW och edge enforcement-nod foer nyckeldistribution. Inga SPI-kopplingar.
 
+### 3.1 USB-C-distributor (PRO-46 USB-C)
+
+Nyckeldistributionen körs av MPU-skriptets `UsbCdcDistributor` över USB-CDC
+(115200 baud) mot mottagarens USB-serieport:
+
+- Portval: explicit `/dev/ttyACM*`-sökväg vinner; annars accepteras exakt en
+  ansluten ACM-enhet (noll eller flera → fail closed, ingen gissning).
+- Ramar (identiska med legacy-UART-protokollet, nu över USB-CDC):
+  `0xA1+target` → `0xA2+device_id[4]` → `0xA3+len+key[16]+crc32-BE` →
+  `0xA4+hash[4]`, hashen verifieras mot MCU-avtrycket (konstant tid).
+- Flöde: Bridge-armering → fysisk UNO Q-knapp (5 s-fönster) → engångsexport
+  från MCU → USB-överföring → bekräftelse tillbaka (flyttar nyckeltillstånd).
+- Nyckelbyte lever endast transient i MPU-minnet (torkas i `finally`,
+  loggas/auditeras aldrig — endast avtryck). Timeout/CRC-fel/avbrott/
+  fel hash/avvikande svar → fail closed, ingen partiell nyckel lagras.
+- Legacy MCU Serial1-sändaren är borttagen — exakt en sändare existerar.
+
 ## 4. Fysisk montering
 
 (Fotografier av breadboards tillkommer i docs/assets/photos/)

@@ -32,8 +32,8 @@ graph TB
     PLC["PLC — Edge Enforcement<br/>RP2350 + Core1262 (LoRa)<br/>SPI1"]
     PAW["PAW — ID-bricka<br/>Feather RP2350 + Core1262 (SPI1)<br/>+ e-Paper (SPI0)"]
 
-    UNOQ -->|"UART — Key distribution<br/>(AES-128, 16 byte)"| PLC
-    UNOQ -->|"UART — Key distribution<br/>(AES-128, 16 byte)"| PAW
+    UNOQ -->|"USB-CDC — Key distribution<br/>(AES-128, 16 byte)"| PLC
+    UNOQ -->|"USB-CDC — Key distribution<br/>(AES-128, 16 byte)"| PAW
     PLC -->|"LoRa P2P — Challenge<br/>(128-bit nonce)"| PAW
     PAW -->|"LoRa P2P — Response<br/>(HMAC-SHA256, 32 byte)"| PLC
 ```
@@ -44,7 +44,7 @@ graph TB
 - MCU: STM32U585 (Arduino UNO Q)
 - MPU: QRB2210 (Linux, Arduino App Lab)
 - Roll: Trust root — genererar AES-128-nycklar med TRNG
-- Kommunikation: UART (Serial1 D0/D1) för nyckeldistribution
+- Kommunikation: USB-CDC-distributor (MPU, /dev/ttyACM*) för nyckeldistribution
 - Air-gap: Inget nätverksinterface aktivt
 - Audit log: SHA-256[:4] avtryck endast, aldrig nyckelmaterial
 
@@ -74,8 +74,8 @@ sequenceDiagram
     participant PAW as PAW (ID-bricka)
 
     Note over UNOQ,PAW: Fas 1 — Nyckelprovisionering
-    UNOQ->>PLC: UART — AES-128 nyckel (16 byte)
-    UNOQ->>PAW: UART — AES-128 nyckel (16 byte)
+    UNOQ->>PLC: USB-CDC — AES-128 nyckel (16 byte)
+    UNOQ->>PAW: USB-CDC — AES-128 nyckel (16 byte)
 
     Note over UNOQ,PAW: Fas 2 — Autentisering
     PLC->>PLC: Generera 128-bit nonce
@@ -100,8 +100,8 @@ sequenceDiagram
 ```mermaid
 graph LR
     A["TRNG<br/>STM32U585"] -->|"128-bit"| B["AES-128 Key<br/>(SRAM UNO Q)"]
-    B -->|"UART D0/D1"| C["PLC SRAM<br/>(RP2350)"]
-    B -->|"UART D0/D1"| D["PAW SRAM<br/>(RP2350)"]
+    B -->|"USB-CDC (MPU-distributor)"| C["PLC SRAM<br/>(RP2350)"]
+    B -->|"USB-CDC (MPU-distributor)"| D["PAW SRAM<br/>(RP2350)"]
     C -->|"HMAC-SHA256"| E["Challenge-Response<br/>over LoRa"]
     D -->|"HMAC-SHA256"| E
     F["Kraftbortfall"] -->|"Volatile SRAM"| G["Nyckel raderad<br/>(Fail-closed)"]
@@ -115,7 +115,7 @@ graph LR
 | Generering | STM32U585 TRNG (hårdvaruentropi) |
 | Längd | 128 bitar (AES-128) |
 | Lagring | SRAM (volatilt) — aldrig beständigt minne |
-| Distribution | UART (Serial1 D0/D1) — fysisk anslutning |
+| Distribution | USB-CDC via MPU-distributor — fysisk anslutning |
 | Audit | SHA-256[:4] avtryck i MPU-logg, aldrig nyckel |
 | Radering | Kraftbortfall raderar SRAM automatiskt |
 
@@ -128,16 +128,16 @@ graph TD
     subgraph "Lager 1 — MCU (STM32U585)"
         L1A["TRNG — Nyckelgenerering"]
         L1B["Secure Storage (SRAM)"]
-        L1C["UART — Nyckeldistribution"]
+        L1C["One-shot export (knapp + arming)"]
     end
     subgraph "Lager 2 — MPU (QRB2210/Linux)"
         L2A["Orkestrering UI"]
         L2B["Audit Log (avtryck)"]
-        L2C["Validering"]
+        L2C["Validering + USB-CDC-transport"]
     end
     subgraph "Lager 3 — Bridge RPC"
-        L3A["Status & bekräftelse"]
-        L3B["Aldrig nyckelmaterial"]
+        L3A["Arming, export, bekräftelse"]
+        L3B["Export bär nyckel en gång (transient)"]
     end
     L1A --> L1B --> L1C
     L1C -.->|"Bridge RPC"| L3A
@@ -149,9 +149,9 @@ graph TD
 
 | Lager | Komponent | Ansvar | Rör nyckel? |
 |-------|-----------|--------|-------------|
-| 1 | MCU (STM32U585) | TRNG, nyckellagring, UART-distribution | Ja — genererar och distribuerar |
-| 2 | MPU (QRB2210/Linux) | UI, audit log, validering | Nej — endast avtryck |
-| 3 | Bridge RPC | Status och bekräftelsemeddelanden | Nej — bär aldrig nyckel |
+| 1 | MCU (STM32U585) | TRNG, nyckellagring, one-shot export (knapp + arming) | Ja — genererar, lagrar, frigör en gång |
+| 2 | MPU (QRB2210/Linux) | UI, audit log, validering, USB-CDC-byttransport | Ja, transient i transport — torkas omedelbart, loggas aldrig |
+| 3 | Bridge RPC | Arming, one-shot export, bekräftelse | Ja, export-RPC bär nyckeln en gång per armering |
 
 Bridge RPC-bibliotek: `Bridge.begin()`, `Bridge.call()`, `Bridge.notify()`, `Bridge.provide()`, `Bridge.provide_safe()`
 
