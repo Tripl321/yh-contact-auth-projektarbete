@@ -4,43 +4,47 @@ Date: 2026-09-10. Bench: mamabear (Feather `...AE5E` on ttyACM1, UNO Q via
 openocd). Both devices restored to live firmware afterwards (MCU backup
 `535604750cd7b9b8`, PAW `lora-paw-restore.uf2`).
 
-## 1. E-paper diagnosis: panel alive, BUSY/RST found, CS wire missing
+## 1. E-paper recovery: wiring confirmed, panel executes (2026-09-10 pm)
 
-History: PRO-29 (Sep 9) verified the panel on CS=5/DC=26/RST=27/BUSY=29
-with visible output. Sep 10: BUSY=29 floats dead; something changed on the
-bench between the two dates.
+Manual continuity (PAW unpowered) confirms HAT CS→D5/GPIO5,
+HAT BUSY→A3/GPIO29 — the PRO-29 mapping
+(SCK=22, MOSI=23, CS=5, DC=26, RST=27, BUSY=29). PAW firmware already
+uses exactly this mapping: NO firmware pin change was needed.
 
-Probe (`/tmp/epdprobe`, off-tree bench tool, commands r/c/t/b/n/d over
-115200 baud USB serial) established on 2026-09-10 over ~10 flashes:
+Probe (`/tmp/epdprobe`, off-tree bench tool) ran ~10 flashes that morning
+and wrongly concluded BUSY=GPIO5. The known-good PRO-29 B V2 sequence
+(white clear → black checker + red border/text, `pro-29-epaper-bringup`
+branch) was then flashed and run on current wiring — panel EXECUTES and
+completes (BUSY HIGH after trigger, idle after 2800 ms, textbook). Full
+USB log kept in bench `/tmp/pro29log.txt`.
+USER ACTION: visually confirm white flash then checker + red border/text
+on the glass; only the human at the bench can close this loop.
 
-- Wide sweep (all free GPIOs, INPUT_PULLDOWN): only GPIO2/3 (I2C pull-ups)
-  and GPIO8 (LoRa RESET pull-up, matches README D8) idle HIGH. GPIO7/29
-  (all documented BUSY pins) float LOW — nothing there.
-- DRAIN (5 s pulldown, kills passive charge): GPIO5 stays HIGH = actively
-  driven. First GPIO27-LOW transition releases GPIO5 to LOW permanently
-  (repeatable): panel BUSY → GPIO5, panel RST → GPIO27. The output stage
-  works (releases on reset), so the panel is powered and alive.
-- SPI search with BUSY=5/RST=27 over CS × DC {24,26,29,28,12–21,2,3,4,6,9}:
-  30+ combos, all silent (no BUSY response to init + update trigger).
-  DIN=23/CLK=22 trusted from PRO-29.
+Why the morning pointed at GPIO5 (probe flaw analysis — read before
+trusting `/tmp/epdprobe` output):
+- F1 wrong oracle: a healthy SSD1681 shows NOTHING on BUSY from a reset
+  pulse alone, so Phase A silence on GPIO29 was correct behavior
+  misread as "absent". Plain INPUT floats HIGH ("stuck HIGH" in paw-main);
+  INPUT_PULLDOWN reads LOW ("silent" in the probe) — same loose wire,
+  opposite readings. The BUSY wire was intermittent that morning;
+  reseating restored it (continuity + working sequence prove it now).
+- F2 single-sample attribution: one coupling coincidence (27→5) was
+  over-weighted; the toggle test correctly rejected a hard short but the
+  earlier result was kept anyway.
+- F3 driving candidate pins that may be panel OUTPUTs (GPIO5 as CS)
+  risks contention/wedging the DUT mid-diagnosis. Never drive a pin any
+  live hypothesis assigns as output.
+- F4 first-coherent-story lock-in: DisplayFind silence should have killed
+  the BUSY=5 theory instead of widening the CS search.
+- Open (mechanism unexplained, recovery-irrelevant): GPIO5 read actively
+  HIGH through a 5 s pulldown drain that morning, released once by a
+  GPIO27-LOW. Leading hypothesis is a HAT CS pull-up plus an unresolved
+  release path; NOT investigated further once continuity + the working
+  sequence decided the matter.
 
-Conclusion: HAT BUSY is on Feather D5 and HAT RST on A1, but HAT CS is NOT
-on any tried pin — its wire is most likely dangling/loose (panel never
-selected, hence deaf), and Feather D5 must NEVER be driven as CS output
-again: all current firmware (paw-main + old probes) drives GPIO5 as CS,
-fighting the BUSY output and wedging the panel HIGH. That contention is
-the "BUSY stuck HIGH" symptom, not a dead panel.
-
-Needed hands on the bench (nothing more can be done remotely):
-1. Look at the 8 HAT→Feather wires; report/confirm each landing. Prime
-   suspect: HAT CS dangling or mis-landed; HAT BUSY on D5; HAT RST on A1.
-2. Reseat HAT/FPC, verify 3V3, power-cycle the Feather (USB unplug 10 s —
-   unwedges the controller fully).
-3. Re-flash the probe (`/tmp/epdprobe.uf2` on mamabear, or rebuild
-   `/tmp/epdprobe/epdprobe.ino`), send `d`: a correct CS shows
-   `saw_high=1` + multi-second `busy_ms`. Only then unify the pin docs
-   (README vs docs/04 vs paw-main vs architektur-02 all disagree) and fix
-   paw-main (BUSY A3→D5, CS off GPIO5, DC/RST per probe result).
+Superseded by the recovery above — kept as a record of the wrong turn:
+the "electrically absent" verdict and the CS-dangling theory were
+artefacts of F1–F4, not of the hardware.
 
 ## 2. Phase 2 PAW envelope: proven on hardware
 
