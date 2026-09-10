@@ -34,8 +34,11 @@ _C_SOURCES = [
 
 DOMAIN = b'SHALLOT-ENV1'
 VER = 0x01
-KEK_INFO = b'SHALLOT-ENV1/KEK'
+KEK_INFO_V2 = b'SHALLOT-ENV1/KEK-v2'
+# v0.1 label retained only to prove domain separation (old KEKs never collide).
+KEK_INFO_V1 = b'SHALLOT-ENV1/KEK'
 E1_TAG, E2_TAG = 0xB1, 0xB2
+E1_LEN, E2_LEN, AAD_LEN = 45, 81, 106
 
 
 class EnvelopeError(Exception):
@@ -79,6 +82,7 @@ _lib.env_hkdf.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p,
                           ctypes.c_char_p, ctypes.c_size_t]
 _lib.env_hkdf.restype = None
 _lib.env_hkdf_kek.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
+                              ctypes.c_char_p, ctypes.c_size_t,
                               ctypes.c_char_p, ctypes.c_size_t]
 _lib.env_hkdf_kek.restype = None
 
@@ -119,9 +123,15 @@ def hkdf(salt, ikm, info, out_len):
     return out.raw
 
 
-def hkdf_kek(shared):
+def kek_salt(aad):
+    """Spec v0.2: salt is SHA256 of the session AAD (transcript hash)."""
+    return hashlib.sha256(bytes(aad)).digest()
+
+
+def hkdf_kek(shared, salt, info=KEK_INFO_V2):
     out = ctypes.create_string_buffer(16)
-    _lib.env_hkdf_kek(out, bytes(shared), KEK_INFO, len(KEK_INFO))
+    _lib.env_hkdf_kek(out, bytes(shared), bytes(salt), len(bytes(salt)),
+                      bytes(info), len(bytes(info)))
     return out.raw
 
 
@@ -145,9 +155,39 @@ def verify_value(pub_p, pub_m):
     return hashlib.sha256(bytes([E1_TAG]) + bytes(pub_p) + bytes(pub_m)).hexdigest()[:16]
 
 
-def encode_e1(pub_p, nonce_p):
+def encode_e1(device_id, pub_p, nonce_p):
+    assert len(bytes(device_id)) == 4
     assert len(pub_p) == 32 and len(nonce_p) == 8
-    return bytes([E1_TAG]) + bytes(pub_p) + bytes(nonce_p)
+    return (bytes([E1_TAG]) + bytes(device_id) + bytes(pub_p) +
+            bytes(nonce_p))
+
+
+def parse_e1(frame):
+    """Strict 45 B E1 parse (spec §4)."""
+    frame = bytes(frame)
+    if len(frame) != 45 or frame[0] != E1_TAG:
+        raise EnvelopeError('bad E1 frame')
+    return {'device_id': frame[1:5], 'pub_p': frame[5:37],
+            'nonce_p': frame[37:45]}
+
+
+def frame_line(prefix, blob):
+    """USB hex-line framing (spec §4): 'E1:<hex>\\n' etc."""
+    return f'{prefix}:{bytes(blob).hex()}\n'
+
+
+def parse_line(line, prefix, blob_len):
+    """Strict USB hex-line parse; raises on any deviation."""
+    line = str(line).strip()
+    if not line.startswith(prefix + ':'):
+        raise EnvelopeError('bad line prefix')
+    body = line[len(prefix) + 1:]
+    if len(body) != 2 * blob_len:
+        raise EnvelopeError('bad line length')
+    try:
+        return bytes.fromhex(body)
+    except ValueError:
+        raise EnvelopeError('bad line hex')
 
 
 def parse_e2(frame):
@@ -160,17 +200,20 @@ def parse_e2(frame):
             'ct': frame[49:65], 'tag': frame[65:81]}
 
 
-def mcu_wrap(target_id, device_id, epoch, op_key, pub_p, nonce_p, sec_m, nonce_m):
-    """MCU side: DH + zero-check + KEK + seal. Returns E2 bytes + VERIFY."""
-    shared = x25519_dh(sec_m, pub_p)
+def mcu_wrap(target_id, e1, epoch, op_key, sec_m, nonce_m):
+    """MCU side mirror of envelopeWrap: parses E1, then DH + zero-check +
+    KEK + seal. Returns E2 bytes + VERIFY."""
+    f1 = parse_e1(e1)
+    shared = x25519_dh(sec_m, f1['pub_p'])
     if is_all_zero(shared):
         raise EnvelopeError('degenerate shared secret (MCU)')
     pub_m = x25519_pub(sec_m)
-    aad = build_aad(target_id, device_id, epoch, pub_p, pub_m, nonce_p, nonce_m)
-    ct, tag = gcm_seal(hkdf_kek(shared), nonce_m, aad, op_key)
+    aad = build_aad(target_id, f1['device_id'], epoch,
+                    f1['pub_p'], pub_m, f1['nonce_p'], nonce_m)
+    ct, tag = gcm_seal(hkdf_kek(shared, kek_salt(aad)), nonce_m, aad, op_key)
     e2 = (bytes([E2_TAG]) + struct.pack('>I', epoch) + pub_m +
           bytes(nonce_m) + ct + tag)
-    return e2, verify_value(pub_p, pub_m)
+    return e2, verify_value(f1['pub_p'], pub_m)
 
 
 class PawSession:
@@ -185,7 +228,7 @@ class PawSession:
         self.last_epoch = None
 
     def e1(self):
-        return encode_e1(self.pub_p, self.nonce_p)
+        return encode_e1(self.device_id, self.pub_p, self.nonce_p)
 
     def open(self, e2):
         f = parse_e2(e2)
@@ -196,7 +239,8 @@ class PawSession:
             raise EnvelopeError('degenerate shared secret (PAW)')
         aad = build_aad(self.target_id, self.device_id, f['epoch'],
                         self.pub_p, f['pub_m'], self.nonce_p, f['nonce_m'])
-        pt = gcm_open(hkdf_kek(shared), f['nonce_m'], aad, f['ct'], f['tag'])
+        pt = gcm_open(hkdf_kek(shared, kek_salt(aad)), f['nonce_m'], aad,
+                      f['ct'], f['tag'])
         if pt is None:
             raise EnvelopeError('tag verify failed')
         self.last_epoch = f['epoch']

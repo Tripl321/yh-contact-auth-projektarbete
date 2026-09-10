@@ -206,6 +206,7 @@ def print_menu():
     print("  5 — Show key fingerprint")
     print("  6 — Validate provisioning (both nodes)")
     print("  7 — Print audit log")
+    print("  8 — Envelope fixture session (TEST-ONLY, needs fixture MCU+PAW)")
     print("  q — Quit")
     print("===========================================\n")
 
@@ -224,6 +225,127 @@ def print_audit_log():
             det = entry.get("details", {})
             print(f"  {ts} | {evt} | {det}")
     print("==================\n")
+
+
+# --- Phase 2 envelope relay (fixture-only, TEST-ONLY) ---
+#
+# Relays PUBLIC fields only between PAW (USB serial, hex lines) and MCU
+# (Bridge RPC, hex strings): E1/E2 envelopes, VERIFY comparison value,
+# epoch, and the E3 fingerprint. This module never handles key material —
+# no raw keys, no wrapping keys, no DH output, no ephemeral secrets
+# (source-guarded by tests/test_envelope_phase2.py). Requires fixture builds
+# (ENVELOPE_PHASE2) with the MCU button held at boot; anything else aborts.
+
+ENVELOPE_E1_LEN = 45
+ENVELOPE_E2_LEN = 81
+
+
+def _envelope_read_line(ser, prefix, hex_len, timeout_s):
+    """Read one strict '<prefix><hex>' line; logs/interleavings skipped."""
+    deadline = time.time() + timeout_s
+    buf = b""
+    while time.time() < deadline:
+        chunk = ser.read(1)
+        if not chunk:
+            continue
+        if chunk in b"\r\n":
+            if not buf:
+                continue
+            line = buf.decode("ascii", errors="replace")
+            buf = b""
+            if line.startswith(prefix) and len(line) == len(prefix) + hex_len:
+                body = line[len(prefix):]
+                if all(c in "0123456789abcdefABCDEF" for c in body):
+                    return body.lower()
+            # Non-matching line (log output): ignore, keep waiting.
+            continue
+        buf += chunk
+        if len(buf) > 200:
+            buf = b""
+    return None
+
+
+def envelope_fixture_session(serial_port, target_id, timeout_s=15):
+    """Run one TEST-ONLY fixture envelope session.
+
+    Args:
+        serial_port: PAW USB serial device (e.g. /dev/ttyACM0).
+        target_id: 1 for PLC, 2 for PAW.
+    Returns True iff the MCU confirms the PAW fingerprint.
+    """
+    import serial
+
+    target_name = TARGET_NAMES.get(target_id, f"Unknown({target_id})")
+    if target_id not in TARGET_NAMES:
+        print(f"[ENVELOPE] Invalid target {target_id}.")
+        return False
+
+    try:
+        armed = Bridge.call("env_fixture_armed")
+    except Exception as e:
+        print(f"[ENVELOPE] MCU envelope RPC unavailable ({e}).")
+        return False
+    if not armed:
+        print("[ENVELOPE] Refused: MCU not in fixture mode "
+              "(hold button at MCU boot, flash ENVELOPE_PHASE2 build).")
+        write_audit_log("envelope_refused", {"reason": "mcu_not_fixture"})
+        return False
+
+    try:
+        ser = serial.Serial(serial_port, 115200, timeout=0.1)
+    except Exception as e:
+        print(f"[ENVELOPE] Cannot open {serial_port} ({e}).")
+        return False
+
+    ok = False
+    try:
+        ser.write(b"FIXTURE\n")
+        ser.write(b"ENVELOPE_START\n")
+        e1_hex = _envelope_read_line(ser, "E1:", 2 * ENVELOPE_E1_LEN, timeout_s)
+        if e1_hex is None:
+            print("[ENVELOPE] No E1 from PAW (fixture not armed?).")
+            write_audit_log("envelope_timeout", {"stage": "E1"})
+            return False
+
+        resp = Bridge.call("env_wrap", f"{e1_hex}:{target_id}")
+        if not resp or "." not in resp:
+            print("[ENVELOPE] MCU wrap refused.")
+            write_audit_log("envelope_refused", {"reason": "mcu_wrap"})
+            return False
+        e2_hex, verify = resp.split(".", 1)
+        if len(e2_hex) != 2 * ENVELOPE_E2_LEN or len(verify) != 16:
+            print("[ENVELOPE] Malformed MCU response.")
+            return False
+        print(f"[ENVELOPE] MCU VERIFY: {verify} "
+              f"(compare with PAW VERIFY below)")
+
+        ser.write(f"E2:{e2_hex}\n".encode())
+        e3_hex = _envelope_read_line(ser, "E3:", 8, timeout_s)
+        paw_verify = _envelope_read_line(ser, "VERIFY:", 16, 5)
+        if e3_hex is None:
+            print("[ENVELOPE] No E3 from PAW (tag verify failed on PAW?).")
+            write_audit_log("envelope_timeout", {"stage": "E3"})
+            return False
+        print(f"[ENVELOPE] PAW VERIFY: {paw_verify}")
+        if paw_verify != verify:
+            print("[ENVELOPE] VERIFY MISMATCH — operator aborts.")
+            write_audit_log("envelope_verify_mismatch",
+                            {"mcu": verify, "paw": paw_verify})
+            return False
+
+        confirmed = Bridge.call("env_confirm", e3_hex)
+        write_audit_log("envelope_fixture_session", {
+            "fixture": "TEST-ONLY",
+            "target": target_name,
+            "verify": verify,
+            "result": "confirmed" if confirmed else "fingerprint_mismatch",
+        })
+        print(f"[ENVELOPE] TEST-ONLY session "
+              f"{'CONFIRMED' if confirmed else 'FAILED (fingerprint)'}")
+        ok = bool(confirmed)
+    finally:
+        ser.close()
+    return ok
 
 
 def loop():
@@ -247,6 +369,10 @@ def loop():
             validate_provisioning()
         elif cmd == "7":
             print_audit_log()
+        elif cmd == "8":
+            port = input("PAW serial port [/dev/ttyACM0]: ").strip() or "/dev/ttyACM0"
+            tgt = input("Target 1=PLC 2=PAW [2]: ").strip() or "2"
+            envelope_fixture_session(port, int(tgt))
         elif cmd == "q":
             print("Exiting.")
             break

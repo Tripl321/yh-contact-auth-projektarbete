@@ -1,8 +1,10 @@
 # 12 — Wrapped-key envelope protocol (USB-C provisioning)
 
-Status: spec v0.1 for review. No firmware implements this yet; do not build
-against it until the review is approved. Normative test vectors live in
-`tests/test_envelope.py` and drive the real C in `libraries/EnvelopeCrypto`.
+Status: spec v0.2 approved for Phase 2 fixture builds. Phase 2 firmware is
+feature-flagged (`ENVELOPE_PHASE2`, default OFF) and fixture-only: no
+production operational key is provisioned until the e-paper ceremony works
+(§9). Normative test vectors live in `tests/test_envelope.py` and drive the
+real C in `libraries/EnvelopeCrypto`.
 
 ## 1. Goal and non-goals
 
@@ -30,19 +32,30 @@ guard will enforce the absence of key-named variables in the MPU path.
 - `device_id`: 4 bytes, PAW's existing device id (e.g. `50 41 57 01`).
 - All multi-byte integers big-endian on the wire.
 
-## 4. Messages (fixed sizes, USB-CDC framing of the 0xA1 family)
+## 4. Messages (fixed sizes)
 
-E1 PAW→MPU `PUBKEY` (41 B): `[0xB1][pub_P 32][nonce_P 8]`.
+Binary codec (MCU-internal, `envelope.h`, golden vector in
+`tests/test_envelope.py`):
+
+E1 `PUBKEY` (45 B): `[0xB1][device_id 4][pub_P 32][nonce_P 8]`.
 PAW generates a fresh `sec_P` (32 B TRNG) and fresh `nonce_P` (8 B TRNG)
-per attempt and computes `pub_P = X25519(sec_P)`.
+per attempt and computes `pub_P = X25519(sec_P)`. The PAW asserts its own
+`device_id` here so the MCU can bind it into the AAD; the PAW re-checks
+with its true id at open, so a swapped E1 fails the tag.
 
-E2 MPU→PAW `ENVELOPE` (81 B):
+E2 `ENVELOPE` (81 B):
 `[0xB2][epoch 4][pub_M 32][nonce_M 12][ct 16][tag 16]`.
 MCU generated fresh `sec_M` (32 B TRNG) and fresh `nonce_M` (12 B TRNG,
 also the GCM IV) and assigned `epoch` (§7).
 
-E3 PAW→MPU `STORED`: existing `0xA4` + 4-byte fingerprint of the UNWRAPPED
-key — byte-identical semantics to today, so MCU verification is unchanged.
+E3 `STORED`: the 4-byte fingerprint of the UNWRAPPED key — same semantics
+as the legacy `0xA4` confirmation, so MCU verification logic is unchanged.
+
+USB-CDC framing (MPU↔device leg): self-delimiting hex lines, exact lengths,
+so binary frames survive a log-sharing stream:
+`E1:<90 hex>\n`, `E2:<162 hex>\n`, `E3:<8 hex>\n`, `VERIFY:<16 hex>\n`.
+Session control lines: `FIXTURE\n` (arm fixture mode), `ENVELOPE_START\n`
+(begin attempt). Anything else on the line channel is ignored.
 
 ## 5. Key schedule
 
@@ -50,8 +63,16 @@ key — byte-identical semantics to today, so MCU verification is unchanged.
 2. Both sides apply the all-zero check: OR-accumulate the 32 shared bytes in
    a data-independent loop; abort the session if the result is zero
    (RFC 7748 §6 guidance; the library does not do this for you).
-3. `KEK = HKDF-SHA256(shared, salt = 32 zero bytes, info = "SHALLOT-ENV1/KEK")[0:16]`.
-4. `ct, tag = AES-128-GCM-Enc(KEK, IV = nonce_M, pt = operational_key, aad = AAD)`.
+3. `salt = SHA256(AAD)` (32 B) — the salt is the hash of the session
+   transcript as fixed in §6, so every session binds a distinct salt derived
+   from both nonces, both pubkeys, epoch, and device binding. No zero salt.
+4. `KEK = HKDF-SHA256(shared, salt = salt, info = "SHALLOT-ENV1/KEK-v2")[0:16]`.
+   The `-v2` label is a distinct protocol label: KEKs derived under the old
+   v0.1 parameters (zero salt, `.../KEK` label) never collide with v0.2 KEKs.
+5. `ct, tag = AES-128-GCM-Enc(KEK, IV = nonce_M, pt = operational_key, aad = AAD)`.
+
+Salt and info are public values; secrecy rests on `shared` alone. Because the
+salt commits to the full transcript, a KEK is useless outside its session.
 
 ## 6. Associated data (everything public, all bound)
 
@@ -83,15 +104,18 @@ shows its copy, the operator compares before pressing the provision button.
 
 ## 9. Confirmation ceremony
 
-Primary (production gate): PAW renders VERIFY on the e-paper; operator
-compares with the MPU UI and confirms with the provision button. The e-paper
-is currently dead (BUSY stuck HIGH), so this ceremony is NOT yet runnable.
+Primary and only production ceremony: PAW renders VERIFY on the e-paper;
+operator compares with the MPU UI and confirms with the provision button.
+The e-paper is currently dead (BUSY stuck HIGH), so this ceremony is NOT yet
+runnable — and therefore no production operational key may be provisioned.
 
-Interim (explicitly incomplete, secured fixture only): TOFU inside a
-physically secured fixture + mandatory button press + audit of both
-fingerprints. This provides no visual proof against a substituted envelope
-and must not be presented as the full ceremony. Restoring the display is a
-hard gate for production use.
+Test-only fixture flow (never a production fallback): inside a physically
+secured fixture, with the build flag on and the fixture interlock engaged,
+an operator may run the envelope without the visual check for bring-up and
+regression testing only. Fixture runs must use test keys, must be labelled
+`TEST-ONLY` in the audit log, and their keys must never leave the fixture.
+Any proposal to use the fixture flow outside the fixture is rejected by this
+spec — restore the display instead.
 
 Rationale for requiring the display: the Feather exposes no other PAW-side
 output capable of carrying 64 bits (no buttons besides RESET, LED blinking
@@ -112,11 +136,16 @@ because none on current hardware meets the bar.
 Timeouts, retry limits, and audit-log format are Phase 2 firmware work and
 must match this table.
 
-## 11. Next phases (proposal, needs review approval)
+## 11. Phases (binding order)
 
-- Phase 2: MCU wrap + PAW open firmware behind a compile flag; MPU
-  public-fields-only relay with source guard; fixture end-to-end with
-  button + audit; display restoration in parallel.
+- Phase 2 (in progress): MCU wrap + PAW open firmware behind
+  `ENVELOPE_PHASE2` (default OFF); MPU public-fields-only relay with source
+  guard; fixture end-to-end with TEST-ONLY keys + audit; display restoration
+  in parallel. Flag on is allowed in the fixture only.
 - Phase 3: production ceremony on restored e-paper; negative bench (tamper,
   replay, wrong-device, wrong-epoch rigs); audit review.
-- Phase 4: remove legacy raw-key USB path only after Phase 3 sign-off.
+- Phase 4 (gate, before any non-fixture enablement): remove all remaining
+  raw-key export code paths (raw UART key sender, any Bridge/MPU key
+  handling — including the closed PR #15 line, which must never be merged),
+  then re-verify. Phase 2 MUST NOT be enabled outside fixtures while any
+  raw-key export path still exists in the tree.

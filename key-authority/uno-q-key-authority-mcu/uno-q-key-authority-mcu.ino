@@ -38,6 +38,19 @@
 #include <Arduino_RouterBridge.h>
 
 // =============================================================
+// Phase 2 envelope (docs/12-envelope-protocol.md, spec v0.2)
+// =============================================================
+// Compile-time feature flag, default OFF. Enabling is allowed in the
+// secured fixture only, with TEST-ONLY keys (see §9/§11: the fixture flow
+// is test-only, never a production fallback).
+// When enabled, the raw-key UART sender below is compiled OUT (fail-closed
+// against accidental raw distribution from envelope builds).
+#define ENVELOPE_PHASE2 0
+#if ENVELOPE_PHASE2
+#include "envelope.h"
+#endif
+
+// =============================================================
 // Constants
 // =============================================================
 
@@ -387,6 +400,13 @@ static inline bool waitForBytes(uint8_t* buffer, size_t count, uint32_t timeoutM
 }
 
 static bool distributeKey(uint8_t targetId) {
+#if ENVELOPE_PHASE2
+  // Raw-key sender is compiled out of envelope builds: fixture builds can
+  // only move keys inside sealed envelopes (spec §11, Phase 4 gate).
+  (void)targetId;
+  Serial.println("[PRO-46] Raw distribution disabled in envelope builds.");
+  return false;
+#else
   if (keyState != KeyState::GENERATED &&
       keyState != KeyState::DISTRIBUTED_PLC &&
       keyState != KeyState::DISTRIBUTED_PAW) {
@@ -498,7 +518,139 @@ static bool distributeKey(uint8_t targetId) {
   Bridge.notify("key_authority_event", "distribution_success",
                String(targetName) + " provisioned successfully");
   return true;
+#endif  // !ENVELOPE_PHASE2
 }
+
+// =============================================================
+// Phase 2 envelope wrap (spec v0.2 §4-§7). Fixture-only, TEST-ONLY keys.
+// The MPU/Bridge sees E1/E2 hex (public fields) and VERIFY only — never
+// the operational key, KEK, shared secret, or ephemeral secrets.
+// =============================================================
+#if ENVELOPE_PHASE2
+
+// Fixture interlock: latched in setup() iff the confirm button is held at
+// boot. Envelope RPCs refuse everything unless latched (SRAM, reboot clears).
+static bool envFixtureMode = false;
+// SRAM epoch counter, first wrap uses epoch 1 (spec §7).
+static uint32_t envEpoch = 0;
+// Fingerprint of the last wrapped key, for E3 confirmation (public, 4 B).
+static uint8_t envLastFingerprint[KEY_HASH_SIZE];
+static bool envHasWrapped = false;
+
+static inline void envLatchFixtureMode() {
+  envFixtureMode = (digitalRead(CONFIRM_BUTTON_PIN) == LOW);
+  if (envFixtureMode) {
+    Serial.println("[ENV] TEST-ONLY fixture mode latched (button held at boot).");
+  }
+}
+
+static inline int envHexVal(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// Strict hex decode: exactly outLen bytes from 2*outLen hex chars.
+static bool envHexDecode(const String &hex, uint8_t *out, size_t outLen) {
+  if (hex.length() != (int)(2 * outLen)) return false;
+  for (size_t i = 0; i < outLen; i++) {
+    int hi = envHexVal(hex.charAt(2 * i));
+    int lo = envHexVal(hex.charAt(2 * i + 1));
+    if (hi < 0 || lo < 0) return false;
+    out[i] = (uint8_t)((hi << 4) | lo);
+  }
+  return true;
+}
+
+static String envHexEncode(const uint8_t *data, size_t len) {
+  String s;
+  s.reserve(2 * len + 1);
+  for (size_t i = 0; i < len; i++) {
+    s += HEX_CHARS[(data[i] >> 4) & 0x0F];
+    s += HEX_CHARS[data[i] & 0x0F];
+  }
+  return s;
+}
+
+static inline void envWipe(void *p, size_t n) {
+  volatile uint8_t *v = (volatile uint8_t *)p;
+  while (n--) *v++ = 0;
+}
+
+// Wrap one envelope. e1[45] in, e2[81] + verify17 out. Returns true on
+// success. Operational key is fresh TRNG per wrap (TEST-ONLY fixture key).
+// The device_id is PAW-asserted via E1 and bound into the AAD; the PAW
+// re-checks with its true id at open, so a swapped E1 fails closed.
+static bool envelopeWrap(const uint8_t e1[ENV_E1_LEN], uint8_t targetId,
+                         uint8_t e2[ENV_E2_LEN], char verify17[ENV_VERIFY_LEN + 1]) {
+  if (!envFixtureMode) {
+    Serial.println("[ENV] Refused: not in fixture mode.");
+    return false;
+  }
+  if (targetId != TARGET_PLC && targetId != TARGET_PAW) return false;
+
+  uint8_t devId[4], pubP[ENV_PUB_LEN], nonceP[ENV_NONCE_P];
+  if (!env_parse_e1(e1, ENV_E1_LEN, devId, pubP, nonceP)) {
+    Serial.println("[ENV] Refused: malformed E1.");
+    return false;
+  }
+
+  uint8_t secM[ENV_SEC_LEN], nonceM[ENV_NONCE_M];
+  uint8_t opKey[AES_KEY_SIZE];
+  if (!generateSecureRandomBytes(secM, sizeof(secM)) ||
+      !generateSecureRandomBytes(nonceM, sizeof(nonceM)) ||
+      !generateSecureRandomBytes(opKey, sizeof(opKey))) {
+    Serial.println("[ENV] TRNG failed, aborting (fail-closed).");
+    envWipe(secM, sizeof(secM));
+    envWipe(nonceM, sizeof(nonceM));
+    envWipe(opKey, sizeof(opKey));
+    return false;
+  }
+
+  uint8_t shared[ENV_SEC_LEN], pubM[ENV_PUB_LEN];
+  bool ok = false;
+  do {
+    if (!env_x25519_dh(secM, pubP, shared)) break;
+    if (env_is_all_zero(shared, sizeof(shared))) {
+      Serial.println("[ENV] Degenerate shared secret, aborting.");
+      break;
+    }
+    if (!env_x25519_pub(secM, pubM)) break;
+    uint32_t epoch = ++envEpoch;  // first wrap: epoch 1
+    uint8_t aad[ENV_AAD_LEN], salt[ENV_SALT_LEN], kek[AES_KEY_SIZE];
+    env_build_aad(targetId, devId, epoch, pubP, pubM, nonceP, nonceM, aad);
+    env_kek_salt(aad, salt);
+    env_derive_kek(shared, salt, kek);
+    uint8_t ct[AES_KEY_SIZE], tag[ENV_TAG_LEN];
+    env_seal(kek, nonceM, aad, sizeof(aad), opKey, ct, tag);
+    env_encode_e2(epoch, pubM, nonceM, ct, tag, e2);
+    env_verify_hex(pubP, pubM, verify17);
+    computeKeyHash(opKey, envLastFingerprint);
+    envHasWrapped = true;
+    envWipe(ct, sizeof(ct));
+    envWipe(tag, sizeof(tag));
+    envWipe(kek, sizeof(kek));
+    envWipe(aad, sizeof(aad));
+    envWipe(salt, sizeof(salt));
+    ok = true;
+    Serial.print("[ENV] Wrapped TEST-ONLY key, epoch ");
+    Serial.print(epoch);
+    Serial.print(", VERIFY ");
+    Serial.println(verify17);
+    Bridge.notify("key_authority_event", "envelope_wrapped",
+                  String("TEST-ONLY epoch ") + String(epoch));
+  } while (0);
+
+  envWipe(secM, sizeof(secM));
+  envWipe(nonceM, sizeof(nonceM));
+  envWipe(opKey, sizeof(opKey));
+  envWipe(shared, sizeof(shared));
+  envWipe(pubP, sizeof(pubP));
+  return ok;
+}
+
+#endif  // ENVELOPE_PHASE2
 
 // =============================================================
 // Bridge RPC — MPU communication (status only, no key material)
@@ -533,6 +685,56 @@ static void setupBridgeRPC() {
     pendingDistributionTarget = targetId;
     return true;
   });
+
+#if ENVELOPE_PHASE2
+  // Envelope RPCs: hex-encoded public fields only (E1 in, E2 out).
+  // env_wrap takes "<e1hex>:<targetId>" and returns "<e2hex>.<verify16>"
+  // or "" on any failure. No key material crosses the Bridge.
+  Bridge.provide_safe("env_fixture_armed", []() -> bool {
+    return envFixtureMode;
+  });
+
+  Bridge.provide_safe("env_wrap", [](String req) -> String {
+    int sep = req.indexOf(':');
+    if (sep < 0) return String("");
+    String e1hex = req.substring(0, sep);
+    uint8_t targetId = (uint8_t)req.substring(sep + 1).toInt();
+    uint8_t e1[ENV_E1_LEN];
+    if (!envHexDecode(e1hex, e1, sizeof(e1))) {
+      Serial.println("[ENV] Refused: malformed E1 hex.");
+      return String("");
+    }
+    uint8_t e2[ENV_E2_LEN];
+    char verify17[ENV_VERIFY_LEN + 1];
+    if (!envelopeWrap(e1, targetId, e2, verify17)) {
+      envWipe(e1, sizeof(e1));
+      return String("");
+    }
+    envWipe(e1, sizeof(e1));
+    String out = envHexEncode(e2, sizeof(e2));
+    envWipe(e2, sizeof(e2));
+    out += '.';
+    out += verify17;
+    return out;
+  });
+
+  // env_confirm compares the PAW-returned E3 hash against the last wrapped
+  // key fingerprint (constant-time). Both are public fingerprints.
+  Bridge.provide_safe("env_confirm", [](String hashHex) -> bool {
+    if (!envHasWrapped) return false;
+    uint8_t claimed[KEY_HASH_SIZE];
+    if (!envHexDecode(hashHex, claimed, sizeof(claimed))) return false;
+    volatile uint8_t diff = 0;
+    for (int i = 0; i < KEY_HASH_SIZE; i++) diff |= claimed[i] ^ envLastFingerprint[i];
+    envWipe(claimed, sizeof(claimed));
+    if (diff == 0) {
+      Bridge.notify("key_authority_event", "envelope_confirmed",
+                    "TEST-ONLY envelope confirmed");
+      return true;
+    }
+    return false;
+  });
+#endif  // ENVELOPE_PHASE2
 }
 
 // =============================================================
@@ -576,6 +778,9 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
 
   crc32_init();
+#if ENVELOPE_PHASE2
+  envLatchFixtureMode();
+#endif
   setupBridgeRPC();
 
   delay(2000);

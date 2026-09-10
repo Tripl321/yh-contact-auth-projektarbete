@@ -31,6 +31,18 @@
 #include <DenUartProtocol.h>  // PRO-84/87: dock framing from shared module
 
 // =============================================================
+// Phase 2 envelope (docs/12-envelope-protocol.md, spec v0.2)
+// =============================================================
+// Compile-time feature flag, default OFF. Enabling is allowed in the
+// secured fixture only, with TEST-ONLY keys (fixture flow is test-only,
+// never a production fallback). When enabled, raw USB provisioning below
+// is compiled OUT and the envelope path owns USB provisioning.
+#define ENVELOPE_PHASE2 0
+#if ENVELOPE_PHASE2
+#include <envelope.h>
+#endif
+
+// =============================================================
 // Configuration
 // =============================================================
 
@@ -694,6 +706,18 @@ static uint8_t provBuf[PROV_KEYDATA_LEN];
 static uint8_t provGot = 0;
 
 static uint8_t pollProvisioning() {
+#if ENVELOPE_PHASE2
+    // Raw-key USB provisioning is compiled out of envelope builds: fixture
+    // builds can only receive keys inside sealed envelopes (spec §11 gate).
+    static bool envRawDisabledLogged = false;
+    if (!envRawDisabledLogged) {
+        Serial.println("[PRO-48] Raw provisioning disabled in envelope builds.");
+        envRawDisabledLogged = true;
+    }
+    // Drain USB so stale raw bytes can never be staged later.
+    while (Serial.available()) (void)Serial.read();
+    return PROV_FAILED;
+#else
     if (provPhase == PROV_PH_HANDSHAKE) {
         // Scan pairs exactly like the original step 1 (non-matching pairs
         // are skipped, same as before).
@@ -782,7 +806,215 @@ static uint8_t pollProvisioning() {
     provGot = 0;
     provPhase = PROV_PH_HANDSHAKE;
     return outcome;
+#endif  // !ENVELOPE_PHASE2
 }
+
+// =============================================================
+// Phase 2 envelope open — fixture-only, TEST-ONLY keys (spec v0.2)
+// =============================================================
+//
+// USB framing is hex lines (self-delimiting amid log output):
+//   PAW -> MPU: "E1:<90 hex>\n"   (45-byte E1, device_id asserted)
+//   MPU -> PAW: "E2:<162 hex>\n"  (81-byte E2)
+//   PAW -> MPU: "E3:<8 hex>\n"    (4-byte unwrapped-key fingerprint)
+//   PAW -> MPU: "VERIFY:<16 hex>\n" (operator comparison value)
+// Text commands (fixture interlock + session start):
+//   "FIXTURE\n"         arm fixture mode (SRAM, reboot clears)
+//   "ENVELOPE_START\n"  fresh sec_P/nonce_P, emit E1, await E2
+#if ENVELOPE_PHASE2
+
+#define ENV_PH_IDLE 0
+#define ENV_PH_E2   1
+#define ENV_E2_TIMEOUT_MS 10000
+
+static bool envFixtureMode = false;
+static uint8_t envSecP[ENV_SEC_LEN];
+static bool envHaveSec = false;
+static uint8_t envNonceP[ENV_NONCE_P];
+static uint8_t envPubP[ENV_PUB_LEN];
+static bool envHasEpoch = false;
+static uint32_t envLastEpoch = 0;
+static uint8_t envPhase = ENV_PH_IDLE;
+static uint32_t envT0 = 0;
+static char envLine[178];  // longest: "E2:" + 162 hex + NUL
+static uint8_t envLineLen = 0;
+
+#define ENV_DONE 1
+#define ENV_WAIT 0
+
+static void envFillRandom(uint8_t *buf, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        uint32_t r = rp2040.hwrand32();  // RP2350 true RNG
+        size_t k = (n - i < 4) ? (n - i) : 4;
+        memcpy(buf + i, &r, k);
+        i += k;
+    }
+}
+
+static inline void envWipeP(void *p, size_t n) {
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
+static inline int envHexValP(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool envHexDecodeP(const char *hex, uint8_t *out, size_t outLen) {
+    for (size_t i = 0; i < outLen; i++) {
+        int hi = envHexValP(hex[2 * i]);
+        int lo = envHexValP(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static void envHexEmit(const char *prefix, const uint8_t *data, size_t len) {
+    static const char HEXDIGITS[] = "0123456789abcdef";
+    Serial.print(prefix);
+    for (size_t i = 0; i < len; i++) {
+        Serial.write(HEXDIGITS[(data[i] >> 4) & 0xF]);
+        Serial.write(HEXDIGITS[data[i] & 0xF]);
+    }
+    Serial.write('\n');
+    Serial.flush();
+}
+
+// VERIFY call site: serial always; e-paper render lands here once the
+// display driver is restored (display track owns the driver fix).
+static void showVerify(const char ver17[ENV_VERIFY_LEN + 1]) {
+    Serial.print("VERIFY:");
+    Serial.println(ver17);
+    Serial.flush();
+}
+
+static void envAbort(const char *why) {
+    Serial.print("[ENV] Aborted: ");
+    Serial.println(why);
+    envWipeP(envSecP, sizeof(envSecP));
+    envWipeP(envNonceP, sizeof(envNonceP));
+    envHaveSec = false;
+    envPhase = ENV_PH_IDLE;
+    envLineLen = 0;
+}
+
+static uint8_t pollEnvelope() {
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c != '\n' && c != '\r') {
+            if (envLineLen < sizeof(envLine) - 1) envLine[envLineLen++] = c;
+            continue;
+        }
+        envLine[envLineLen] = '\0';
+        uint8_t lineLen = envLineLen;
+        envLineLen = 0;
+        if (lineLen == 0) continue;
+
+        if (envPhase == ENV_PH_IDLE) {
+            if (strcmp(envLine, "FIXTURE") == 0) {
+                envFixtureMode = true;
+                Serial.println("[ENV] TEST-ONLY fixture mode armed.");
+            } else if (strcmp(envLine, "ENVELOPE_START") == 0) {
+                if (!envFixtureMode) {
+                    Serial.println("[ENV] Refused: fixture not armed.");
+                } else {
+                    envFillRandom(envSecP, sizeof(envSecP));
+                    envFillRandom(envNonceP, sizeof(envNonceP));
+                    if (!env_x25519_pub(envSecP, envPubP)) {
+                        envAbort("X25519 failed");
+                    } else {
+                        uint8_t e1[ENV_E1_LEN];
+                        env_encode_e1(deviceId, envPubP, envNonceP, e1);
+                        envHexEmit("E1:", e1, sizeof(e1));
+                        envWipeP(e1, sizeof(e1));
+                        envHaveSec = true;
+                        envPhase = ENV_PH_E2;
+                        envT0 = millis();
+                    }
+                }
+            }
+            // Any other line (logs from our own prints are never read back;
+            // foreign lines) is ignored: responder passivity on USB too.
+        } else {
+            // ENV_PH_E2: exactly one "E2:<162 hex>" line, bounded by timeout.
+            if (strncmp(envLine, "E2:", 3) != 0 || lineLen != 3 + 2 * ENV_E2_LEN) {
+                continue;  // ignore log echo / noise, keep waiting
+            }
+            uint8_t e2[ENV_E2_LEN];
+            if (!envHexDecodeP(envLine + 3, e2, sizeof(e2))) continue;
+            uint32_t epoch;
+            uint8_t pubM[ENV_PUB_LEN], nonceM[ENV_NONCE_M];
+            uint8_t ct[AES_KEY_SIZE], tag[ENV_TAG_LEN];
+            if (!env_parse_e2(e2, sizeof(e2), &epoch, pubM, nonceM, ct, tag)) {
+                envWipeP(e2, sizeof(e2));
+                envAbort("malformed E2");
+                return ENV_WAIT;
+            }
+            envWipeP(e2, sizeof(e2));
+            if (envHasEpoch && epoch <= envLastEpoch) {
+                Serial.println("[ENV] Epoch rule violated.");
+                envAbort("epoch");
+                return ENV_WAIT;
+            }
+            uint8_t shared[ENV_SEC_LEN];
+            uint8_t ok = 0;
+            do {
+                if (!env_x25519_dh(envSecP, pubM, shared)) break;
+                if (env_is_all_zero(shared, sizeof(shared))) {
+                    Serial.println("[ENV] Degenerate shared secret.");
+                    break;
+                }
+                uint8_t aad[ENV_AAD_LEN], salt[ENV_SALT_LEN], kek[AES_KEY_SIZE];
+                env_build_aad(TARGET_PAW, deviceId, epoch, envPubP, pubM,
+                              envNonceP, nonceM, aad);
+                env_kek_salt(aad, salt);
+                env_derive_kek(shared, salt, kek);
+                uint8_t pt[AES_KEY_SIZE];
+                if (!env_open(kek, nonceM, aad, sizeof(aad), ct, tag, pt)) {
+                    Serial.println("[ENV] Tag verify failed.");
+                    break;
+                }
+                memcpy(aesKey, pt, AES_KEY_SIZE);
+                envWipeP(pt, sizeof(pt));
+                keyStored = true;
+                envHasEpoch = true;
+                envLastEpoch = epoch;
+                uint8_t fullHash[32];
+                sha256(aesKey, AES_KEY_SIZE, fullHash);
+                envHexEmit("E3:", fullHash, KEY_HASH_SIZE);
+                memset(fullHash, 0, sizeof(fullHash));
+                char ver17[ENV_VERIFY_LEN + 1];
+                env_verify_hex(envPubP, pubM, ver17);
+                showVerify(ver17);
+                Serial.println("[ENV] TEST-ONLY key stored.");
+                ok = 1;
+                envWipeP(kek, sizeof(kek));
+                envWipeP(aad, sizeof(aad));
+                envWipeP(salt, sizeof(salt));
+            } while (0);
+            envWipeP(shared, sizeof(shared));
+            envWipeP(pubM, sizeof(pubM));
+            envWipeP(ct, sizeof(ct));
+            envWipeP(tag, sizeof(tag));
+            envWipeP(envSecP, sizeof(envSecP));
+            envHaveSec = false;
+            envPhase = ENV_PH_IDLE;
+            if (ok) return ENV_DONE;
+            return ENV_WAIT;
+        }
+    }
+    if (envPhase == ENV_PH_E2 && millis() - envT0 > ENV_E2_TIMEOUT_MS) {
+        envAbort("E2 timeout");
+    }
+    return ENV_WAIT;
+}
+
+#endif  // ENVELOPE_PHASE2
 
 // =============================================================
 // Authentication State Machine
@@ -1003,6 +1235,14 @@ void loop() {
     // 5. Main State Machine Execution
     switch (currentState) {
         case STATE_WAITING_FOR_KEY: {
+#if ENVELOPE_PHASE2
+            if (pollEnvelope() == ENV_DONE) {
+                currentState = STATE_WAITING_FOR_CHALLENGE;
+                digitalWrite(LED_BUILTIN, HIGH);
+                epd.showStatus(EPD_STATUS_AUTHENTICATING);
+            }
+            // ENV_WAIT: keep waiting, retry next pass.
+#else
             uint8_t pr = pollProvisioning();
             if (pr == PROV_DONE) {
                 currentState = STATE_WAITING_FOR_CHALLENGE;
@@ -1010,6 +1250,7 @@ void loop() {
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
             }
             // PROV_PENDING/PROV_FAILED: keep waiting, retry next pass.
+#endif
             break;
         }
 

@@ -92,12 +92,13 @@ void env_hkdf(uint8_t *okm, size_t L,
     br_hkdf_produce(&hc, info, info_len, okm, L);
 }
 
-/* HKDF-SHA256 expand to 16 bytes (KEK). Salt fixed 32 zero bytes. */
+/* HKDF-SHA256 KEK (spec v0.2): 16-byte KEK, caller-supplied salt
+ * (SHA256 of the session AAD) and protocol label info. */
 void env_hkdf_kek(uint8_t kek[16], const uint8_t shared[32],
+                  const uint8_t *salt, size_t salt_len,
                   const uint8_t *info, size_t info_len) {
-    static const uint8_t salt[32] = {0};
     br_hkdf_context hc;
-    br_hkdf_init(&hc, &br_sha256_vtable, salt, 32);
+    br_hkdf_init(&hc, &br_sha256_vtable, salt, salt_len);
     br_hkdf_inject(&hc, shared, 32);
     br_hkdf_flip(&hc);
     br_hkdf_produce(&hc, info, info_len, kek, 16);
