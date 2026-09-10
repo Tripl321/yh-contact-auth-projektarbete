@@ -25,6 +25,7 @@
 | 09 | Integrationsbeskrivning | Ej påbörjad | PRO-67 | 2026-09-22 |
 | 10 | Resultat och reflektion | Ej påbörjad | PRO-68 | 2026-09-23 |
 | 11 | Dockat UART-protokoll PAW↔DEN | v1.0 — Utkast | PRO-87 | 2026-09-12 |
+| 12 | Wrapped-key envelope-protokoll | v0.1 — Granskning | — | — |
 
 ---
 
