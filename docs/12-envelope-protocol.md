@@ -1,10 +1,8 @@
 # 12 — Wrapped-key envelope protocol (USB-C provisioning)
 
-Status: spec v0.2 approved for Phase 2 fixture builds. Phase 2 firmware is
-feature-flagged (`ENVELOPE_PHASE2`, default OFF) and fixture-only: no
-production operational key is provisioned until the e-paper ceremony works
-(§9). Normative test vectors live in `tests/test_envelope.py` and drive the
-real C in `libraries/EnvelopeCrypto`.
+Status: spec v0.2 **superseded by docs/14-provisioning-v2-design.md** (Provisioning v2).
+Retained as reference for the Phase 2 fixture build and the
+existing X25519/AES-GCM/HKDF crypto subset.
 
 ## 1. Goal and non-goals
 
