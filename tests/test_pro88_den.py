@@ -55,6 +55,7 @@ class MockDenSession:
         self.state_at = 0
         self.done = None            # (verdict, ack_byte, reason_code)
         self.log = []
+        self.denBytesRx = 0  # bytes received in current session
 
     def send_challenge(self, nonce, now):
         """Transition DENIED → CHALLENGE_SENT."""
@@ -85,10 +86,12 @@ class MockDenSession:
         return self._finish(True, REASON_OK)
 
     def poll_timeout(self, now):
-        """Check deadline expiry in CHALLENGE_SENT."""
+        """Check deadline expiry in CHALLENGE_SENT.
+        Mirrors firmware: DISCONNECT if zero bytes, TIMEOUT otherwise."""
         if self.state == 'CHALLENGE_SENT' and self.nonce is not None \
                 and now - self.sent_at > DEADLINE_MS:
-            self._finish(False, REASON_TIMEOUT)
+            reason = REASON_DISCONNECT if self.denBytesRx == 0 else REASON_TIMEOUT
+            self._finish(False, reason)
 
     def _finish(self, ok, reason):
         ack = 0x01 if ok else 0x00
@@ -141,6 +144,7 @@ def test_pro53_timeout_denied():
     """Deadline exceeded → DENIED, not CHALLENGE_SENT."""
     s = MockDenSession(K_MAC)
     s.send_challenge(bytes(8), 10000)
+    s.denBytesRx = 1  # simulate some bytes received (TIMEOUT, not DISCONNECT)
     s.poll_timeout(10000 + DEADLINE_MS + 1)
     assert s.done == (False, 0x00, REASON_TIMEOUT)
     assert s.state == 'DENIED'
