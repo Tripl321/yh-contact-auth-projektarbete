@@ -7,6 +7,7 @@
  *   - PRO-50: HMAC-SHA256 challenge-response
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
  *   - PRO-58: e-paper status during challenge-response + LoRa P2P (RadioLib SX1262)
+ *   - PRO-59: approved authentication text on e-paper
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
  *   USB Serial (Mama Bear): key provisioning over USB-C (no GPIO)
@@ -210,6 +211,8 @@ private:
     void drawCircle(int cx, int cy, int r, bool white);
     void drawCircleFilled(int cx, int cy, int r, bool white);
     void drawIcon(int cx, int cy, int size, EpdStatus status);
+    void drawChar(char c, int x, int y);
+    void drawText(const char* text, int x, int y);
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
     // Async refresh state (PRO-11): transmit starts in showStatus/clear,
@@ -477,6 +480,64 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
     }
 }
 
+// =============================================================
+// 5x7 Bitmap Font (uppercase A-Z, space)
+// =============================================================
+// Each glyph is 7 bytes (7 rows, 5 columns). Bits 4..0 map to
+// columns left..right. Bit set = black pixel.
+static const uint8_t FONT_5X7[][7] = {
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // A
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},  // B
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},  // C
+    {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E},  // D
+    {0x1F, 0x10, 0x10, 0x1C, 0x10, 0x10, 0x1F},  // E
+    {0x1F, 0x10, 0x10, 0x1C, 0x10, 0x10, 0x10},  // F
+    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E},  // G
+    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // H
+    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E},  // I
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},  // J
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11},  // K
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},  // L
+    {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11},  // M
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11},  // N
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // O
+    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10},  // P
+    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D},  // Q
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // R
+    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E},  // S
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},  // T
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // U
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},  // V
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A},  // W
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},  // X
+    {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04},  // Y
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},  // Z
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}   // space
+};
+
+void ShallotEPD::drawChar(char c, int x, int y) {
+    if (c >= 'A' && c <= 'Z') {
+        const uint8_t* glyph = FONT_5X7[c - 'A'];
+        for (int row = 0; row < 7; row++) {
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < 5; col++) {
+                if (bits & (0x10 >> col)) {
+                    drawPixel(x + col, y + row, false);
+                }
+            }
+        }
+    } else if (c == ' ') {
+        // space: advance cursor only
+    }
+}
+
+void ShallotEPD::drawText(const char* text, int x, int y) {
+    while (*text) {
+        drawChar(*text++, x, y);
+        x += 6;
+    }
+}
+
 void ShallotEPD::showStatus(EpdStatus status) {
     if (_degraded) return;  // fail silent: display stays as-is, loop stays fast
     if (status == EPD_STATUS_BLANK) {
@@ -494,6 +555,9 @@ void ShallotEPD::showStatus(EpdStatus status) {
     int iconRadius = 50;
 
     drawIcon(centerX, centerY, iconRadius, status);
+    if (status == EPD_STATUS_AUTHENTICATED) {
+        drawText("AUTHENTICATED", 61, 160);
+    }
     displayFrame(_buffer);
     _pendingSleep = false;
 }

@@ -249,3 +249,61 @@ def test_pro58_new_challenge_resets_authenticating():
     paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x30))), now=2000)
     assert paw.display_status == 'authenticating'
     assert paw.ack_pending is True
+
+
+# ============================================================================
+# PRO-59: approved authentication text on e-paper
+# ============================================================================
+
+def test_pro59_authenticated_persists_until_new_challenge():
+    """AUTHENTICATED stays until a new CHALLENGE resets to AUTHENTICATING."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    paw.feed(encode(T_ACK, b'\x01'), now=1100)
+    assert paw.display_status == 'authenticated'
+    assert paw.ack_pending is False
+    # Time passes, no new challenge: status stays AUTHENTICATED
+    paw.poll(now=5000)
+    assert paw.display_status == 'authenticated'
+    # New challenge resets to AUTHENTICATING
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x30))), now=6000)
+    assert paw.display_status == 'authenticating'
+    assert paw.ack_pending is True
+
+
+def test_pro59_timeout_after_challenge_sets_failed():
+    """PAW watchdog timeout (2.5 s) after CHALLENGE sets FAILED."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    assert paw.display_status == 'authenticating'
+    # Watchdog fires at 3501 ms (1000 + 2500 + 1)
+    paw.poll(now=3501)
+    assert paw.display_status == 'failed'
+    assert paw.ack_pending is False
+
+
+def test_pro59_failed_response_sets_failed():
+    """ACK 0x00 after RESPONSE sets FAILED (mirrors DEN deny)."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    paw.feed(encode(T_ACK, b'\x00'), now=1100)
+    assert paw.display_status == 'failed'
+    assert paw.ack_pending is False
+    # Subsequent frames do not change FAILED until new challenge
+    paw.feed(encode(T_ACK, b'\x01'), now=1200)
+    assert paw.display_status == 'failed'  # late ACK ignored
+
+
+def test_pro59_source_has_text_rendering():
+    """PRO-59: firmware renders AUTHENTICATED text on e-paper."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
+    assert 'FONT_5X7' in src
+    assert 'void drawChar(char c, int x, int y)' in src
+    assert 'void drawText(const char* text, int x, int y)' in src
+    assert 'drawText("AUTHENTICATED"' in src
+    assert 'PRO-59' in src
