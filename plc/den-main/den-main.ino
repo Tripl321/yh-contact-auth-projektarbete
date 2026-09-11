@@ -183,30 +183,66 @@ static void den_hmac_sha256(const uint8_t *key, size_t keyLen,
 }
 
 // =============================================================
-// Session state machine (non-blocking)
+// Session state machine (non-blocking, fail-closed)
+//
+// States: DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED
+//
+// DEN starts in DENIED after boot, reset, disconnect, malformed
+// input, or session expiry. Only a complete, valid RESPONSE for
+// the current CHALLENGE may transition DEN to AUTHENTICATED.
+// ACK is informational; the access decision is made before ACK
+// and never depends on it. PAW display/UI and other peripherals
+// do not alter the DEN decision or deadline.
 // =============================================================
 
 enum DenSession : uint8_t {
-  DEN_ST_GAP,    // pacing between sessions
-  DEN_ST_WAIT    // challenge sent, awaiting RESPONSE
+  DEN_ST_DENIED,          // initial / fail-closed; after gap, sends CHALLENGE
+  DEN_ST_CHALLENGE_SENT,  // challenge sent, awaiting RESPONSE (deadline)
+  DEN_ST_AUTHENTICATED    // HMAC verified; brief confirmation then DENIED
 };
 
-static DenSession denState = DEN_ST_GAP;
+static DenSession denState = DEN_ST_DENIED;
 static uint32_t denStateAt = 0;      // state entry timestamp (millis)
 static uint32_t denDeadline = 0;     // response deadline (millis)
 static uint8_t denNonce[DEN_NONCE_LEN];
 static den_scanner_t denScanner;
 static uint8_t denTx[DEN_MAX_FRAME];
 
-static void den_fail(const char *reason) {
-  Serial.print("[DEN] FAILED: ");
-  Serial.println(reason);
+// Non-secret reason codes for USB serial observation.
+// These are audit/log codes only — never on the wire, never
+// secret material.
+enum DenReason : uint8_t {
+  DEN_REASON_OK = 0,              // authenticated
+  DEN_REASON_TIMEOUT,             // response deadline exceeded
+  DEN_REASON_UNEXPECTED_TYPE,     // frame type != RESPONSE
+  DEN_REASON_INVALID_SIZE,        // payload length mismatch
+  DEN_REASON_PARSE_ERROR,         // CRC, length, type, or resync failure
+  DEN_REASON_HMAC_MISMATCH,       // constant-time compare failed
+  DEN_REASON_DISCONNECT,          // PAW UART disconnect detected
+  DEN_REASON_STALE_RESPONSE,      // response for a prior nonce
+};
+
+static void den_fail(DenReason reason) {
+  const char *label = "UNKNOWN";
+  switch (reason) {
+    case DEN_REASON_TIMEOUT:       label = "timeout"; break;
+    case DEN_REASON_UNEXPECTED_TYPE: label = "unexpected type"; break;
+    case DEN_REASON_INVALID_SIZE:  label = "invalid size"; break;
+    case DEN_REASON_PARSE_ERROR:   label = "parse error"; break;
+    case DEN_REASON_HMAC_MISMATCH: label = "hmac mismatch"; break;
+    case DEN_REASON_DISCONNECT:    label = "disconnect"; break;
+    case DEN_REASON_STALE_RESPONSE: label = "stale response"; break;
+    default: break;
+  }
+  Serial.print("[DEN] FAILED: "); Serial.print(label);
+  Serial.print(" (code "); Serial.print(reason); Serial.println(")");
   uint8_t ackBody[1] = {0x00};
   uint8_t ack[DEN_MAX_FRAME];
   size_t n = den_encode(DEN_TYPE_ACK, ackBody, 1, ack, sizeof(ack));
   if (n) { Serial1.write(ack, n); Serial1.flush(); }
   digitalWrite(LED_BUILTIN, LOW);
-  denState = DEN_ST_GAP;
+  memset(denNonce, 0, sizeof(denNonce));
+  denState = DEN_ST_DENIED;
   denStateAt = millis();
 }
 
@@ -220,7 +256,7 @@ static void den_send_challenge(uint32_t now) {
   size_t n = den_encode(DEN_TYPE_CHALLENGE, denNonce, DEN_NONCE_LEN,
                         denTx, sizeof(denTx));
   if (!n) {  // cannot happen (fixed sizes); fail closed anyway
-    den_fail("encode");
+    den_fail(DEN_REASON_PARSE_ERROR);
     return;
   }
   Serial1.write(denTx, n);
@@ -229,17 +265,30 @@ static void den_send_challenge(uint32_t now) {
   Serial.println("[DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE");
   den_scanner_init(&denScanner);
   denDeadline = now + DEN_RESPONSE_DEADLINE_MS;
-  denState = DEN_ST_WAIT;
+  denState = DEN_ST_CHALLENGE_SENT;
   denStateAt = now;
 }
 
-static void den_on_response(const den_frame_t *f) {
+static void den_on_response(const den_frame_t *f, uint32_t now) {
   if (f->type != DEN_TYPE_RESPONSE) {
-    den_fail("unexpected type");
+    den_fail(DEN_REASON_UNEXPECTED_TYPE);
     return;
   }
   if (f->payloadLen != DEN_HMAC_LEN) {
-    den_fail("invalid size");
+    den_fail(DEN_REASON_INVALID_SIZE);
+    return;
+  }
+  // Stale-response check: nonce must match the current session.
+  // If the scanner was reset (e.g., byte timeout or resync),
+  // the nonce was already wiped by den_fail(). A response
+  // arriving after the nonce was wiped is stale.
+  if (denNonce[0] == 0 && denNonce[1] == 0 && denNonce[2] == 0
+      && denNonce[3] == 0 && denNonce[4] == 0 && denNonce[5] == 0
+      && denNonce[6] == 0 && denNonce[7] == 0 && denNonce[8] == 0
+      && denNonce[9] == 0 && denNonce[10] == 0 && denNonce[11] == 0
+      && denNonce[12] == 0 && denNonce[13] == 0 && denNonce[14] == 0
+      && denNonce[15] == 0) {
+    den_fail(DEN_REASON_STALE_RESPONSE);
     return;
   }
   uint8_t expect[DEN_HMAC_LEN];
@@ -249,17 +298,17 @@ static void den_on_response(const den_frame_t *f) {
   memset(expect, 0, sizeof(expect));
   memset(denNonce, 0, sizeof(denNonce));
   if (!ok) {
-    den_fail("hmac mismatch");
+    den_fail(DEN_REASON_HMAC_MISMATCH);
     return;
   }
-  Serial.println("[DEN] AUTHENTICATED");
+  Serial.println("[DEN] AUTHENTICATED (code 0)");
   uint8_t ackBody[1] = {0x01};
   uint8_t ack[DEN_MAX_FRAME];
   size_t n = den_encode(DEN_TYPE_ACK, ackBody, 1, ack, sizeof(ack));
   if (n) { Serial1.write(ack, n); Serial1.flush(); }
   digitalWrite(LED_BUILTIN, HIGH);
-  denState = DEN_ST_GAP;
-  denStateAt = millis();
+  denState = DEN_ST_AUTHENTICATED;
+  denStateAt = now;
 }
 
 void setup() {
@@ -268,40 +317,61 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
   den_scanner_init(&denScanner);
-  denState = DEN_ST_GAP;
+  denState = DEN_ST_DENIED;
   denStateAt = millis();
-  Serial.println("[DEN] docked UART auth ready (PRO-88)");
+  Serial.println("[DEN] docked UART auth ready (PRO-53)");
 }
 
 void loop() {
   uint32_t now = millis();
-  if (denState == DEN_ST_GAP) {
+
+  // DEN_ST_DENIED: waiting for session gap before next challenge.
+  if (denState == DEN_ST_DENIED) {
     if ((uint32_t)(now - denStateAt) >= DEN_SESSION_GAP_MS) {
       den_send_challenge(now);
     }
     return;
   }
-  // DEN_ST_WAIT: poll UART without blocking.
+
+  // DEN_ST_AUTHENTICATED: brief confirmation, then return to DENIED.
+  if (denState == DEN_ST_AUTHENTICATED) {
+    if ((uint32_t)(now - denStateAt) >= DEN_SESSION_GAP_MS) {
+      Serial.println("[DEN] session complete, returning to DENIED");
+      denState = DEN_ST_DENIED;
+      denStateAt = now;
+    }
+    return;
+  }
+
+  // DEN_ST_CHALLENGE_SENT: poll UART without blocking.
+  // Check deadline first (timeout → DENIED).
   if ((int32_t)(now - denDeadline) >= 0) {
-    memset(denNonce, 0, sizeof(denNonce));
-    den_fail("timeout");
+    den_fail(DEN_REASON_TIMEOUT);
+    return;
+  }
+  // Detect PAW disconnect: no bytes arriving for an extended
+  // period while in CHALLENGE_SENT. The scanner byte-timeout
+  // handles mid-frame stalls; here we detect the case where
+  // no bytes arrive at all.
+  if (!Serial1.available() && (uint32_t)(now - denStateAt) > 3000) {
+    den_fail(DEN_REASON_DISCONNECT);
     return;
   }
   while (Serial1.available()) {
     den_frame_t f;
-    den_status_t st = den_scanner_push(&denScanner, (uint8_t)Serial1.read(), now, &f);
+    den_status_t st = den_scanner_push(&denScanner,
+        (uint8_t)Serial1.read(), now, &f);
     if (st == DEN_OK) {
-      // Copy payload before any further push (scanner-buffer lifetime).
       uint8_t type = f.type;
       uint8_t payload[DEN_MAX_PAYLOAD];
       size_t payloadLen = f.payloadLen;
       memcpy(payload, f.payload, payloadLen);
       den_frame_t fc = {type, payload, payloadLen};
-      den_on_response(&fc);
+      den_on_response(&fc, now);
       return;
     }
     if (st != DEN_INCOMPLETE) {
-      den_fail("parse error");
+      den_fail(DEN_REASON_PARSE_ERROR);
       return;
     }
   }
