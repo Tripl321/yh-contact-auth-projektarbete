@@ -1,5 +1,5 @@
 /*
- * SHALLOT — DEN docked UART challenge-response (PRO-88)
+ * SHALLOT — DEN docked UART challenge-response (PRO-53 fail-closed)
  * Firmware entry point: Pico 2 (RP2350). Session master for the
  * PAW<->DEN docked link defined in docs/11-dockat-uart-protokoll.md.
  *
@@ -29,14 +29,99 @@
 // replace with the provisioned per-device key (PRO-45 flow) and
 // remove this warning.
 // =============================================================
-#warning "PRO-88 development shared key - replace before production"
+#warning "PRO-53 development shared key - replace before production"
 static const uint8_t DEN_DEV_KEY[16] = {
   0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
   0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
 };
 
+#define AES_KEY_SIZE 16
+
+// =============================================================
+// Key Storage (PRO-47 + PRO-49)
+// =============================================================
+//
+// Key hierarchy (SRAM-only, never flash/serial):
+//   denDevKey : master key (128-bit, development stub; replace with
+//               provisioned key in production via PRO-45 flow)
+//   kMac      : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
+//   kEnc      : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
+//
+// PRO-49: HMAC verification uses K_mac, never the master key directly.
+// K_mac is derived once at startup and kept in SRAM only.
+// =============================================================
+
+static uint8_t kMac[16];   // derived HMAC key (PRO-49)
+static uint8_t kEnc[16];   // derived encryption key (reserved)
+
+// PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
+static void den_derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
+    uint8_t full_hash[32];
+    uint8_t msg[19];  // master(16) || "MAC"(3)
+    memcpy(msg, master, 16);
+    memcpy(msg + 16, "MAC", 3);
+    den_sha256(msg, sizeof(msg), full_hash);
+    memcpy(k_mac_out, full_hash, 16);
+    memset(full_hash, 0, sizeof(full_hash));
+    memset(msg, 0, sizeof(msg));
+}
+
+// PRO-47: secure wipe using volatile store to prevent compiler optimization
+static void secure_clear_key() {
+    volatile uint8_t* k = (volatile uint8_t*)kMac;
+    for (int i = 0; i < 16; i++) k[i] = 0;
+    volatile uint8_t* e = (volatile uint8_t*)kEnc;
+    for (int i = 0; i < 16; i++) e[i] = 0;
+}
+
 #define DEN_UART_BAUD      115200
 #define DEN_SESSION_GAP_MS 1000  // pacing between sessions
+
+// =============================================================
+// Session state machine (non-blocking, fail-closed)
+//
+// States: DENIED -> CHALLENGE_SENT -> AUTHENTICATED -> DENIED
+//
+// DEN starts in DENIED after boot, reset, disconnect, malformed
+// input, or session expiry. Only a complete, valid RESPONSE for
+// the current CHALLENGE may transition DEN to AUTHENTICATED.
+// ACK is informational; the access decision is made before ACK
+// and never depends on it. PAW display/UI and other peripherals
+// do not alter the DEN decision or deadline.
+//
+// The response deadline is EXACTLY 2 s (DEN_RESPONSE_DEADLINE_MS)
+// from CHALLENGE transmission. No error path transitions to
+// AUTHENTICATED; every error returns DEN to DENIED.
+// =============================================================
+
+typedef enum {
+  DEN_ST_DENIED,          // initial / fail-closed; after gap, sends CHALLENGE
+  DEN_ST_CHALLENGE_SENT,  // challenge sent, awaiting RESPONSE (deadline)
+  DEN_ST_AUTHENTICATED    // HMAC verified; brief confirmation then DENIED
+} DenSession;
+
+static DenSession denState = DEN_ST_DENIED;
+static uint32_t denStateAt = 0;      // state entry timestamp (millis)
+static uint32_t denDeadline = 0;     // response deadline (millis)
+static uint32_t denBytesRx = 0;      // bytes seen since entering CHALLENGE_SENT
+static uint8_t denNonce[DEN_NONCE_LEN];
+static den_scanner_t denScanner;
+static uint8_t denTx[DEN_MAX_FRAME];
+
+// Non-secret reason codes for USB serial observation.
+// Audit/log codes only - never on the wire, never secret material.
+// NOTE: Arduino preprocessor can struggle with enum types in function
+// signatures, so we use uint8_t for the reason parameter.
+typedef enum {
+  DEN_REASON_OK = 0,              // authenticated
+  DEN_REASON_TIMEOUT,             // 2s deadline hit, but PAW sent some bytes
+  DEN_REASON_UNEXPECTED_TYPE,     // frame type != RESPONSE
+  DEN_REASON_INVALID_SIZE,        // payload length mismatch
+  DEN_REASON_PARSE_ERROR,         // CRC, length, type, or resync failure
+  DEN_REASON_HMAC_MISMATCH,       // constant-time compare failed
+  DEN_REASON_DISCONNECT,          // 2s deadline hit, zero bytes received
+  DEN_REASON_STALE_RESPONSE,      // all-zero nonce: TRNG failure or wiped
+} DenReason;
 
 // =============================================================
 // Minimal SHA-256 (public-domain style, stack-only, no heap)
@@ -182,47 +267,7 @@ static void den_hmac_sha256(const uint8_t *key, size_t keyLen,
   memset(outerMsg, 0, sizeof(outerMsg));
 }
 
-// =============================================================
-// Session state machine (non-blocking, fail-closed)
-//
-// States: DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED
-//
-// DEN starts in DENIED after boot, reset, disconnect, malformed
-// input, or session expiry. Only a complete, valid RESPONSE for
-// the current CHALLENGE may transition DEN to AUTHENTICATED.
-// ACK is informational; the access decision is made before ACK
-// and never depends on it. PAW display/UI and other peripherals
-// do not alter the DEN decision or deadline.
-// =============================================================
-
-enum DenSession : uint8_t {
-  DEN_ST_DENIED,          // initial / fail-closed; after gap, sends CHALLENGE
-  DEN_ST_CHALLENGE_SENT,  // challenge sent, awaiting RESPONSE (deadline)
-  DEN_ST_AUTHENTICATED    // HMAC verified; brief confirmation then DENIED
-};
-
-static DenSession denState = DEN_ST_DENIED;
-static uint32_t denStateAt = 0;      // state entry timestamp (millis)
-static uint32_t denDeadline = 0;     // response deadline (millis)
-static uint8_t denNonce[DEN_NONCE_LEN];
-static den_scanner_t denScanner;
-static uint8_t denTx[DEN_MAX_FRAME];
-
-// Non-secret reason codes for USB serial observation.
-// These are audit/log codes only — never on the wire, never
-// secret material.
-enum DenReason : uint8_t {
-  DEN_REASON_OK = 0,              // authenticated
-  DEN_REASON_TIMEOUT,             // response deadline exceeded
-  DEN_REASON_UNEXPECTED_TYPE,     // frame type != RESPONSE
-  DEN_REASON_INVALID_SIZE,        // payload length mismatch
-  DEN_REASON_PARSE_ERROR,         // CRC, length, type, or resync failure
-  DEN_REASON_HMAC_MISMATCH,       // constant-time compare failed
-  DEN_REASON_DISCONNECT,          // PAW UART disconnect detected
-  DEN_REASON_STALE_RESPONSE,      // response for a prior nonce
-};
-
-static void den_fail(DenReason reason) {
+static void den_fail(uint8_t reason) {
   const char *label = "UNKNOWN";
   switch (reason) {
     case DEN_REASON_TIMEOUT:       label = "timeout"; break;
@@ -242,6 +287,7 @@ static void den_fail(DenReason reason) {
   if (n) { Serial1.write(ack, n); Serial1.flush(); }
   digitalWrite(LED_BUILTIN, LOW);
   memset(denNonce, 0, sizeof(denNonce));
+  denBytesRx = 0;
   denState = DEN_ST_DENIED;
   denStateAt = millis();
 }
@@ -264,6 +310,7 @@ static void den_send_challenge(uint32_t now) {
   memset(denTx, 0, sizeof(denTx));
   Serial.println("[DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE");
   den_scanner_init(&denScanner);
+  denBytesRx = 0;
   denDeadline = now + DEN_RESPONSE_DEADLINE_MS;
   denState = DEN_ST_CHALLENGE_SENT;
   denStateAt = now;
@@ -278,10 +325,15 @@ static void den_on_response(const den_frame_t *f, uint32_t now) {
     den_fail(DEN_REASON_INVALID_SIZE);
     return;
   }
-  // Stale-response check: nonce must match the current session.
-  // If the scanner was reset (e.g., byte timeout or resync),
-  // the nonce was already wiped by den_fail(). A response
-  // arriving after the nonce was wiped is stale.
+  // Reject an all-zero nonce. This is a fail-closed guard that covers
+  // two cases at once:
+  //   - TRNG failure: get_rand_128() returned all zeros, so the
+  //     challenge nonce is invalid; never authenticate on an empty nonce.
+  //   - Stale/wiped nonce: den_fail() zeroes the nonce after a failure.
+  //     Any response arriving against the wiped nonce cannot bind to the
+  //     current challenge, so it must not authenticate.
+  // (A response for a *prior* session is already denied cryptographically
+  //  by HMAC-MISMATCH, because only the current nonce is ever verified.)
   if (denNonce[0] == 0 && denNonce[1] == 0 && denNonce[2] == 0
       && denNonce[3] == 0 && denNonce[4] == 0 && denNonce[5] == 0
       && denNonce[6] == 0 && denNonce[7] == 0 && denNonce[8] == 0
@@ -292,7 +344,7 @@ static void den_on_response(const den_frame_t *f, uint32_t now) {
     return;
   }
   uint8_t expect[DEN_HMAC_LEN];
-  den_hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY),
+  den_hmac_sha256(kMac, AES_KEY_SIZE,
                   denNonce, DEN_NONCE_LEN, expect);
   uint8_t ok = den_ct_compare(expect, f->payload, DEN_HMAC_LEN);
   memset(expect, 0, sizeof(expect));
@@ -319,7 +371,11 @@ void setup() {
   den_scanner_init(&denScanner);
   denState = DEN_ST_DENIED;
   denStateAt = millis();
-  Serial.println("[DEN] docked UART auth ready (PRO-53)");
+
+  // PRO-49: derive K_mac from master key at startup
+  den_derive_k_mac(DEN_DEV_KEY, kMac);
+
+  Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-49)");
 }
 
 void loop() {
@@ -344,20 +400,25 @@ void loop() {
   }
 
   // DEN_ST_CHALLENGE_SENT: poll UART without blocking.
-  // Check deadline first (timeout → DENIED).
+  // The response deadline is EXACTLY 2 s from CHALLENGE
+  // transmission; do not fail before it expires.
   if ((int32_t)(now - denDeadline) >= 0) {
-    den_fail(DEN_REASON_TIMEOUT);
-    return;
-  }
-  // Detect PAW disconnect: no bytes arriving for an extended
-  // period while in CHALLENGE_SENT. The scanner byte-timeout
-  // handles mid-frame stalls; here we detect the case where
-  // no bytes arrive at all.
-  if (!Serial1.available() && (uint32_t)(now - denStateAt) > 3000) {
-    den_fail(DEN_REASON_DISCONNECT);
+    // Deadline expired with no valid RESPONSE -> fail closed to DENIED.
+    // Distinguish a dead link from a slow/partial one so the cause is
+    // observable over USB (non-secret reason code only):
+    //   - DISCONNECT: PAW sent zero bytes since the challenge (link gone)
+    //   - TIMEOUT:    PAW sent bytes but no complete valid RESPONSE in time
+    // Both transition to DENIED. A mid-frame stall is caught earlier by the
+    // scanner's 100 ms byte-timeout (DEN_ERR_TIMEOUT -> PARSE_ERROR).
+    if (denBytesRx == 0) {
+      den_fail(DEN_REASON_DISCONNECT);
+    } else {
+      den_fail(DEN_REASON_TIMEOUT);
+    }
     return;
   }
   while (Serial1.available()) {
+    denBytesRx++;
     den_frame_t f;
     den_status_t st = den_scanner_push(&denScanner,
         (uint8_t)Serial1.read(), now, &f);

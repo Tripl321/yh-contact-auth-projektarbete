@@ -12,6 +12,7 @@ import hashlib
 import hmac as hmac_module
 
 DEV_KEY = bytes(range(16))
+K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
 TICK_MS = 10
 DEADLINE_MS = 2000
 
@@ -126,6 +127,7 @@ class MockPawLoop:
         self.uart_in = bytearray()
         self.responses = []  # (t_answered, t_challenged_virt, mac_ok)
         self.key = DEV_KEY
+        self.k_mac = K_MAC  # PRO-49: derived HMAC key
         ok, cost = self.epd.begin()
         self.now += cost
         self.setup_ms = self.now
@@ -144,7 +146,7 @@ class MockPawLoop:
                     body, want = frame[1:20], int.from_bytes(frame[20:24], 'little')
                     if binascii.crc32(body) & 0xFFFFFFFF == want \
                             and frame[3] == 0x01 and len(body[3:]) == 16:
-                        mac = hmac16(self.key, body[3:])
+                        mac = hmac16(self.k_mac, body[3:])
                         self.responses.append((self.now, chal_at, mac))
                         self.epd.showStatus('authenticating')
         # 2. epd poll 3. prov poll (both instant)
@@ -176,7 +178,7 @@ def test_responsive_dead_panel_no_provisioning():
     assert paw.responses, 'no answer within deadline'
     t_ans, _, mac = paw.responses[0]
     assert t_ans - t_tx < DEADLINE_MS
-    assert mac == hmac16(DEV_KEY, nonce)
+    assert mac == hmac16(K_MAC, nonce)
 
 
 def test_responsive_garbage_usb_traffic():

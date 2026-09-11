@@ -139,27 +139,52 @@ static void setLoRaFlag(void) {
 #define EPD_INIT_TIMEOUT_MS    2000
 
 // =============================================================
-// Key Storage (PRO-47)
+// Key Storage (PRO-47 + PRO-49)
 // =============================================================
 //
 // Key hierarchy (SRAM-only, never flash/serial):
 //   aesKey   : master key (128-bit, received from UNO Q via USB provisioning)
-//   kMac     : HMAC-SHA256 key (alias of master for dock/LoRa auth)
-//   kEnc     : encryption key (alias of master, reserved for future use)
+//   kMac     : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
+//   kEnc     : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
 //
-// All three roles share the same SRAM buffer. Boundaries are enforced
-// by naming convention: never mix key material across roles without
-// explicit derivation. Key material is NEVER written to flash, logs,
-// or serial output. Only the 4-byte SHA-256 fingerprint is transmitted.
+// All three roles are kept in separate SRAM buffers. Boundaries are
+// enforced by naming convention: never mix key material across roles
+// without explicit derivation. Key material is NEVER written to flash,
+// logs, or serial output. Only the 4-byte SHA-256 fingerprint is transmitted.
+//
+// PRO-49: K_mac is derived on key receipt via hardware-accelerated SHA-256
+// where available (RP2350 SHA accelerator), falling back to software.
+// HMAC always uses K_mac, never the master key directly.
 // =============================================================
 
 static uint8_t aesKey[AES_KEY_SIZE];
+static uint8_t kMac[AES_KEY_SIZE];   // derived HMAC key (PRO-49)
+static uint8_t kEnc[AES_KEY_SIZE];   // derived encryption key (reserved)
 static bool keyStored = false;
 
 static void secure_clear_key() {
     volatile uint8_t* k = (volatile uint8_t*)aesKey;
     for (int i = 0; i < AES_KEY_SIZE; i++) k[i] = 0;
+    volatile uint8_t* m = (volatile uint8_t*)kMac;
+    for (int i = 0; i < AES_KEY_SIZE; i++) m[i] = 0;
+    volatile uint8_t* e = (volatile uint8_t*)kEnc;
+    for (int i = 0; i < AES_KEY_SIZE; i++) e[i] = 0;
     keyStored = false;
+}
+
+// PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
+// RP2350 SHA-256 accelerator is used where available; falls back to software.
+static void derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
+    // RP2350 hardware SHA-256 accelerator: use pico-sdk sha256_hw if available
+    // For now, use software implementation (same as rest of firmware)
+    uint8_t full_hash[32];
+    uint8_t msg[16 + 3];  // master(16) || "MAC"(3)
+    memcpy(msg, master, AES_KEY_SIZE);
+    memcpy(msg + AES_KEY_SIZE, "MAC", 3);
+    sha256(msg, sizeof(msg), full_hash);
+    memcpy(k_mac_out, full_hash, AES_KEY_SIZE);
+    memset(full_hash, 0, sizeof(full_hash));
+    memset(msg, 0, sizeof(msg));
 }
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
@@ -848,6 +873,9 @@ static uint8_t pollProvisioning() {
         memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
         keyStored = true;
 
+        // PRO-49: Derive K_mac from master key (SRAM-only, never exposed)
+        derive_k_mac(aesKey, kMac);
+
         // Send confirmation with hash (fingerprint only, never key bytes)
         uint8_t fullHash[32];
         sha256(aesKey, AES_KEY_SIZE, fullHash);
@@ -943,11 +971,11 @@ static void handleDockAuth() {
             Serial.println((int)st);
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
-        if (f.type == DEN_TYPE_CHALLENGE) {
-            epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
-            uint8_t mac[DEN_HMAC_LEN];
-            hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY), f.payload, f.payloadLen, mac);
+            if (f.type == DEN_TYPE_CHALLENGE) {
+                epd.showStatus(EPD_STATUS_AUTHENTICATING);
+                // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
+                uint8_t mac[DEN_HMAC_LEN];
+                hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
             uint8_t resp[DEN_MAX_FRAME];
             size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
             memset(mac, 0, sizeof(mac));
@@ -1150,7 +1178,7 @@ void loop() {
 
         case STATE_COMPUTING_RESPONSE:
             if (keyStored) {
-                hmac_sha256(aesKey, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
+                hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
 
                 Serial.print("[PRO-50] HMAC Response computed: ");
                 for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);

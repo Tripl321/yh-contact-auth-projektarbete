@@ -15,12 +15,13 @@ from tests.test_pro87_uart import (encode, decode, DenError, Scanner,
                                    T_ALARM, T_ACK, MAX_PAYLOAD)
 
 DEV_KEY = bytes(range(16))  # must equal DEN_DEV_KEY (guarded below)
-DEV_HMAC_HEX = 'e76b9e0fe4021d62ea97745ef43c654dc14698aa799acb9ccc3e7f2a2b41a19e'
+K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
+DEV_HMAC_HEX = 'a934b5f2fcb05502a2c3bb439523a0a9f508e31b60195f0aaf476f536ebde67c'
 
 
 def paw_hmac(nonce):
     assert len(nonce) == 16
-    return hmac_module.new(DEV_KEY, nonce, hashlib.sha256).digest()
+    return hmac_module.new(K_MAC, nonce, hashlib.sha256).digest()
 
 
 class MockPawResponder:
@@ -163,7 +164,8 @@ def test_pro84_source_guards():
     assert 'Serial1.begin(115200)' in src
     assert 'setTX(' not in src and 'setRX(' not in src
     assert '#warning' in src and 'DEVELOPMENT-ONLY' in src
-    assert 'hmac_sha256(DEN_DEV_KEY' in src  # existing HMAC reused
+    assert 'hmac_sha256(kMac' in src  # PRO-49: HMAC uses K_mac, not master key
+    assert 'derive_k_mac' in src  # PRO-49: K_mac derivation present
     assert 'epd.showStatus(EPD_STATUS_AUTHENTICATING)' in src  # e-paper kept
     assert '#include <RadioLib.h>' in src and 'radio.transmit' in src  # LoRa kept
     assert 'handleDockAuth();' in src
