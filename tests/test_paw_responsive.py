@@ -138,17 +138,20 @@ class MockPawLoop:
         # 1. dock poll (instant per buffered bytes)
         while self.uart_in:
             b = self.uart_in.pop(0)
-            if b == 0xAA:  # SYNC: expect a 24B challenge frame next
-                if len(self.uart_in) >= 23:
-                    frame = bytes([b]) + bytes(self.uart_in[:23])
-                    del self.uart_in[:23]
-                    import binascii
-                    body, want = frame[1:20], int.from_bytes(frame[20:24], 'little')
-                    if binascii.crc32(body) & 0xFFFFFFFF == want \
-                            and frame[3] == 0x01 and len(body[3:]) == 16:
-                        mac = hmac16(self.k_mac, body[3:])
-                        self.responses.append((self.now, chal_at, mac))
-                        self.epd.showStatus('authenticating')
+            if b == 0xAA:  # SYNC: parse frame header for length
+                if len(self.uart_in) >= 3:
+                    ln = int.from_bytes(bytes(self.uart_in[:2]), 'little')
+                    total_needed = 2 + 1 + ln + 4  # LEN + TYPE + PAYLOAD + CRC
+                    if len(self.uart_in) >= total_needed:
+                        frame = bytes([b]) + bytes(self.uart_in[:total_needed])
+                        del self.uart_in[:total_needed]
+                        import binascii
+                        body, want = frame[1:1+2+1+ln], int.from_bytes(frame[1+2+1+ln:1+2+1+ln+4], 'little')
+                        if binascii.crc32(body) & 0xFFFFFFFF == want \
+                                and frame[3] == 0x01 and ln == 8:
+                            mac = hmac16(self.k_mac, frame[4:4+8])
+                            self.responses.append((self.now, chal_at, mac))
+                            self.epd.showStatus('authenticating')
         # 2. epd poll 3. prov poll (both instant)
         self.epd.now = self.now
         self.epd.poll()
@@ -168,7 +171,7 @@ def test_responsive_dead_panel_no_provisioning():
     paw = MockPawLoop(busy_stuck=True)
     assert paw.setup_ms < 10000  # never the old 90 s+ boot stall
     assert paw.epd.degraded  # latched at first stuck wait
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     t_tx = paw.now
     for _ in range(DEADLINE_MS // TICK_MS):
         paw.tick(uart_bytes=den_challenge(nonce) if paw.now == t_tx else b'',
@@ -184,7 +187,7 @@ def test_responsive_dead_panel_no_provisioning():
 def test_responsive_garbage_usb_traffic():
     """Malformed USB bytes: no key stored, dock still prompt."""
     paw = MockPawLoop(busy_stuck=True)
-    nonce = bytes(range(0x20, 0x30))
+    nonce = bytes(range(0x20, 0x28))
     answered = None
     for i in range(DEADLINE_MS // TICK_MS):
         usb = b'\x00\xff\xa1\x99' if i % 3 == 0 else b'\xa3\x10' + bytes(20)

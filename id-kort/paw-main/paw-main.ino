@@ -19,7 +19,7 @@
  * Architecture:
  *   1. Wait for key from Mama Bear at startup over USB Serial
  *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
- *   3. Listen for challenge (nonce) from PLC over LoRa
+ *   3. Listen for challenge (8-byte nonce) from PLC over LoRa
  *   4. Compute HMAC-SHA256(key, nonce) and transmit response
  *   5. Update e-Paper with privacy-compliant authentication status icons
  *
@@ -121,7 +121,7 @@ static void setLoRaFlag(void) {
 
 #define AES_KEY_SIZE     16
 #define KEY_HASH_SIZE     4
-#define CHALLENGE_SIZE    16  // Nonce size
+#define CHALLENGE_SIZE    8  // Nonce size (PRO-51: 64-bit RNG)
 #define HMAC_SIZE         32  // HMAC-SHA256 output
 
 // =============================================================
@@ -922,7 +922,7 @@ static bool loraInitialized = false;
 // =============================================================
 //
 // Responder-only: PAW never initiates UART traffic. Valid CHALLENGE
-// frames (exactly 16-byte nonce) are answered with a framed RESPONSE
+// frames (exactly 8-byte nonce) are answered with a framed RESPONSE
 // carrying HMAC-SHA256(devkey, nonce) via the existing PRO-50
 // hmac_sha256 (reused, not duplicated). Everything else — malformed,
 // CRC-invalid, oversized, timed-out, unexpected type — is logged and
@@ -973,7 +973,7 @@ static void handleDockAuth() {
         }
             if (f.type == DEN_TYPE_CHALLENGE) {
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
-                // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
+                // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
                 uint8_t mac[DEN_HMAC_LEN];
                 hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
             uint8_t resp[DEN_MAX_FRAME];

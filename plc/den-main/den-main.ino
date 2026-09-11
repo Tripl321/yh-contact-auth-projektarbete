@@ -5,9 +5,10 @@
  *
  * Framing, CRC and parser come from the shared DenUartProtocol module
  * (no duplication here). This file owns: session state machine,
- * RP2350-TRNG nonce, local HMAC-SHA256, constant-time compare and ACK.
+ * RP2350-TRNG 64-bit nonce (PRO-51), local HMAC-SHA256, constant-time
+ * compare and ACK.
  *
- * Session: CHALLENGE(16B nonce) -> wait <=2000ms for RESPONSE(32B HMAC)
+ * Session: CHALLENGE(8B nonce) -> wait <=2000ms for RESPONSE(32B HMAC)
  * -> verify -> ACK(0x01/0x00) + AUTHENTICATED/FAILED log. Every failure
  * mode fails closed (deny, no retry inside the session).
  *
@@ -293,9 +294,15 @@ static void den_fail(uint8_t reason) {
 }
 
 static void den_send_challenge(uint32_t now) {
-  // 16-byte nonce from the RP2350 hardware RNG (ROSC TRNG via pico-sdk).
-  rng_128_t r;
-  get_rand_128(&r);
+  // 8-byte nonce from the RP2350 hardware RNG (ROSC TRNG via pico-sdk).
+  // PRO-51: 64-bit cryptographically secure random nonce per challenge.
+  uint64_t r = get_rand_64();
+  // Fail-closed: if RNG returns all zeros, do not send challenge
+  if (r == 0) {
+    Serial.println("[DEN] RNG failure: zero nonce, challenge aborted");
+    den_fail(DEN_REASON_PARSE_ERROR);
+    return;
+  }
   memcpy(denNonce, &r, DEN_NONCE_LEN);
   memset(&r, 0, sizeof(r));
 
@@ -327,7 +334,7 @@ static void den_on_response(const den_frame_t *f, uint32_t now) {
   }
   // Reject an all-zero nonce. This is a fail-closed guard that covers
   // two cases at once:
-  //   - TRNG failure: get_rand_128() returned all zeros, so the
+  //   - TRNG failure: get_rand_64() returned all zeros, so the
   //     challenge nonce is invalid; never authenticate on an empty nonce.
   //   - Stale/wiped nonce: den_fail() zeroes the nonce after a failure.
   //     Any response arriving against the wiped nonce cannot bind to the
@@ -336,10 +343,7 @@ static void den_on_response(const den_frame_t *f, uint32_t now) {
   //  by HMAC-MISMATCH, because only the current nonce is ever verified.)
   if (denNonce[0] == 0 && denNonce[1] == 0 && denNonce[2] == 0
       && denNonce[3] == 0 && denNonce[4] == 0 && denNonce[5] == 0
-      && denNonce[6] == 0 && denNonce[7] == 0 && denNonce[8] == 0
-      && denNonce[9] == 0 && denNonce[10] == 0 && denNonce[11] == 0
-      && denNonce[12] == 0 && denNonce[13] == 0 && denNonce[14] == 0
-      && denNonce[15] == 0) {
+      && denNonce[6] == 0 && denNonce[7] == 0) {
     den_fail(DEN_REASON_STALE_RESPONSE);
     return;
   }

@@ -27,17 +27,18 @@ def test_pro49_k_mac_derivation_vector():
 
 def test_pro49_hmac_uses_k_mac_not_master():
     """HMAC with K_mac differs from HMAC with master key (proves separation)."""
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))  # 8-byte nonce (PRO-51)
     hmac_master = hmac_module.new(DEV_KEY, nonce, hashlib.sha256).hexdigest()
     hmac_k_mac = hmac_module.new(K_MAC, nonce, hashlib.sha256).hexdigest()
-    assert hmac_master == 'e76b9e0fe4021d62ea97745ef43c654dc14698aa799acb9ccc3e7f2a2b41a19e'  # old vector
-    assert hmac_k_mac == DEV_HMAC_HEX  # new vector with K_mac
-    assert hmac_master != hmac_k_mac  # proves separation
+    # Both are valid HMACs but with different keys; they must differ
+    assert hmac_master != hmac_k_mac
+    # K_mac HMAC must match the shared test vector
+    assert hmac_k_mac == DEV_HMAC_HEX
 
 
 def test_pro49_invalid_hmac_rejected():
     """Manipulated HMAC (1 byte flipped) fails constant-time comparison."""
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))  # 8-byte nonce (PRO-51)
     valid_hmac = hmac_module.new(K_MAC, nonce, hashlib.sha256).digest()
     bad_hmac = bytearray(valid_hmac)
     bad_hmac[0] ^= 0xFF  # flip first byte

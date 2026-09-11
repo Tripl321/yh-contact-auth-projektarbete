@@ -1,7 +1,7 @@
 """
 PRO-84 PAW responder tests: valid challenge/response, bad CRC, invalid
 nonce length, unexpected type, split frames, parser recovery, and
-never-initiates. Cross-checks the DEN DEV vector (e76b9e0f...): PAW's
+never-initiates. Cross-checks the DEN DEV vector (782b6a81...): PAW's
 answer to DEN's challenge MUST equal what DEN expects (C-level interop
 additionally proven by host-extracted KAT of both hmac implementations).
 """
@@ -16,11 +16,11 @@ from tests.test_pro87_uart import (encode, decode, DenError, Scanner,
 
 DEV_KEY = bytes(range(16))  # must equal DEN_DEV_KEY (guarded below)
 K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
-DEV_HMAC_HEX = 'a934b5f2fcb05502a2c3bb439523a0a9f508e31b60195f0aaf476f536ebde67c'
+DEV_HMAC_HEX = '782b6a817980c559128e9804f6434d4a08ca0dacb2107658e7f777b1ecb57bda'
 
 
 def paw_hmac(nonce):
-    assert len(nonce) == 16
+    assert len(nonce) == 8
     return hmac_module.new(K_MAC, nonce, hashlib.sha256).digest()
 
 
@@ -76,7 +76,7 @@ class MockPawResponder:
 def test_pro84_valid_challenge_response():
     """PAW answer matches DEN's expected MAC (interop vector)."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce))
     assert len(paw.sent) == 1
     t, mac = decode(paw.sent[0])
@@ -87,7 +87,7 @@ def test_pro84_valid_challenge_response():
 
 def test_pro84_bad_crc_ignored():
     paw = MockPawResponder()
-    bad = bytearray(encode(T_CHALLENGE, bytes(16)))
+    bad = bytearray(encode(T_CHALLENGE, bytes(8)))
     bad[-1] ^= 0x01
     paw.feed(bytes(bad))
     assert paw.sent == []
@@ -95,10 +95,10 @@ def test_pro84_bad_crc_ignored():
 
 
 def test_pro84_invalid_nonce_length_ignored():
-    """LEN != 16 for CHALLENGE: rejected at decode, never answered."""
+    """LEN != 8 for CHALLENGE: rejected at decode, never answered."""
     import struct
     import binascii
-    for ln in (0, 8, 15, 17, 33):
+    for ln in (0, 7, 9, 15, 17, 33):
         body = struct.pack('<H', ln) + bytes([T_CHALLENGE]) + bytes(ln)
         frame = bytes([0xAA]) + body + struct.pack(
             '<I', binascii.crc32(body) & 0xFFFFFFFF)
@@ -122,7 +122,7 @@ def test_pro84_unexpected_type_ignored():
 
 def test_pro84_split_frames_assemble():
     paw = MockPawResponder()
-    frame = encode(T_CHALLENGE, bytes(range(16)))
+    frame = encode(T_CHALLENGE, bytes(range(8)))
     paw.feed(frame[:5])
     assert paw.sent == []
     paw.feed(frame[5:11])
@@ -135,11 +135,11 @@ def test_pro84_garbage_recovery():
     """Garbage then corrupt then valid: only the valid one answered."""
     paw = MockPawResponder()
     paw.feed(bytes([0x00, 0xFF, 0x55, 0xA1, 0x02]))
-    bad = bytearray(encode(T_CHALLENGE, bytes(16)))
+    bad = bytearray(encode(T_CHALLENGE, bytes(8)))
     bad[10] ^= 0xFF
     paw.feed(bytes(bad))
     assert paw.sent == []
-    paw.feed(encode(T_CHALLENGE, bytes(range(16))))
+    paw.feed(encode(T_CHALLENGE, bytes(range(8))))
     assert len(paw.sent) == 1
 
 
@@ -181,7 +181,7 @@ def test_pro84_source_guards():
 def test_pro58_challenge_sets_authenticating():
     """CHALLENGE frame sets display to AUTHENTICATING (non-blocking)."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     assert paw.display_status == 'authenticating'
     assert paw.ack_pending is True
@@ -191,7 +191,7 @@ def test_pro58_challenge_sets_authenticating():
 def test_pro58_ack_success_sets_authenticated():
     """ACK 0x01 after RESPONSE sets display to AUTHENTICATED."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     paw.feed(encode(T_ACK, b'\x01'), now=1100)
     assert paw.display_status == 'authenticated'
@@ -201,7 +201,7 @@ def test_pro58_ack_success_sets_authenticated():
 def test_pro58_ack_fail_sets_failed():
     """ACK 0x00 after RESPONSE sets display to FAILED."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     paw.feed(encode(T_ACK, b'\x00'), now=1100)
     assert paw.display_status == 'failed'
@@ -211,7 +211,7 @@ def test_pro58_ack_fail_sets_failed():
 def test_pro58_late_ack_ignored():
     """Late ACK after PAW timeout (2.5 s) is ignored; FAILED stays."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     assert paw.display_status == 'authenticating'
     # PAW watchdog fires at >2500 ms after response (firmware uses > 2500)
@@ -228,7 +228,7 @@ def test_pro58_timeout_does_not_affect_auth():
     """Display/Ack watchdog is display-only: DEN decision logic is
     independent of e-paper state (fail-closed)."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     # Simulate a display degrade: showStatus returns but status is set.
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     assert paw.display_status == 'authenticating'
@@ -242,13 +242,13 @@ def test_pro58_new_challenge_resets_authenticating():
     """A new CHALLENGE resets display to AUTHENTICATING even if prior
     session was FAILED or AUTHENTICATED."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     # First challenge -> ACK fail -> FAILED
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     paw.feed(encode(T_ACK, b'\x00'), now=1100)
     assert paw.display_status == 'failed'
     # Second challenge -> AUTHENTICATING again
-    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x30))), now=2000)
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x28))), now=2000)
     assert paw.display_status == 'authenticating'
     assert paw.ack_pending is True
 
@@ -260,7 +260,7 @@ def test_pro58_new_challenge_resets_authenticating():
 def test_pro59_authenticated_persists_until_new_challenge():
     """AUTHENTICATED stays until a new CHALLENGE resets to AUTHENTICATING."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     paw.feed(encode(T_ACK, b'\x01'), now=1100)
     assert paw.display_status == 'authenticated'
@@ -269,7 +269,7 @@ def test_pro59_authenticated_persists_until_new_challenge():
     paw.poll(now=5000)
     assert paw.display_status == 'authenticated'
     # New challenge resets to AUTHENTICATING
-    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x30))), now=6000)
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x28))), now=6000)
     assert paw.display_status == 'authenticating'
     assert paw.ack_pending is True
 
@@ -277,7 +277,7 @@ def test_pro59_authenticated_persists_until_new_challenge():
 def test_pro59_timeout_after_challenge_sets_failed():
     """PAW watchdog timeout (2.5 s) after CHALLENGE sets FAILED."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     assert paw.display_status == 'authenticating'
     # Watchdog fires at 3501 ms (1000 + 2500 + 1)
@@ -289,7 +289,7 @@ def test_pro59_timeout_after_challenge_sets_failed():
 def test_pro59_failed_response_sets_failed():
     """ACK 0x00 after RESPONSE sets FAILED (mirrors DEN deny)."""
     paw = MockPawResponder()
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     paw.feed(encode(T_CHALLENGE, nonce), now=1000)
     paw.feed(encode(T_ACK, b'\x00'), now=1100)
     assert paw.display_status == 'failed'
