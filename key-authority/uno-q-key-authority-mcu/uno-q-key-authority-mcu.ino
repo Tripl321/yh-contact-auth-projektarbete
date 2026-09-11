@@ -122,10 +122,12 @@ static inline void printHex(const uint8_t* data, size_t len) {
 #endif
 
 // Generates 32-bit words from RNG_DR and packs them into the output buffer.
+// PRO-45: Fixed RNG error handling - proper disable/enable cycle with FIFO drain.
 static bool generateSecureRandomBytes(uint8_t* buffer, size_t length) {
 #if USE_ZEPHYR_CSRAND
   return (sys_csrand_get(buffer, length) == 0);
 #else
+  // Enable RNG
   STM32_RNG_CR |= RNG_CR_RNGEN;
 
   size_t bytesGenerated = 0;
@@ -134,11 +136,25 @@ static bool generateSecureRandomBytes(uint8_t* buffer, size_t length) {
     while (__builtin_expect(!(STM32_RNG_SR & RNG_SR_DRDY), 1)) {
       uint32_t sr = STM32_RNG_SR;
       if (sr & (RNG_SR_CECS | RNG_SR_SECS)) {
-        // BUG: toggling RNG_CR here resets the error flags but does NOT
-        // clear the FIFO. Residual corrupted data may be read on the next
-        // call. A full RNG disable/enable with DRDY polling is safer.
+        // PRO-45: Proper RNG error recovery - full disable/enable cycle
+        // with FIFO drain to prevent stale corrupted data.
         STM32_RNG_CR &= ~RNG_CR_RNGEN;
+        // Wait for RNG to be disabled
+        timeout = 0xFFFF;
+        while (STM32_RNG_CR & RNG_CR_RNGEN && --timeout > 0) {}
+        // Re-enable RNG
         STM32_RNG_CR |= RNG_CR_RNGEN;
+        // Wait for DRDY and discard stale data
+        timeout = 0xFFFF;
+        while (!(STM32_RNG_SR & RNG_SR_DRDY) && --timeout > 0) {}
+        if (timeout == 0) return false;
+        // Drain stale data from FIFO (up to 4 words)
+        for (int i = 0; i < 4; i++) {
+          if (STM32_RNG_SR & RNG_SR_DRDY) {
+            volatile uint32_t dummy = STM32_RNG_DR;
+            (void)dummy;
+          }
+        }
         return false;
       }
       if (__builtin_expect(--timeout == 0, 0)) return false;
