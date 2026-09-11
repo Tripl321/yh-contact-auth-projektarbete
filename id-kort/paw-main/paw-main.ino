@@ -6,7 +6,7 @@
  *   - PRO-48: Key reception from UNO Q (paw-key-receiver.ino)
  *   - PRO-50: HMAC-SHA256 challenge-response
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
- *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
+ *   - PRO-58: e-paper status during challenge-response + LoRa P2P (RadioLib SX1262)
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
  *   USB Serial (Mama Bear): key provisioning over USB-C (no GPIO)
@@ -826,8 +826,23 @@ static den_scanner_t denScanner;
 // so the responder can show AUTHENTICATING on dock activity.
 extern ShallotEPD epd;
 
+// PAW-side ACK watchdog (PRO-60). Not a state machine: a single flag + timer
+// that only drives the e-paper. It never affects DEN deadlines or auth.
+static uint32_t paw_last_resp_sent_at = 0;
+static bool paw_ack_pending = false;
+
 static void handleDockAuth() {
     uint32_t now = millis();
+
+    // PAW-side ACK watchdog: if we sent a RESPONSE and got no ACK
+    // within 2.5 s, show FAILED. This is display-only; DEN is
+    // authoritative for auth and its 2 s deadline is unaffected.
+    if (paw_ack_pending && now - paw_last_resp_sent_at > 2500) {
+        epd.showStatus(EPD_STATUS_FAILED);
+        paw_ack_pending = false;
+        Serial.println("[PRO-60] PAW ACK timeout -> FAILED on e-paper");
+    }
+
     while (Serial1.available()) {
         den_frame_t f;
         den_status_t st = den_scanner_push(&denScanner, (uint8_t)Serial1.read(), now, &f);
@@ -837,26 +852,44 @@ static void handleDockAuth() {
             Serial.println((int)st);
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
-        if (f.type != DEN_TYPE_CHALLENGE) {
+        if (f.type == DEN_TYPE_CHALLENGE) {
+            epd.showStatus(EPD_STATUS_AUTHENTICATING);
+            // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
+            uint8_t mac[DEN_HMAC_LEN];
+            hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY), f.payload, f.payloadLen, mac);
+            uint8_t resp[DEN_MAX_FRAME];
+            size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
+            memset(mac, 0, sizeof(mac));
+            if (!n) {
+                Serial.println("[PRO-84] Response encode failed");
+                continue;
+            }
+            Serial1.write(resp, n);
+            Serial1.flush();
+            paw_last_resp_sent_at = now;
+            paw_ack_pending = true;
+            memset(resp, 0, sizeof(resp));
+            Serial.println("[PRO-84] CHALLENGE answered over dock UART");
+        } else if (f.type == DEN_TYPE_ACK) {
+            if (!paw_ack_pending) {
+                // Late ACK after PAW timeout: ignore to avoid
+                // overwriting FAILED for a session that already
+                // timed out from PAW's perspective.
+                Serial.println("[PRO-84] ACK ignored (no pending response)");
+                continue;
+            }
+            paw_ack_pending = false;
+            if (f.payloadLen == 1 && f.payload[0] == 0x01) {
+                epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                Serial.println("[PRO-84] DEN acknowledged success");
+            } else {
+                epd.showStatus(EPD_STATUS_FAILED);
+                Serial.println("[PRO-84] DEN denied (ACK 0x00)");
+            }
+        } else {
             Serial.print("[PRO-84] Dock frame ignored, type 0x");
             Serial.println(f.type, HEX);
-            continue;  // responder-only: only CHALLENGE is accepted
         }
-        // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
-        uint8_t mac[DEN_HMAC_LEN];
-        hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY), f.payload, f.payloadLen, mac);
-        uint8_t resp[DEN_MAX_FRAME];
-        size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
-        memset(mac, 0, sizeof(mac));
-        if (!n) {
-            Serial.println("[PRO-84] Response encode failed");
-            continue;
-        }
-        Serial1.write(resp, n);
-        Serial1.flush();
-        memset(resp, 0, sizeof(resp));
-        Serial.println("[PRO-84] CHALLENGE answered over dock UART");
-        epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 }
 

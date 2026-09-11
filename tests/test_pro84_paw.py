@@ -30,6 +30,9 @@ class MockPawResponder:
         self.sc = Scanner()
         self.sent = []  # frames PAW transmitted
         self.log = []
+        self.display_status = None   # last epd.showStatus value
+        self.ack_pending = False      # waiting for DEN ACK
+        self.last_resp_sent_at = 0    # millis of last RESPONSE transmit
 
     def feed(self, data, now=1000):
         for b in bytes(data):
@@ -42,10 +45,31 @@ class MockPawResponder:
                 continue
             ptype, payload = r
             if ptype != T_CHALLENGE:
-                self.log.append('ignored type 0x%02x' % ptype)
+                if ptype == T_ACK and self.ack_pending:
+                    self.ack_pending = False
+                    if payload and payload[0] == 0x01:
+                        self.display_status = 'authenticated'
+                        self.log.append('ack_authenticated')
+                    else:
+                        self.display_status = 'failed'
+                        self.log.append('ack_failed')
+                elif ptype == T_ACK and not self.ack_pending:
+                    self.log.append('ignored: no pending response')
+                else:
+                    self.log.append('ignored type 0x%02x' % ptype)
                 continue
+            self.display_status = 'authenticating'
             self.sent.append(encode(T_RESPONSE, paw_hmac(payload)))
+            self.last_resp_sent_at = now
+            self.ack_pending = True
             self.log.append('answered')
+
+    def poll(self, now=1000):
+        """PAW-side ACK watchdog: 2.5 s after last response -> FAILED."""
+        if self.ack_pending and now - self.last_resp_sent_at > 2500:
+            self.display_status = 'failed'
+            self.ack_pending = False
+            self.log.append('ack_timeout')
 
 
 def test_pro84_valid_challenge_response():
@@ -91,7 +115,8 @@ def test_pro84_unexpected_type_ignored():
     paw.feed(encode(T_ALARM, b'\x02'))
     paw.feed(encode(T_RESPONSE, bytes(32)))
     assert paw.sent == []
-    assert sum('ignored type' in line for line in paw.log) == 4
+    assert sum('ignored type' in line for line in paw.log) == 3  # HEARTBEAT, ALARM, RESPONSE
+    assert 'ignored: no pending response' in paw.log  # ACK with no pending
 
 
 def test_pro84_split_frames_assemble():
@@ -145,3 +170,82 @@ def test_pro84_source_guards():
     den = (root / 'plc/den-main/den-main.ino').read_text()
     assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in den
     assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in src  # same dev key
+
+
+# ============================================================================
+# PRO-58: e-paper status transitions during dock challenge-response
+# ============================================================================
+
+def test_pro58_challenge_sets_authenticating():
+    """CHALLENGE frame sets display to AUTHENTICATING (non-blocking)."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    assert paw.display_status == 'authenticating'
+    assert paw.ack_pending is True
+    assert paw.last_resp_sent_at == 1000
+
+
+def test_pro58_ack_success_sets_authenticated():
+    """ACK 0x01 after RESPONSE sets display to AUTHENTICATED."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    paw.feed(encode(T_ACK, b'\x01'), now=1100)
+    assert paw.display_status == 'authenticated'
+    assert paw.ack_pending is False
+
+
+def test_pro58_ack_fail_sets_failed():
+    """ACK 0x00 after RESPONSE sets display to FAILED."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    paw.feed(encode(T_ACK, b'\x00'), now=1100)
+    assert paw.display_status == 'failed'
+    assert paw.ack_pending is False
+
+
+def test_pro58_late_ack_ignored():
+    """Late ACK after PAW timeout (2.5 s) is ignored; FAILED stays."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    assert paw.display_status == 'authenticating'
+    # PAW watchdog fires at >2500 ms after response (firmware uses > 2500)
+    paw.poll(now=3501)
+    assert paw.display_status == 'failed'
+    assert paw.ack_pending is False
+    # Late ACK must not overwrite FAILED
+    paw.feed(encode(T_ACK, b'\x01'), now=4000)
+    assert paw.display_status == 'failed'
+    assert 'ignored: no pending response' in paw.log
+
+
+def test_pro58_timeout_does_not_affect_auth():
+    """Display/Ack watchdog is display-only: DEN decision logic is
+    independent of e-paper state (fail-closed)."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    # Simulate a display degrade: showStatus returns but status is set.
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    assert paw.display_status == 'authenticating'
+    # Even if display is stuck/degraded, the auth answer is still sent.
+    assert len(paw.sent) == 1
+    t, mac = decode(paw.sent[0])
+    assert t == T_RESPONSE and mac.hex() == DEV_HMAC_HEX
+
+
+def test_pro58_new_challenge_resets_authenticating():
+    """A new CHALLENGE resets display to AUTHENTICATING even if prior
+    session was FAILED or AUTHENTICATED."""
+    paw = MockPawResponder()
+    nonce = bytes(range(0x10, 0x20))
+    # First challenge -> ACK fail -> FAILED
+    paw.feed(encode(T_CHALLENGE, nonce), now=1000)
+    paw.feed(encode(T_ACK, b'\x00'), now=1100)
+    assert paw.display_status == 'failed'
+    # Second challenge -> AUTHENTICATING again
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x20, 0x30))), now=2000)
+    assert paw.display_status == 'authenticating'
+    assert paw.ack_pending is True
