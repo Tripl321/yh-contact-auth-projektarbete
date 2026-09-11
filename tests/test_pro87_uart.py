@@ -16,7 +16,7 @@ BYTE_TIMEOUT_MS = 100
 RESPONSE_DEADLINE_MS = 2000
 MAX_RESYNC_SKIPS = 64
 
-TYPE_SIZES = {T_CHALLENGE: 16, T_RESPONSE: 32, T_HEARTBEAT: 0, T_ALARM: 1, T_ACK: 1}
+TYPE_SIZES = {T_CHALLENGE: 8, T_RESPONSE: 32, T_HEARTBEAT: 0, T_ALARM: 1, T_ACK: 1}
 
 
 def crc32(data):
@@ -98,8 +98,8 @@ VECTORS = {
         (T_ACK, '01'),
     'aa01000402511c9a13':
         (T_ALARM, '02'),
-    'aa100001000102030405060708090a0b0c0d0e0ffb90996c':
-        (T_CHALLENGE, '000102030405060708090a0b0c0d0e0f'),
+    'aa08000100010203040506071cf3b72b':
+        (T_CHALLENGE, '0001020304050607'),
     'aa200002202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f09ad4514':
         (T_RESPONSE, '202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f'),
 }
@@ -140,8 +140,8 @@ def test_decode_bad_length():
 
 
 def test_decode_wrong_size_for_type():
-    good = bytearray(encode(T_CHALLENGE, bytes(16)))
-    good[1] = 8  # lie about length; CRC recomputed over the lie is wrong too
+    good = bytearray(encode(T_CHALLENGE, bytes(8)))
+    good[1] = 7  # lie about length; CRC recomputed over the lie is wrong too
     try:
         decode(bytes(good))
         assert False
@@ -184,7 +184,7 @@ def test_scanner_garbage_prefix_resyncs():
 
 def test_scanner_split_frame_waits():
     sc = Scanner()
-    frame = bytes.fromhex('aa100001000102030405060708090a0b0c0d0e0ffb90996c')
+    frame = bytes.fromhex('aa08000100010203040506071cf3b72b')
     for b in frame[:7]:
         assert sc.push(b, 1000) is None  # partial: waits, drops nothing
     out = None
@@ -192,7 +192,7 @@ def test_scanner_split_frame_waits():
         r = sc.push(b, 1000)
         if r is not None:
             out = r
-    assert out[0] == T_CHALLENGE and out[1] == bytes(range(16))
+    assert out[0] == T_CHALLENGE and out[1] == bytes(range(8))
 
 
 def test_scanner_byte_timeout_discards():

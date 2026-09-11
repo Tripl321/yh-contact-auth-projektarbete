@@ -5,7 +5,7 @@ Mirror of plc/den-main/den-main.ino session logic
 (DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED).
 HMAC oracle is hashlib; the firmware C SHA/HMAC was separately
 KAT-verified by host extraction. DEV key below equals the
-firmware DEN_DEV_KEY stub (bring-up only, #warning-marked).
+firmware DEN_K_MAC stub (bring-up only, #warning-marked).
 
 PRO-53: DEN starts in DENIED after boot, reset, disconnect,
 malformed input, or session expiry. Only a complete, valid
@@ -16,12 +16,15 @@ made before ACK and never depends on it.
 import hashlib
 import hmac as hmac_module
 
-DEV_KEY = bytes(range(16))
+K_MAC = bytes(range(16))
 DEADLINE_MS = 2000
 SESSION_GAP_MS = 1000
 
-# HMAC-SHA256(DEV_KEY, nonce 0x10..0x1F) — pins firmware behavior.
-DEV_HMAC_HEX = 'e76b9e0fe4021d62ea97745ef43c654dc14698aa799acb9ccc3e7f2a2b41a19e'
+DEV_KEY = bytes(range(16))  # development key, must match DEN_DEV_KEY
+K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
+
+# HMAC-SHA256(K_mac, nonce 0x10..0x17) — pins firmware behavior (PRO-49, PRO-51).
+DEV_HMAC_HEX = '782b6a817980c559128e9804f6434d4a08ca0dacb2107658e7f777b1ecb57bda'
 
 # Non-secret reason codes (match firmware enum DenReason).
 REASON_OK = 0
@@ -35,7 +38,7 @@ REASON_STALE_RESPONSE = 7
 
 
 def hmac16(key, nonce):
-    assert len(key) == 16 and len(nonce) == 16
+    assert len(key) == 16 and len(nonce) == 8
     return hmac_module.new(key, nonce, hashlib.sha256).digest()
 
 
@@ -44,18 +47,20 @@ class MockDenSession:
     machine: DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED."""
 
     def __init__(self, key):
-        self.key = key
+        self.key = key  # master key (for K_mac derivation in real firmware)
+        self.k_mac = K_MAC  # PRO-49: derived HMAC key
         self.nonce = None
         self.sent_at = None
         self.state = 'DENIED'       # DEN_ST_DENIED initially
         self.state_at = 0
         self.done = None            # (verdict, ack_byte, reason_code)
         self.log = []
+        self.denBytesRx = 0  # bytes received in current session
 
     def send_challenge(self, nonce, now):
         """Transition DENIED → CHALLENGE_SENT."""
         assert self.state == 'DENIED'
-        assert len(nonce) == 16
+        assert len(nonce) == 8
         self.nonce = bytes(nonce)
         self.sent_at = now
         self.state = 'CHALLENGE_SENT'
@@ -75,16 +80,18 @@ class MockDenSession:
             return self._finish(False, REASON_UNEXPECTED_TYPE)
         if not size_ok or len(payload) != 32:
             return self._finish(False, REASON_INVALID_SIZE)
-        expect = hmac16(self.key, self.nonce)
+        expect = hmac16(self.k_mac, self.nonce)
         if not hmac_module.compare_digest(expect, bytes(payload)):
             return self._finish(False, REASON_HMAC_MISMATCH)
         return self._finish(True, REASON_OK)
 
     def poll_timeout(self, now):
-        """Check deadline expiry in CHALLENGE_SENT."""
+        """Check deadline expiry in CHALLENGE_SENT.
+        Mirrors firmware: DISCONNECT if zero bytes, TIMEOUT otherwise."""
         if self.state == 'CHALLENGE_SENT' and self.nonce is not None \
                 and now - self.sent_at > DEADLINE_MS:
-            self._finish(False, REASON_TIMEOUT)
+            reason = REASON_DISCONNECT if self.denBytesRx == 0 else REASON_TIMEOUT
+            self._finish(False, reason)
 
     def _finish(self, ok, reason):
         ack = 0x01 if ok else 0x00
@@ -105,13 +112,13 @@ class MockDenSession:
 
 
 def test_pro88_hmac_vector():
-    """DEV-key vector pins the exact MAC the firmware must compute."""
-    assert hmac16(DEV_KEY, bytes(range(0x10, 0x20))).hex() == DEV_HMAC_HEX
+    """K_mac vector pins the exact MAC the firmware must compute (PRO-49)."""
+    assert hmac16(K_MAC, bytes(range(0x10, 0x18))).hex() == DEV_HMAC_HEX
 
 
 def test_pro53_boot_starts_denied():
     """DEN starts in DENIED after boot (PRO-53 requirement)."""
-    s = MockDenSession(DEV_KEY)
+    s = MockDenSession(K_MAC)
     assert s.state == 'DENIED'
     assert s.nonce is None
     assert s.done is None
@@ -120,11 +127,11 @@ def test_pro53_boot_starts_denied():
 def test_pro53_happy_path_auth_then_denied():
     """Success transitions CHALLENGE_SENT → AUTHENTICATED → DENIED.
     Prior success does not remain valid indefinitely."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
     assert s.state == 'CHALLENGE_SENT'
-    ok, ack, reason = s.on_frame(0x02, hmac16(DEV_KEY, nonce), 10100)
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert ok and ack == 0x01 and reason == REASON_OK
     assert s.state == 'AUTHENTICATED'
     s.advance_gap(10100 + SESSION_GAP_MS + 1)
@@ -135,8 +142,9 @@ def test_pro53_happy_path_auth_then_denied():
 
 def test_pro53_timeout_denied():
     """Deadline exceeded → DENIED, not CHALLENGE_SENT."""
-    s = MockDenSession(DEV_KEY)
-    s.send_challenge(bytes(16), 10000)
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
+    s.denBytesRx = 1  # simulate some bytes received (TIMEOUT, not DISCONNECT)
     s.poll_timeout(10000 + DEADLINE_MS + 1)
     assert s.done == (False, 0x00, REASON_TIMEOUT)
     assert s.state == 'DENIED'
@@ -145,43 +153,43 @@ def test_pro53_timeout_denied():
 
 def test_pro53_late_response_denied():
     """Answer after deadline must not grant."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
-    ok, ack, reason = s.on_frame(0x02, hmac16(DEV_KEY, nonce),
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce),
                                   10000 + DEADLINE_MS + 1)
     assert (ok, ack, reason) == (False, 0x00, REASON_TIMEOUT)
 
 
 def test_pro53_malformed_crc_denied():
-    s = MockDenSession(DEV_KEY)
-    s.send_challenge(bytes(16), 10000)
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
     assert s.on_frame(0x02, bytes(32), 10100, crc_ok=False) \
         == (False, 0x00, REASON_PARSE_ERROR)
 
 
 def test_pro53_unexpected_type_denied():
     """Loopback-style: own CHALLENGE (or HEARTBEAT) as answer → DENIED."""
-    s = MockDenSession(DEV_KEY)
-    s.send_challenge(bytes(16), 10000)
-    assert s.on_frame(0x01, bytes(16), 10100) == (False, 0x00, REASON_UNEXPECTED_TYPE)
-    s2 = MockDenSession(DEV_KEY)
-    s2.send_challenge(bytes(16), 10000)
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
+    assert s.on_frame(0x01, bytes(8), 10100) == (False, 0x00, REASON_UNEXPECTED_TYPE)
+    s2 = MockDenSession(K_MAC)
+    s2.send_challenge(bytes(8), 10000)
     assert s2.on_frame(0x03, b'', 10100) == (False, 0x00, REASON_UNEXPECTED_TYPE)
 
 
 def test_pro53_invalid_size_denied():
-    s = MockDenSession(DEV_KEY)
-    s.send_challenge(bytes(16), 10000)
-    assert s.on_frame(0x02, bytes(16), 10100, size_ok=False) \
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
+    assert s.on_frame(0x02, bytes(8), 10100, size_ok=False) \
         == (False, 0x00, REASON_INVALID_SIZE)
 
 
 def test_pro53_hmac_mismatch_denied():
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
-    bad = bytearray(hmac16(DEV_KEY, nonce))
+    bad = bytearray(hmac16(K_MAC, nonce))
     bad[0] ^= 0x01
     assert s.on_frame(0x02, bytes(bad), 10100) == (False, 0x00, REASON_HMAC_MISMATCH)
     assert s.log == ['FAILED:5']
@@ -190,11 +198,11 @@ def test_pro53_hmac_mismatch_denied():
 def test_pro53_stale_response_denied():
     """Response for a prior session (nonce already wiped) is rejected.
     A prior successful session must not authorize a later failed session."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     # Complete a session successfully.
     s.send_challenge(nonce, 10000)
-    s.on_frame(0x02, hmac16(DEV_KEY, nonce), 10100)
+    s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert s.state == 'AUTHENTICATED'
     s.advance_gap(10100 + SESSION_GAP_MS + 1)
     assert s.state == 'DENIED'
@@ -207,18 +215,18 @@ def test_pro53_prior_success_not_authorizing():
     """A prior successful session must not remain valid indefinitely.
     After the session gap, DEN is DENIED and a new challenge is
     required for any new session."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
-    s.on_frame(0x02, hmac16(DEV_KEY, nonce), 10100)
+    s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert s.state == 'AUTHENTICATED'
     s.advance_gap(10100 + SESSION_GAP_MS + 1)
     assert s.state == 'DENIED'
     # Prior success is logged but not remembered.
     assert s.done[0] is True
     # A new session starts from DENIED with a new nonce.
-    s2 = MockDenSession(DEV_KEY)
-    s2.send_challenge(bytes(16), 20000)
+    s2 = MockDenSession(K_MAC)
+    s2.send_challenge(bytes(8), 20000)
     assert s2.state == 'CHALLENGE_SENT'
     assert s2.state != 'AUTHENTICATED'
     # s2 cannot inherit s1's authentication.
@@ -227,11 +235,11 @@ def test_pro53_prior_success_not_authorizing():
 def test_pro53_ack_is_informational():
     """ACK is informational; the access decision is made before ACK.
     A late or missing ACK does not change the DEN decision."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
     # Decision is made by on_frame; ACK is just the output.
-    ok, ack, reason = s.on_frame(0x02, hmac16(DEV_KEY, nonce), 10100)
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert ok and ack == 0x01
     # Even if ACK is never sent or delayed, the decision stands.
     assert s.state == 'AUTHENTICATED'
@@ -239,8 +247,8 @@ def test_pro53_ack_is_informational():
 
 def test_pro53_disconnect_returns_denied():
     """PAW disconnect must leave/return DEN to DENIED."""
-    s = MockDenSession(DEV_KEY)
-    s.send_challenge(bytes(16), 10000)
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
     # Simulate disconnect (no bytes for >3s while in CHALLENGE_SENT).
     s.state = 'DENIED'
     s.state_at = 10000 + 4000  # 4 seconds elapsed
@@ -251,12 +259,12 @@ def test_pro53_display_does_not_affect_decision():
     """PAW display/UI and other peripherals do not alter the
     DEN decision or deadline. The DEN makes decisions solely
     based on UART frames, deadlines, and HMAC verification."""
-    s = MockDenSession(DEV_KEY)
-    nonce = bytes(range(0x10, 0x20))
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
     # Simulating a display change (not modeled) does not change
     # the outcome; only the UART frame matters.
-    ok, ack, reason = s.on_frame(0x02, hmac16(DEV_KEY, nonce), 10100)
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert ok and ack == 0x01
     # A hypothetical display event would not alter this.
 

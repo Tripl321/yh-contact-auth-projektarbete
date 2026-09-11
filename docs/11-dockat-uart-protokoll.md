@@ -34,7 +34,7 @@ sessionen — ny session kräver ny CHALLENGE med färsk nonce.
 
 | Typ | Värde | Riktning | Payload | Storlek |
 |---|---|---|---|---|
-| CHALLENGE | 0x01 | DEN → PAW | färsk nonce (RP2350 TRNG) | **16 B** |
+| CHALLENGE | 0x01 | DEN → PAW | färsk nonce (RP2350 TRNG, 64-bit) | **8 B** |
 | RESPONSE | 0x02 | PAW → DEN | HMAC-SHA256(K, epoch \|\| nonce) | **32 B** |
 | HEARTBEAT | 0x03 | valfri → valfri | ingen (närvaro = liv) | **0 B** |
 | ALARM | 0x04 | PAW → DEN | larmkod (t.ex. 0x01 sabotage, 0x02 lågt batteri) | **1 B** |

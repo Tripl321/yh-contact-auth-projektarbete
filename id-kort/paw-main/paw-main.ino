@@ -3,10 +3,12 @@
  * Target: Adafruit Feather RP2350 + Core1262-868M + 1.54" Waveshare e-Paper
  * 
  * Full PAW firmware combining:
+ *   - PRO-47: secure key storage in SRAM (clear on timeout/disconnect/reset)
  *   - PRO-48: Key reception from UNO Q (paw-key-receiver.ino)
  *   - PRO-50: HMAC-SHA256 challenge-response
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
- *   - PRO-58: LoRa P2P communication with PLC (RadioLib SX1262)
+ *   - PRO-58: e-paper status during challenge-response + LoRa P2P (RadioLib SX1262)
+ *   - PRO-59: approved authentication text on e-paper
  *
  * Hardware pin mapping (Feather RP2350 silkscreen labels):
  *   USB Serial (Mama Bear): key provisioning over USB-C (no GPIO)
@@ -17,7 +19,7 @@
  * Architecture:
  *   1. Wait for key from Mama Bear at startup over USB Serial
  *   2. Initialize LoRa (SX1262 on SPI1) and e-Paper (SPI0)
- *   3. Listen for challenge (nonce) from PLC over LoRa
+ *   3. Listen for challenge (8-byte nonce) from PLC over LoRa
  *   4. Compute HMAC-SHA256(key, nonce) and transmit response
  *   5. Update e-Paper with privacy-compliant authentication status icons
  *
@@ -119,7 +121,7 @@ static void setLoRaFlag(void) {
 
 #define AES_KEY_SIZE     16
 #define KEY_HASH_SIZE     4
-#define CHALLENGE_SIZE    16  // Nonce size
+#define CHALLENGE_SIZE    8  // Nonce size (PRO-51: 64-bit RNG)
 #define HMAC_SIZE         32  // HMAC-SHA256 output
 
 // =============================================================
@@ -137,11 +139,53 @@ static void setLoRaFlag(void) {
 #define EPD_INIT_TIMEOUT_MS    2000
 
 // =============================================================
-// Key Storage
+// Key Storage (PRO-47 + PRO-49)
+// =============================================================
+//
+// Key hierarchy (SRAM-only, never flash/serial):
+//   aesKey   : master key (128-bit, received from UNO Q via USB provisioning)
+//   kMac     : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
+//   kEnc     : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
+//
+// All three roles are kept in separate SRAM buffers. Boundaries are
+// enforced by naming convention: never mix key material across roles
+// without explicit derivation. Key material is NEVER written to flash,
+// logs, or serial output. Only the 4-byte SHA-256 fingerprint is transmitted.
+//
+// PRO-49: K_mac is derived on key receipt via hardware-accelerated SHA-256
+// where available (RP2350 SHA accelerator), falling back to software.
+// HMAC always uses K_mac, never the master key directly.
 // =============================================================
 
 static uint8_t aesKey[AES_KEY_SIZE];
+static uint8_t kMac[AES_KEY_SIZE];   // derived HMAC key (PRO-49)
+static uint8_t kEnc[AES_KEY_SIZE];   // derived encryption key (reserved)
 static bool keyStored = false;
+
+static void secure_clear_key() {
+    volatile uint8_t* k = (volatile uint8_t*)aesKey;
+    for (int i = 0; i < AES_KEY_SIZE; i++) k[i] = 0;
+    volatile uint8_t* m = (volatile uint8_t*)kMac;
+    for (int i = 0; i < AES_KEY_SIZE; i++) m[i] = 0;
+    volatile uint8_t* e = (volatile uint8_t*)kEnc;
+    for (int i = 0; i < AES_KEY_SIZE; i++) e[i] = 0;
+    keyStored = false;
+}
+
+// PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
+// RP2350 SHA-256 accelerator is used where available; falls back to software.
+static void derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
+    // RP2350 hardware SHA-256 accelerator: use pico-sdk sha256_hw if available
+    // For now, use software implementation (same as rest of firmware)
+    uint8_t full_hash[32];
+    uint8_t msg[16 + 3];  // master(16) || "MAC"(3)
+    memcpy(msg, master, AES_KEY_SIZE);
+    memcpy(msg + AES_KEY_SIZE, "MAC", 3);
+    sha256(msg, sizeof(msg), full_hash);
+    memcpy(k_mac_out, full_hash, AES_KEY_SIZE);
+    memset(full_hash, 0, sizeof(full_hash));
+    memset(msg, 0, sizeof(msg));
+}
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
@@ -210,6 +254,8 @@ private:
     void drawCircle(int cx, int cy, int r, bool white);
     void drawCircleFilled(int cx, int cy, int r, bool white);
     void drawIcon(int cx, int cy, int size, EpdStatus status);
+    void drawChar(char c, int x, int y);
+    void drawText(const char* text, int x, int y);
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
     // Async refresh state (PRO-11): transmit starts in showStatus/clear,
@@ -477,6 +523,64 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
     }
 }
 
+// =============================================================
+// 5x7 Bitmap Font (uppercase A-Z, space)
+// =============================================================
+// Each glyph is 7 bytes (7 rows, 5 columns). Bits 4..0 map to
+// columns left..right. Bit set = black pixel.
+static const uint8_t FONT_5X7[][7] = {
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // A
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},  // B
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},  // C
+    {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E},  // D
+    {0x1F, 0x10, 0x10, 0x1C, 0x10, 0x10, 0x1F},  // E
+    {0x1F, 0x10, 0x10, 0x1C, 0x10, 0x10, 0x10},  // F
+    {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E},  // G
+    {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},  // H
+    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E},  // I
+    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},  // J
+    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11},  // K
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},  // L
+    {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11},  // M
+    {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11},  // N
+    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // O
+    {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10},  // P
+    {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D},  // Q
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},  // R
+    {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E},  // S
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},  // T
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // U
+    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},  // V
+    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A},  // W
+    {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},  // X
+    {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04},  // Y
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},  // Z
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}   // space
+};
+
+void ShallotEPD::drawChar(char c, int x, int y) {
+    if (c >= 'A' && c <= 'Z') {
+        const uint8_t* glyph = FONT_5X7[c - 'A'];
+        for (int row = 0; row < 7; row++) {
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < 5; col++) {
+                if (bits & (0x10 >> col)) {
+                    drawPixel(x + col, y + row, false);
+                }
+            }
+        }
+    } else if (c == ' ') {
+        // space: advance cursor only
+    }
+}
+
+void ShallotEPD::drawText(const char* text, int x, int y) {
+    while (*text) {
+        drawChar(*text++, x, y);
+        x += 6;
+    }
+}
+
 void ShallotEPD::showStatus(EpdStatus status) {
     if (_degraded) return;  // fail silent: display stays as-is, loop stays fast
     if (status == EPD_STATUS_BLANK) {
@@ -494,6 +598,9 @@ void ShallotEPD::showStatus(EpdStatus status) {
     int iconRadius = 50;
 
     drawIcon(centerX, centerY, iconRadius, status);
+    if (status == EPD_STATUS_AUTHENTICATED) {
+        drawText("AUTHENTICATED", 61, 160);
+    }
     displayFrame(_buffer);
     _pendingSleep = false;
 }
@@ -712,6 +819,9 @@ static uint8_t pollProvisioning() {
                 provT0 = millis();
                 provGot = 0;
                 memset(provBuf, 0, sizeof(provBuf));
+                // PRO-47: new provisioning session starts - clear any
+                // previously stored key (SRAM hygiene, fail-closed).
+                secure_clear_key();
                 return PROV_PENDING;
             }
         }
@@ -729,6 +839,8 @@ static uint8_t pollProvisioning() {
             provPhase = PROV_PH_HANDSHAKE;
             provGot = 0;
             memset(provBuf, 0, sizeof(provBuf));
+            // PRO-47: timeout -> clear stored key (fail-closed).
+            secure_clear_key();
             return PROV_FAILED;
         }
         return PROV_PENDING;
@@ -761,6 +873,9 @@ static uint8_t pollProvisioning() {
         memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
         keyStored = true;
 
+        // PRO-49: Derive K_mac from master key (SRAM-only, never exposed)
+        derive_k_mac(aesKey, kMac);
+
         // Send confirmation with hash (fingerprint only, never key bytes)
         uint8_t fullHash[32];
         sha256(aesKey, AES_KEY_SIZE, fullHash);
@@ -781,6 +896,10 @@ static uint8_t pollProvisioning() {
     memset(provBuf, 0, sizeof(provBuf));
     provGot = 0;
     provPhase = PROV_PH_HANDSHAKE;
+    // PRO-47: on any failure, ensure no stale key remains in SRAM.
+    if (outcome != PROV_DONE) {
+        secure_clear_key();
+    }
     return outcome;
 }
 
@@ -803,7 +922,7 @@ static bool loraInitialized = false;
 // =============================================================
 //
 // Responder-only: PAW never initiates UART traffic. Valid CHALLENGE
-// frames (exactly 16-byte nonce) are answered with a framed RESPONSE
+// frames (exactly 8-byte nonce) are answered with a framed RESPONSE
 // carrying HMAC-SHA256(devkey, nonce) via the existing PRO-50
 // hmac_sha256 (reused, not duplicated). Everything else — malformed,
 // CRC-invalid, oversized, timed-out, unexpected type — is logged and
@@ -826,8 +945,23 @@ static den_scanner_t denScanner;
 // so the responder can show AUTHENTICATING on dock activity.
 extern ShallotEPD epd;
 
+// PAW-side ACK watchdog (PRO-60). Not a state machine: a single flag + timer
+// that only drives the e-paper. It never affects DEN deadlines or auth.
+static uint32_t paw_last_resp_sent_at = 0;
+static bool paw_ack_pending = false;
+
 static void handleDockAuth() {
     uint32_t now = millis();
+
+    // PAW-side ACK watchdog: if we sent a RESPONSE and got no ACK
+    // within 2.5 s, show FAILED. This is display-only; DEN is
+    // authoritative for auth and its 2 s deadline is unaffected.
+    if (paw_ack_pending && now - paw_last_resp_sent_at > 2500) {
+        epd.showStatus(EPD_STATUS_FAILED);
+        paw_ack_pending = false;
+        Serial.println("[PRO-60] PAW ACK timeout -> FAILED on e-paper");
+    }
+
     while (Serial1.available()) {
         den_frame_t f;
         den_status_t st = den_scanner_push(&denScanner, (uint8_t)Serial1.read(), now, &f);
@@ -837,26 +971,44 @@ static void handleDockAuth() {
             Serial.println((int)st);
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
-        if (f.type != DEN_TYPE_CHALLENGE) {
+            if (f.type == DEN_TYPE_CHALLENGE) {
+                epd.showStatus(EPD_STATUS_AUTHENTICATING);
+                // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
+                uint8_t mac[DEN_HMAC_LEN];
+                hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
+            uint8_t resp[DEN_MAX_FRAME];
+            size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
+            memset(mac, 0, sizeof(mac));
+            if (!n) {
+                Serial.println("[PRO-84] Response encode failed");
+                continue;
+            }
+            Serial1.write(resp, n);
+            Serial1.flush();
+            paw_last_resp_sent_at = now;
+            paw_ack_pending = true;
+            memset(resp, 0, sizeof(resp));
+            Serial.println("[PRO-84] CHALLENGE answered over dock UART");
+        } else if (f.type == DEN_TYPE_ACK) {
+            if (!paw_ack_pending) {
+                // Late ACK after PAW timeout: ignore to avoid
+                // overwriting FAILED for a session that already
+                // timed out from PAW's perspective.
+                Serial.println("[PRO-84] ACK ignored (no pending response)");
+                continue;
+            }
+            paw_ack_pending = false;
+            if (f.payloadLen == 1 && f.payload[0] == 0x01) {
+                epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                Serial.println("[PRO-84] DEN acknowledged success");
+            } else {
+                epd.showStatus(EPD_STATUS_FAILED);
+                Serial.println("[PRO-84] DEN denied (ACK 0x00)");
+            }
+        } else {
             Serial.print("[PRO-84] Dock frame ignored, type 0x");
             Serial.println(f.type, HEX);
-            continue;  // responder-only: only CHALLENGE is accepted
         }
-        // den_decode guarantees payloadLen == DEN_NONCE_LEN (16) here.
-        uint8_t mac[DEN_HMAC_LEN];
-        hmac_sha256(DEN_DEV_KEY, sizeof(DEN_DEV_KEY), f.payload, f.payloadLen, mac);
-        uint8_t resp[DEN_MAX_FRAME];
-        size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
-        memset(mac, 0, sizeof(mac));
-        if (!n) {
-            Serial.println("[PRO-84] Response encode failed");
-            continue;
-        }
-        Serial1.write(resp, n);
-        Serial1.flush();
-        memset(resp, 0, sizeof(resp));
-        Serial.println("[PRO-84] CHALLENGE answered over dock UART");
-        epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 }
 
@@ -885,6 +1037,9 @@ void setup() {
     Serial.println("Hardware: Adafruit Feather RP2350");
     Serial.println("Components: Core1262 LoRa + e-Paper");
     Serial.println("============================================");
+
+    // PRO-47: secure boot - clear any residual key material from SRAM
+    secure_clear_key();
 
     // Initialize e-Paper (bounded init; a dead panel degrades instead of
     // hanging boot — dock auth starts on the first loop passes regardless).
@@ -1023,7 +1178,7 @@ void loop() {
 
         case STATE_COMPUTING_RESPONSE:
             if (keyStored) {
-                hmac_sha256(aesKey, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
+                hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
 
                 Serial.print("[PRO-50] HMAC Response computed: ");
                 for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);

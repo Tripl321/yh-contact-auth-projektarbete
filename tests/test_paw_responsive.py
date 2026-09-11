@@ -12,6 +12,7 @@ import hashlib
 import hmac as hmac_module
 
 DEV_KEY = bytes(range(16))
+K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
 TICK_MS = 10
 DEADLINE_MS = 2000
 
@@ -63,7 +64,8 @@ class MockEpd:
 
 class MockProv:
     """Mirror of pollProvisioning: handshake scan -> READY -> accumulate
-    exactly 22 key-data bytes -> strict validate -> store. Never waits."""
+    exactly 22 key-data bytes -> strict validate -> store. Never waits.
+    PRO-47: clears stored key on timeout, new handshake, or failure."""
 
     def __init__(self):
         self.phase = 'hs'
@@ -82,6 +84,8 @@ class MockProv:
                     self.phase = 'kd'
                     self.t0 = now
                     self.buf = bytearray()
+                    # PRO-47: new provisioning session clears any prior key
+                    self.key_stored = False
                     return 'ready'
             return 'pending'
         self.buf += bytes(usb_in)
@@ -89,6 +93,8 @@ class MockProv:
             if now - self.t0 > 10000:
                 self.phase = 'hs'  # attempt timeout: wipe partial, retry
                 self.buf = bytearray()
+                # PRO-47: timeout clears stored key
+                self.key_stored = False
                 return 'failed'
             return 'pending'
         tag, ln, key, crc = (self.buf[0], self.buf[1], bytes(self.buf[2:18]),
@@ -96,9 +102,13 @@ class MockProv:
         self.buf = bytearray()
         self.phase = 'hs'
         if tag != 0xA3 or ln != 16:
+            # PRO-47: malformed frame clears stored key
+            self.key_stored = False
             return 'failed'
         import binascii
         if binascii.crc32(key) & 0xFFFFFFFF != crc:
+            # PRO-47: CRC mismatch clears stored key
+            self.key_stored = False
             return 'failed'
         self.key_stored = True
         fp = hashlib.sha256(key).digest()[:4]
@@ -117,6 +127,7 @@ class MockPawLoop:
         self.uart_in = bytearray()
         self.responses = []  # (t_answered, t_challenged_virt, mac_ok)
         self.key = DEV_KEY
+        self.k_mac = K_MAC  # PRO-49: derived HMAC key
         ok, cost = self.epd.begin()
         self.now += cost
         self.setup_ms = self.now
@@ -127,17 +138,20 @@ class MockPawLoop:
         # 1. dock poll (instant per buffered bytes)
         while self.uart_in:
             b = self.uart_in.pop(0)
-            if b == 0xAA:  # SYNC: expect a 24B challenge frame next
-                if len(self.uart_in) >= 23:
-                    frame = bytes([b]) + bytes(self.uart_in[:23])
-                    del self.uart_in[:23]
-                    import binascii
-                    body, want = frame[1:20], int.from_bytes(frame[20:24], 'little')
-                    if binascii.crc32(body) & 0xFFFFFFFF == want \
-                            and frame[3] == 0x01 and len(body[3:]) == 16:
-                        mac = hmac16(self.key, body[3:])
-                        self.responses.append((self.now, chal_at, mac))
-                        self.epd.showStatus('authenticating')
+            if b == 0xAA:  # SYNC: parse frame header for length
+                if len(self.uart_in) >= 3:
+                    ln = int.from_bytes(bytes(self.uart_in[:2]), 'little')
+                    total_needed = 2 + 1 + ln + 4  # LEN + TYPE + PAYLOAD + CRC
+                    if len(self.uart_in) >= total_needed:
+                        frame = bytes([b]) + bytes(self.uart_in[:total_needed])
+                        del self.uart_in[:total_needed]
+                        import binascii
+                        body, want = frame[1:1+2+1+ln], int.from_bytes(frame[1+2+1+ln:1+2+1+ln+4], 'little')
+                        if binascii.crc32(body) & 0xFFFFFFFF == want \
+                                and frame[3] == 0x01 and ln == 8:
+                            mac = hmac16(self.k_mac, frame[4:4+8])
+                            self.responses.append((self.now, chal_at, mac))
+                            self.epd.showStatus('authenticating')
         # 2. epd poll 3. prov poll (both instant)
         self.epd.now = self.now
         self.epd.poll()
@@ -157,7 +171,7 @@ def test_responsive_dead_panel_no_provisioning():
     paw = MockPawLoop(busy_stuck=True)
     assert paw.setup_ms < 10000  # never the old 90 s+ boot stall
     assert paw.epd.degraded  # latched at first stuck wait
-    nonce = bytes(range(0x10, 0x20))
+    nonce = bytes(range(0x10, 0x18))
     t_tx = paw.now
     for _ in range(DEADLINE_MS // TICK_MS):
         paw.tick(uart_bytes=den_challenge(nonce) if paw.now == t_tx else b'',
@@ -167,13 +181,13 @@ def test_responsive_dead_panel_no_provisioning():
     assert paw.responses, 'no answer within deadline'
     t_ans, _, mac = paw.responses[0]
     assert t_ans - t_tx < DEADLINE_MS
-    assert mac == hmac16(DEV_KEY, nonce)
+    assert mac == hmac16(K_MAC, nonce)
 
 
 def test_responsive_garbage_usb_traffic():
     """Malformed USB bytes: no key stored, dock still prompt."""
     paw = MockPawLoop(busy_stuck=True)
-    nonce = bytes(range(0x20, 0x30))
+    nonce = bytes(range(0x20, 0x28))
     answered = None
     for i in range(DEADLINE_MS // TICK_MS):
         usb = b'\x00\xff\xa1\x99' if i % 3 == 0 else b'\xa3\x10' + bytes(20)

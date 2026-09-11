@@ -31,7 +31,7 @@
 #define DEN_TYPE_ALARM        0x04
 #define DEN_TYPE_ACK          0xFF
 
-#define DEN_NONCE_LEN         16
+#define DEN_NONCE_LEN         8
 #define DEN_HMAC_LEN          32
 #define DEN_STATUS_LEN        1
 #define DEN_ALARM_LEN         1
