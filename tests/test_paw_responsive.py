@@ -63,7 +63,8 @@ class MockEpd:
 
 class MockProv:
     """Mirror of pollProvisioning: handshake scan -> READY -> accumulate
-    exactly 22 key-data bytes -> strict validate -> store. Never waits."""
+    exactly 22 key-data bytes -> strict validate -> store. Never waits.
+    PRO-47: clears stored key on timeout, new handshake, or failure."""
 
     def __init__(self):
         self.phase = 'hs'
@@ -82,6 +83,8 @@ class MockProv:
                     self.phase = 'kd'
                     self.t0 = now
                     self.buf = bytearray()
+                    # PRO-47: new provisioning session clears any prior key
+                    self.key_stored = False
                     return 'ready'
             return 'pending'
         self.buf += bytes(usb_in)
@@ -89,6 +92,8 @@ class MockProv:
             if now - self.t0 > 10000:
                 self.phase = 'hs'  # attempt timeout: wipe partial, retry
                 self.buf = bytearray()
+                # PRO-47: timeout clears stored key
+                self.key_stored = False
                 return 'failed'
             return 'pending'
         tag, ln, key, crc = (self.buf[0], self.buf[1], bytes(self.buf[2:18]),
@@ -96,9 +101,13 @@ class MockProv:
         self.buf = bytearray()
         self.phase = 'hs'
         if tag != 0xA3 or ln != 16:
+            # PRO-47: malformed frame clears stored key
+            self.key_stored = False
             return 'failed'
         import binascii
         if binascii.crc32(key) & 0xFFFFFFFF != crc:
+            # PRO-47: CRC mismatch clears stored key
+            self.key_stored = False
             return 'failed'
         self.key_stored = True
         fp = hashlib.sha256(key).digest()[:4]

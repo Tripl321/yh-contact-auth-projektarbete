@@ -3,6 +3,7 @@
  * Target: Adafruit Feather RP2350 + Core1262-868M + 1.54" Waveshare e-Paper
  * 
  * Full PAW firmware combining:
+ *   - PRO-47: secure key storage in SRAM (clear on timeout/disconnect/reset)
  *   - PRO-48: Key reception from UNO Q (paw-key-receiver.ino)
  *   - PRO-50: HMAC-SHA256 challenge-response
  *   - PRO-57: e-Paper status display (epaper-status-display.ino)
@@ -138,11 +139,28 @@ static void setLoRaFlag(void) {
 #define EPD_INIT_TIMEOUT_MS    2000
 
 // =============================================================
-// Key Storage
+// Key Storage (PRO-47)
+// =============================================================
+//
+// Key hierarchy (SRAM-only, never flash/serial):
+//   aesKey   : master key (128-bit, received from UNO Q via USB provisioning)
+//   kMac     : HMAC-SHA256 key (alias of master for dock/LoRa auth)
+//   kEnc     : encryption key (alias of master, reserved for future use)
+//
+// All three roles share the same SRAM buffer. Boundaries are enforced
+// by naming convention: never mix key material across roles without
+// explicit derivation. Key material is NEVER written to flash, logs,
+// or serial output. Only the 4-byte SHA-256 fingerprint is transmitted.
 // =============================================================
 
 static uint8_t aesKey[AES_KEY_SIZE];
 static bool keyStored = false;
+
+static void secure_clear_key() {
+    volatile uint8_t* k = (volatile uint8_t*)aesKey;
+    for (int i = 0; i < AES_KEY_SIZE; i++) k[i] = 0;
+    keyStored = false;
+}
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
@@ -776,6 +794,9 @@ static uint8_t pollProvisioning() {
                 provT0 = millis();
                 provGot = 0;
                 memset(provBuf, 0, sizeof(provBuf));
+                // PRO-47: new provisioning session starts - clear any
+                // previously stored key (SRAM hygiene, fail-closed).
+                secure_clear_key();
                 return PROV_PENDING;
             }
         }
@@ -793,6 +814,8 @@ static uint8_t pollProvisioning() {
             provPhase = PROV_PH_HANDSHAKE;
             provGot = 0;
             memset(provBuf, 0, sizeof(provBuf));
+            // PRO-47: timeout -> clear stored key (fail-closed).
+            secure_clear_key();
             return PROV_FAILED;
         }
         return PROV_PENDING;
@@ -845,6 +868,10 @@ static uint8_t pollProvisioning() {
     memset(provBuf, 0, sizeof(provBuf));
     provGot = 0;
     provPhase = PROV_PH_HANDSHAKE;
+    // PRO-47: on any failure, ensure no stale key remains in SRAM.
+    if (outcome != PROV_DONE) {
+        secure_clear_key();
+    }
     return outcome;
 }
 
@@ -982,6 +1009,9 @@ void setup() {
     Serial.println("Hardware: Adafruit Feather RP2350");
     Serial.println("Components: Core1262 LoRa + e-Paper");
     Serial.println("============================================");
+
+    // PRO-47: secure boot - clear any residual key material from SRAM
+    secure_clear_key();
 
     // Initialize e-Paper (bounded init; a dead panel degrades instead of
     // hanging boot — dock auth starts on the first loop passes regardless).
