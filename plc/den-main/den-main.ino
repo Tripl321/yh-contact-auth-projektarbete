@@ -77,6 +77,148 @@ static void secure_clear_key() {
 
 #define DEN_UART_BAUD      115200
 #define DEN_SESSION_GAP_MS 1000  // pacing between sessions
+#define KEY_HASH_SIZE      4
+
+// =============================================================
+// CRC32 (IEEE 802.3)
+// =============================================================
+
+static uint32_t crc32(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      crc = (crc & 1) ? (0xEDB88320 ^ (crc >> 1)) : (crc >> 1);
+    }
+  }
+  return crc ^ 0xFFFFFFFF;
+}
+
+// =============================================================
+// USB Provisioning (PRO-46 + PRO-48)
+// =============================================================
+//
+// DEN receives its AES-128 key from UNO Q via USB UART.
+// Protocol (same as PAW):
+//   UNO Q -> DEN: MSG_HANDSHAKE (0xA1) + target_id (0x01 for PLC)
+//   DEN -> UNO Q: MSG_READY (0xA2) + device_id (4 bytes)
+//   UNO Q -> DEN: MSG_KEY_DATA (0xA3) + key_len (1) + key (16) + CRC32 (4) = 22 bytes
+//   DEN -> UNO Q: MSG_STORED (0xA4) + stored_hash (4 bytes)
+//
+// Key is stored in denDevKey (SRAM only, cleared on failure).
+// After provisioning, kMac and kEnc are derived from denDevKey.
+// =============================================================
+
+#define TARGET_DEN         0x01  // matches UNO Q TARGET_PLC
+#define MSG_HANDSHAKE      0xA1
+#define MSG_READY          0xA2
+#define MSG_KEY_DATA       0xA3
+#define MSG_STORED         0xA4
+#define MSG_ERROR          0xA5
+
+#define PROV_PENDING 0
+#define PROV_DONE    1
+#define PROV_FAILED  2
+
+#define PROV_PH_HANDSHAKE 0
+#define PROV_PH_KEYDATA   1
+#define PROV_KEYDATA_LEN  22  // type(1) + len(1) + key(16) + crc(4)
+#define KEY_DISTRIBUTION_TIMEOUT 10000  // 10 s
+
+static uint8_t provPhase = PROV_PH_HANDSHAKE;
+static uint32_t provT0 = 0;
+static uint8_t provBuf[PROV_KEYDATA_LEN];
+static uint8_t provGot = 0;
+static const uint8_t deviceId[4] = { 0x44, 0x45, 0x4E, 0x01 }; // "DEN\x01"
+
+// PRO-46: Secure key distribution via USB UART from UNO Q.
+// Non-blocking poll: returns immediately, preserves partial state.
+// Fail-closed: any error wipes buffers and clears stored key.
+static uint8_t pollProvisioning() {
+    if (provPhase == PROV_PH_HANDSHAKE) {
+        while (Serial.available() >= 2) {
+            uint8_t msgType = Serial.read();
+            uint8_t targetId = Serial.read();
+            if (msgType == MSG_HANDSHAKE && targetId == TARGET_DEN) {
+                Serial.println("[PRO-46] Handshake received.");
+                Serial.write(MSG_READY);
+                Serial.write(deviceId, 4);
+                Serial.flush();
+                provPhase = PROV_PH_KEYDATA;
+                provT0 = millis();
+                provGot = 0;
+                memset(provBuf, 0, sizeof(provBuf));
+                return PROV_PENDING;
+            }
+        }
+        return PROV_PENDING;
+    }
+
+    while (provGot < PROV_KEYDATA_LEN && Serial.available()) {
+        provBuf[provGot++] = (uint8_t)Serial.read();
+    }
+    if (provGot < PROV_KEYDATA_LEN) {
+        if (millis() - provT0 > KEY_DISTRIBUTION_TIMEOUT) {
+            Serial.println("[PRO-46] Timeout waiting for key data.");
+            provPhase = PROV_PH_HANDSHAKE;
+            provGot = 0;
+            memset(provBuf, 0, sizeof(provBuf));
+            return PROV_FAILED;
+        }
+        return PROV_PENDING;
+    }
+
+    uint8_t outcome = PROV_FAILED;
+    do {
+        if (provBuf[0] != MSG_KEY_DATA) {
+            Serial.printf("[PRO-46] Expected KEY_DATA, got 0x%02X\n", provBuf[0]);
+            break;
+        }
+        if (provBuf[1] != AES_KEY_SIZE) {
+            Serial.printf("[PRO-46] Unexpected key length: %d\n", provBuf[1]);
+            break;
+        }
+        uint32_t receivedCrc = ((uint32_t)provBuf[18] << 24)
+                             | ((uint32_t)provBuf[19] << 16)
+                             | ((uint32_t)provBuf[20] << 8)
+                             | ((uint32_t)provBuf[21]);
+        uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
+        if (computedCrc != receivedCrc) {
+            Serial.printf("[PRO-46] CRC mismatch! Expected: %08X Got: %08X\n",
+                          computedCrc, receivedCrc);
+            Serial.write(MSG_ERROR);
+            break;
+        }
+        Serial.println("[PRO-46] CRC verified OK.");
+
+        // Store key securely in denDevKey
+        memcpy((uint8_t*)DEN_DEV_KEY, provBuf + 2, AES_KEY_SIZE);
+
+        // Derive K_mac and K_enc from the new master key
+        den_derive_k_mac((uint8_t*)DEN_DEV_KEY, kMac);
+
+        // Send confirmation with hash (fingerprint only, never key bytes)
+        uint8_t fullHash[32];
+        den_sha256((uint8_t*)DEN_DEV_KEY, AES_KEY_SIZE, fullHash);
+        uint8_t keyHash[KEY_HASH_SIZE];
+        memcpy(keyHash, fullHash, KEY_HASH_SIZE);
+        memset(fullHash, 0, 32);
+
+        Serial.write(MSG_STORED);
+        Serial.write(keyHash, KEY_HASH_SIZE);
+        Serial.flush();
+
+        Serial.print("[PRO-46] Key stored. Hash sent: ");
+        for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
+        Serial.println();
+        outcome = PROV_DONE;
+    } while (0);
+
+    memset(provBuf, 0, sizeof(provBuf));
+    provGot = 0;
+    provPhase = PROV_PH_HANDSHAKE;
+    return outcome;
+}
 
 // =============================================================
 // Session state machine (non-blocking, fail-closed)
@@ -376,14 +518,32 @@ void setup() {
   denState = DEN_ST_DENIED;
   denStateAt = millis();
 
+  // PRO-46: initialize provisioning state
+  provPhase = PROV_PH_HANDSHAKE;
+  provGot = 0;
+  memset(provBuf, 0, sizeof(provBuf));
+
   // PRO-49: derive K_mac from master key at startup
   den_derive_k_mac(DEN_DEV_KEY, kMac);
 
-  Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-49)");
+  Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-49)");
 }
 
 void loop() {
   uint32_t now = millis();
+
+  // PRO-46: USB provisioning poll (non-blocking, takes precedence)
+  uint8_t provResult = pollProvisioning();
+  if (provResult == PROV_DONE) {
+    // Key successfully provisioned; re-derive K_mac and stay in DENIED
+    den_derive_k_mac((uint8_t*)DEN_DEV_KEY, kMac);
+    denState = DEN_ST_DENIED;
+    denStateAt = now;
+  } else if (provResult == PROV_FAILED) {
+    // Provisioning failed; stay in current state but clear any staged key
+    denState = DEN_ST_DENIED;
+    denStateAt = now;
+  }
 
   // DEN_ST_DENIED: waiting for session gap before next challenge.
   if (denState == DEN_ST_DENIED) {
