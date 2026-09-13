@@ -36,6 +36,7 @@
 
 #include <Arduino.h>
 #include <Arduino_RouterBridge.h>
+#include <Ed25519.h>
 
 // =============================================================
 // Constants
@@ -46,6 +47,12 @@
 #define SHA256_HASH_SIZE   32
 #define DISTRIB_TIMEOUT_MS 5000
 #define UART_BAUD          115200
+
+// PRO-93: Debug configuration — must be explicitly defined to enable
+// sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
+#ifdef SECURE_DEBUG
+#define SECURE_DEBUG 1
+#endif
 
 #define CONFIRM_BUTTON_PIN A0
 #define STATUS_LED_PIN      LED_BUILTIN
@@ -58,6 +65,8 @@
 #define MSG_KEY_DATA  0xA3
 #define MSG_STORED    0xA4
 #define MSG_ERROR     0xA5
+#define MSG_BLOCKLIST 0xA6
+#define MSG_BLOCKLIST_ACK 0xA7
 
 // =============================================================
 // Key state machine
@@ -296,6 +305,7 @@ static inline void computeKeyHash(const uint8_t* key, uint8_t* hashOut) {
   memcpy(hashOut, fullHash, KEY_HASH_SIZE);
 }
 
+
 // =============================================================
 // CRC32 — lookup table for 8x faster bit-by-bit computation
 // =============================================================
@@ -362,11 +372,13 @@ static bool generateKey() {
 
   computeKeyHash(aesKey, keyHash);
   keyState = KeyState::GENERATED;
-
+  
   Serial.println("[PRO-45] Key generated successfully.");
+#if SECURE_DEBUG
   Serial.print("[PRO-45] Key fingerprint (SHA-256[:4]): ");
   printHex(keyHash, KEY_HASH_SIZE);
   Serial.println();
+#endif
 
   Bridge.notify("key_authority_event", "key_generated", "AES-128 key generated successfully");
   return true;
@@ -517,17 +529,116 @@ static bool distributeKey(uint8_t targetId) {
 }
 
 // =============================================================
+// PRO-98: Signed blocklist distribution to DEN
+// =============================================================
+//
+// Format sent over Serial1 (USB UART to DEN):
+//   MSG_BLOCKLIST (0xA6)
+//   version      : 1 byte
+//   issuer       : 16 bytes (null-padded ASCII)
+//   entry_count  : 1 byte
+//   entries      : 4 bytes * entry_count
+//   signature    : 32 bytes (HMAC-SHA256)
+// =============================================================
+
+#define BLOCKLIST_VERSION       1
+#define BLOCKLIST_ISSUER        "SHALLOT-AUTH"
+#define BLOCKLIST_MAX_ENTRIES   16
+#define BLOCKLIST_SIGNATURE_SIZE 64  // Ed25519 signature size
+
+// PRO-98: Ed25519 private key for blocklist signing.
+// Only MamaBear (UNO Q) holds the private key for signing.
+// The corresponding public key is embedded in DEN firmware for verification.
+// This key is generated once and must be kept secret.
+// PRO-93: No hardcoded development key. This must be provisioned securely.
+static uint8_t blocklist_private_key[ED25519_PRIVATE_KEY_SIZE];  // 32 bytes
+static uint8_t blocklist_key_provisioned = 0;
+
+// PRO-98: Sign blocklist with Ed25519 private key.
+// Returns true on success, false if private key not provisioned.
+static bool sign_blocklist(uint8_t version, const char *issuer,
+                           const uint8_t *entries, uint8_t entry_count,
+                           uint8_t *signature) {
+    if (!blocklist_key_provisioned) {
+#if SECURE_DEBUG
+        Serial.println("[PRO-98] Cannot sign: private key not provisioned");
+#endif
+        return false;
+    }
+
+    uint8_t data[1 + 16 + 1 + BLOCKLIST_MAX_ENTRIES * KEY_HASH_SIZE];
+    size_t data_len = 1 + 16 + 1 + entry_count * KEY_HASH_SIZE;
+    memcpy(data, &version, 1);
+    memcpy(data + 1, issuer, 16);
+    memcpy(data + 17, &entry_count, 1);
+    memcpy(data + 18, entries, entry_count * KEY_HASH_SIZE);
+
+    int result = ed25519_sign(signature, data, data_len, blocklist_private_key);
+    memset(data, 0, sizeof(data));
+    return result == 1;
+}
+
+static bool distributeBlocklist() {
+  // PRO-93: fail if blocklist private key not provisioned
+  if (!blocklist_key_provisioned) {
+#if SECURE_DEBUG
+    Serial.println("[PRO-98] Cannot distribute: blocklist private key not provisioned");
+#endif
+    return false;
+  }
+
+  Serial.println("[PRO-98] Distributing blocklist to DEN...");
+
+  // Example blocklist entries (in production, populated by MPU)
+  uint8_t entries[BLOCKLIST_MAX_ENTRIES * KEY_HASH_SIZE];
+  uint8_t entry_count = 0;
+
+  // Add blocked PAW fingerprints here (example: PAW with key hash "DEADBEEF")
+  // entries[0..3] = first blocked fingerprint
+  // entry_count++
+
+  if (entry_count == 0) {
+    Serial.println("[PRO-98] No entries to distribute.");
+    return false;
+  }
+
+  uint8_t signature[BLOCKLIST_SIGNATURE_SIZE];
+  sign_blocklist(BLOCKLIST_VERSION, BLOCKLIST_ISSUER, entries, entry_count, signature);
+
+  // Send MSG_BLOCKLIST
+  Serial1.write(MSG_BLOCKLIST);
+  Serial1.write(BLOCKLIST_VERSION);
+  Serial1.write(BLOCKLIST_ISSUER, 16);
+  Serial1.write(entry_count);
+  Serial1.write(entries, entry_count * KEY_HASH_SIZE);
+  Serial1.write(signature, BLOCKLIST_SIGNATURE_SIZE);
+  Serial1.flush();
+
+#if SECURE_DEBUG
+  Serial.print("[PRO-98] Blocklist sent: version ");
+  Serial.print(BLOCKLIST_VERSION);
+  Serial.print(", ");
+  Serial.print(entry_count);
+  Serial.println(" entries");
+#endif
+
+  memset(entries, 0, sizeof(entries));
+  memset(signature, 0, sizeof(signature));
+  return true;
+}
+
+// =============================================================
 // Bridge RPC — MPU communication (status only, no key material)
 // =============================================================
 
 static void setupBridgeRPC() {
   Bridge.begin();
 
-  Bridge.provide_safe("get_key_state", []() -> uint8_t {
+  Bridge.provide("get_key_state", []() -> uint8_t {
     return (uint8_t)keyState;
   });
 
-  Bridge.provide_safe("get_key_fingerprint", []() -> String {
+  Bridge.provide("get_key_fingerprint", []() -> String {
     // Pre-allocate exact size (8 hex chars + null terminator)
     String fp;
     fp.reserve(9);
@@ -538,16 +649,21 @@ static void setupBridgeRPC() {
     return fp;
   });
 
-  Bridge.provide_safe("request_key_generation", []() -> bool {
+  Bridge.provide("request_key_generation", []() -> bool {
     return generateKey();
   });
 
-  Bridge.provide_safe("request_key_distribution", [](uint8_t targetId) -> bool {
+  Bridge.provide("request_key_distribution", [](uint8_t targetId) -> bool {
     Serial.print("[PRO-46] MPU requested distribution to target ");
     Serial.print(targetId);
     Serial.println(". Awaiting button press.");
     pendingDistributionTarget = targetId;
     return true;
+  });
+
+  Bridge.provide("request_blocklist_distribution", []() -> bool {
+    Serial.println("[PRO-98] MPU requested blocklist distribution.");
+    return distributeBlocklist();
   });
 }
 
@@ -572,11 +688,13 @@ static void printStatus() {
   Serial.print("Key state: ");
   Serial.println(keyStateString(keyState));
   if (keyState != KeyState::UNINITIALIZED && keyState != KeyState::ERROR_STATE) {
+#if SECURE_DEBUG
     Serial.print("Key fingerprint: ");
     printHex(keyHash, KEY_HASH_SIZE);
     Serial.println();
+#endif
   }
-  Serial.println("Commands: g=generate  1=dist PLC  2=dist PAW  s=status");
+  Serial.println("Commands: g=generate  1=dist PLC  2=dist PAW  b=blocklist  s=status");
   Serial.println("=====================================\n");
 }
 
@@ -648,6 +766,11 @@ void loop() {
 
       case 's': case 'S':
         printStatus();
+        break;
+
+      case 'b': case 'B':
+        Serial.println("\n>> Distributing blocklist to DEN.");
+        distributeBlocklist();
         break;
     }
   }

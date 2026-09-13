@@ -306,4 +306,4 @@ def test_pro46_den_provisions_from_uno_q():
     # Verify DEN receives key data
     assert 'Serial.read()' in src
     # Verify DEN stores key in denDevKey
-    assert 'DEN_DEV_KEY' in src
+    assert 'denDevKey' in src

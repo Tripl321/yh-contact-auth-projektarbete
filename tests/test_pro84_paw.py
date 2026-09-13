@@ -163,15 +163,18 @@ def test_pro84_source_guards():
     assert 'den_encode(DEN_TYPE_CHALLENGE' not in src  # never initiates
     assert 'Serial1.begin(115200)' in src
     assert 'setTX(' not in src and 'setRX(' not in src
-    assert '#warning' in src and 'DEVELOPMENT-ONLY' in src
+    # PRO-93: no hardcoded development keys or warnings
+    assert '#warning' not in src, "PRO-93: #warning must be removed"
+    assert 'DEVELOPMENT-ONLY' not in src, "PRO-93: dev key stub must be removed"
+    assert 'DEN_DEV_KEY' not in src, "PRO-93: DEN_DEV_KEY must be removed"
     assert 'hmac_sha256(kMac' in src  # PRO-49: HMAC uses K_mac, not master key
     assert 'derive_k_mac' in src  # PRO-49: K_mac derivation present
     assert 'epd.showStatus(EPD_STATUS_AUTHENTICATING)' in src  # e-paper kept
     assert '#include <RadioLib.h>' in src and 'radio.transmit' in src  # LoRa kept
     assert 'handleDockAuth();' in src
     den = (root / 'plc/den-main/den-main.ino').read_text()
-    assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in den
-    assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' in src  # same dev key
+    assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' not in den
+    assert '0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07' not in src
 
 
 # ============================================================================
