@@ -124,6 +124,12 @@ static void setLoRaFlag(void) {
 #define CHALLENGE_SIZE    8  // Nonce size (PRO-51: 64-bit RNG)
 #define HMAC_SIZE         32  // HMAC-SHA256 output
 
+// PRO-93: Debug configuration — must be explicitly defined to enable
+// sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
+#ifdef SECURE_DEBUG
+#define SECURE_DEBUG 1
+#endif
+
 // =============================================================
 // e-Paper Display Constants
 // =============================================================
@@ -808,10 +814,12 @@ static uint8_t pollProvisioning() {
             uint8_t msgType = Serial.read();
             uint8_t targetId = Serial.read();
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
+#if SECURE_DEBUG
                 Serial.println("[PRO-48] Handshake received.");
                 Serial.print("[PRO-48] Sending READY with device ID: ");
                 for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
                 Serial.println();
+#endif
                 Serial.write(MSG_READY);
                 Serial.write(deviceId, 4);
                 Serial.flush();
@@ -835,7 +843,9 @@ static uint8_t pollProvisioning() {
     }
     if (provGot < PROV_KEYDATA_LEN) {
         if (millis() - provT0 > KEY_DISTRIBUTION_TIMEOUT) {
+#if SECURE_DEBUG
             Serial.println("[PRO-48] Timeout waiting for key data.");
+#endif
             provPhase = PROV_PH_HANDSHAKE;
             provGot = 0;
             memset(provBuf, 0, sizeof(provBuf));
@@ -849,11 +859,15 @@ static uint8_t pollProvisioning() {
     uint8_t outcome = PROV_FAILED;
     do {
         if (provBuf[0] != MSG_KEY_DATA) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", provBuf[0]);
+#endif
             break;
         }
         if (provBuf[1] != AES_KEY_SIZE) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-48] Unexpected key length: %d\n", provBuf[1]);
+#endif
             break;
         }
         uint32_t receivedCrc = ((uint32_t)provBuf[18] << 24)
@@ -862,12 +876,16 @@ static uint8_t pollProvisioning() {
                              | ((uint32_t)provBuf[21]);
         uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
         if (computedCrc != receivedCrc) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
                           computedCrc, receivedCrc);
+#endif
             Serial.write(MSG_ERROR);
             break;
         }
+#if SECURE_DEBUG
         Serial.println("[PRO-48] CRC verified OK.");
+#endif
 
         // Store key securely
         memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
@@ -886,10 +904,11 @@ static uint8_t pollProvisioning() {
         Serial.write(MSG_STORED);
         Serial.write(keyHash, KEY_HASH_SIZE);
         Serial.flush();
-
+#if SECURE_DEBUG
         Serial.print("[PRO-48] Key stored. Hash sent: ");
         for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
         Serial.println();
+#endif
         outcome = PROV_DONE;
     } while (0);
 
@@ -929,15 +948,17 @@ static bool loraInitialized = false;
 // ignored with zero state change (fail-closed). LoRa flow untouched.
 //
 // =============================================================
-// DEVELOPMENT-ONLY shared key — MUST equal DEN_DEV_KEY in
-// plc/den-main/den-main.ino. Bring-up stub only: replace with the
-// provisioned key before production.
+// Docked UART auth (PRO-84 bridge to DEN)
 // =============================================================
-#warning "PRO-84 development shared key - replace before production"
-static const uint8_t DEN_DEV_KEY[16] = {
-  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-  0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
-};
+//
+// PAW responds to DEN CHALLENGE with HMAC-SHA256(K_mac, nonce)
+// over the dock connector (Serial1). K_mac is derived from the
+// provisioned AES-128 master key (see aesKey above).
+//
+// PRO-93: No hardcoded development key. Authentication is
+// fail-closed: if no key is provisioned (keyStored == false),
+// all dock auth attempts are rejected.
+// =============================================================
 
 static den_scanner_t denScanner;
 
@@ -1116,10 +1137,11 @@ void loop() {
                 currentState = STATE_COMPUTING_RESPONSE;
 
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
-
+#if SECURE_DEBUG
                 Serial.print("[PRO-50] Challenge nonce: ");
                 for (int i = 0; i < CHALLENGE_SIZE; i++) Serial.printf("%02X", challenge[i]);
                 Serial.println();
+#endif
             }
             // Handle MSG_RESULT (0xB3)
             else if (msgType == MSG_RESULT && rxLen >= 2) {
@@ -1179,10 +1201,11 @@ void loop() {
         case STATE_COMPUTING_RESPONSE:
             if (keyStored) {
                 hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
-
+#if SECURE_DEBUG
                 Serial.print("[PRO-50] HMAC Response computed: ");
                 for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);
                 Serial.println();
+#endif
 
                 // Transmit LoRa packet: [MSG_RESPONSE, response(32)]
                 uint8_t txPacket[1 + HMAC_SIZE];
