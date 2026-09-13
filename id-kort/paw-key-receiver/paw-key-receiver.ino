@@ -34,6 +34,12 @@
 #define AES_KEY_SIZE 16
 #define KEY_HASH_SIZE 4
 
+// PRO-93: Debug configuration — must be explicitly defined to enable
+// sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
+#ifdef SECURE_DEBUG
+#define SECURE_DEBUG 1
+#endif
+
 // --- Protocol message types (must match UNO Q firmware) ---
 #define MSG_HANDSHAKE    0xA1
 #define MSG_READY        0xA2
@@ -223,12 +229,16 @@ bool receiveKey() {
   // Verify CRC32
   uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
+#if SECURE_DEBUG
     Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
                    computedCrc, receivedCrc);
+#endif
     Serial1.write(MSG_ERROR);
     return false;
   }
+#if SECURE_DEBUG
   Serial.println("[PRO-48] CRC verified OK.");
+#endif
 
   // Step 4: Store key in SRAM
   memcpy(aesKey, receivedKey, AES_KEY_SIZE);
@@ -247,9 +257,11 @@ bool receiveKey() {
   Serial1.write(keyHash, KEY_HASH_SIZE);
   Serial1.flush();
 
+#if SECURE_DEBUG
   Serial.print("[PRO-48] Key stored. Hash sent: ");
   for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
   Serial.println();
+#endif
 
   memset(fullHash, 0, 32);
 

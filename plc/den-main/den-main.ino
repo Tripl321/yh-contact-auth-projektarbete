@@ -23,18 +23,22 @@
 #include <Arduino.h>
 #include "pico/rand.h"
 #include <DenUartProtocol.h>
+#include <Ed25519.h>
 
 // =============================================================
-// DEVELOPMENT-ONLY shared key. This is a stub for bring-up and
-// physical-loop testing. NEVER ship production with this key:
-// replace with the provisioned per-device key (PRO-45 flow) and
-// remove this warning.
+// Key Storage (PRO-47 + PRO-49)
 // =============================================================
-#warning "PRO-53 development shared key - replace before production"
-static const uint8_t DEN_DEV_KEY[16] = {
-  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-  0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
-};
+//
+// Key hierarchy (SRAM-only, never flash/serial):
+//   denDevKey : master key (128-bit, zero-initialised at boot;
+//               populated only via PRO-46 USB provisioning)
+//   kMac      : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
+//   kEnc      : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
+//
+// PRO-93: No hardcoded development key. denDevKey starts as all-zeros
+// (unprovisioned). Authentication is fail-closed until a valid key
+// is distributed via the PRO-46 provisioning flow.
+// =============================================================
 
 #define AES_KEY_SIZE 16
 
@@ -119,22 +123,72 @@ static uint32_t crc32(const uint8_t* data, size_t len) {
 #define PROV_PENDING 0
 #define PROV_DONE    1
 #define PROV_FAILED  2
+#define PROV_BLOCKLIST_DONE  3  // blocklist distribution complete (no key change)
 
 #define PROV_PH_HANDSHAKE 0
 #define PROV_PH_KEYDATA   1
+#define PROV_PH_WAIT_TYPE 2  // PRO-98: after key, wait for optional blocklist
+#define PROV_PH_BLOCKLIST 3  // PRO-98: receiving blocklist data
 #define PROV_KEYDATA_LEN  22  // type(1) + len(1) + key(16) + crc(4)
 #define KEY_DISTRIBUTION_TIMEOUT 10000  // 10 s
+
+// PRO-93: Debug configuration — must be explicitly defined to enable
+// sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
+#ifdef SECURE_DEBUG
+#define SECURE_DEBUG 1
+#endif
+
+// PRO-98: Blocklist constants (Ed25519 signed)
+#define BLOCKLIST_VERSION       1
+#define BLOCKLIST_ISSUER        "SHALLOT-AUTH"
+#define BLOCKLIST_MAX_ENTRIES   16
+#define BLOCKLIST_SIGNATURE_SIZE 64  // Ed25519 signature size
+
+// PRO-98: Ed25519 public key for blocklist verification.
+// Only MamaBear (UNO Q) holds the private key for signing.
+// This public key is embedded in DEN firmware for verification.
+static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+// PRO-98: Blocklist structure for Ed25519 signed blocklists
+typedef struct {
+    uint8_t version;
+    char issuer[16];
+    uint8_t entry_count;
+    uint8_t entries[BLOCKLIST_MAX_ENTRIES][KEY_HASH_SIZE];
+    uint8_t signature[BLOCKLIST_SIGNATURE_SIZE];
+} blocklist_t;
+
+static blocklist_t current_blocklist;
+static uint8_t blocklist_valid = 0;
+
+// PRO-98: blocklist distribution over serial
+#define BLOCKLIST_MAX_SERIAL  (1 + 16 + 1 + BLOCKLIST_MAX_ENTRIES * KEY_HASH_SIZE + BLOCKLIST_SIGNATURE_SIZE)
+//  = 1 + 16 + 1 + 64 + 32 = 114 bytes
 
 static uint8_t provPhase = PROV_PH_HANDSHAKE;
 static uint32_t provT0 = 0;
 static uint8_t provBuf[PROV_KEYDATA_LEN];
 static uint8_t provGot = 0;
+// PRO-98: separate buffer for blocklist serial data
+static uint8_t blBuf[BLOCKLIST_MAX_SERIAL];
+static uint8_t blGot = 0;
+#define BLOCKLIST_DIST_TIMEOUT 15000  // 15 s for full blocklist transfer
+
 static const uint8_t deviceId[4] = { 0x44, 0x45, 0x4E, 0x01 }; // "DEN\x01"
 
 // PRO-46: Secure key distribution via USB UART from UNO Q.
 // Non-blocking poll: returns immediately, preserves partial state.
 // Fail-closed: any error wipes buffers and clears stored key.
 static uint8_t pollProvisioning() {
+    // PRO-98: if in blocklist distribution phase, delegate to blocklist handler
+    if (provPhase == PROV_PH_WAIT_TYPE || provPhase == PROV_PH_BLOCKLIST) {
+        return pollBlocklistUpdate();
+    }
     if (provPhase == PROV_PH_HANDSHAKE) {
         while (Serial.available() >= 2) {
             uint8_t msgType = Serial.read();
@@ -192,14 +246,14 @@ static uint8_t pollProvisioning() {
         Serial.println("[PRO-46] CRC verified OK.");
 
         // Store key securely in denDevKey
-        memcpy((uint8_t*)DEN_DEV_KEY, provBuf + 2, AES_KEY_SIZE);
+        memcpy((uint8_t*)denDevKey, provBuf + 2, AES_KEY_SIZE);
 
         // Derive K_mac and K_enc from the new master key
-        den_derive_k_mac((uint8_t*)DEN_DEV_KEY, kMac);
+        den_derive_k_mac((uint8_t*)denDevKey, kMac);
 
         // Send confirmation with hash (fingerprint only, never key bytes)
         uint8_t fullHash[32];
-        den_sha256((uint8_t*)DEN_DEV_KEY, AES_KEY_SIZE, fullHash);
+        den_sha256((uint8_t*)denDevKey, AES_KEY_SIZE, fullHash);
         uint8_t keyHash[KEY_HASH_SIZE];
         memcpy(keyHash, fullHash, KEY_HASH_SIZE);
         memset(fullHash, 0, 32);
@@ -216,8 +270,164 @@ static uint8_t pollProvisioning() {
 
     memset(provBuf, 0, sizeof(provBuf));
     provGot = 0;
-    provPhase = PROV_PH_HANDSHAKE;
+    if (outcome == PROV_DONE) {
+        // PRO-98: after key provisioning, wait for optional blocklist update
+        provPhase = PROV_PH_WAIT_TYPE;
+        provT0 = millis();
+    } else {
+        provPhase = PROV_PH_HANDSHAKE;
+    }
     return outcome;
+}
+
+// PRO-98: Verify and process a signed blocklist message using Ed25519.
+// Returns 1 on success, 0 on failure (invalid signature, wrong version, etc.).
+static uint8_t process_blocklist_message(const uint8_t *data, size_t len) {
+    if (len < 82) {
+#if SECURE_DEBUG
+        Serial.println("[PRO-98] Blocklist message too short");
+#endif
+        return 0;
+    }
+
+    uint8_t version = data[0];
+    if (version < BLOCKLIST_VERSION) {
+#if SECURE_DEBUG
+        Serial.printf("[PRO-98] Blocklist version too old: 0x%02X\n", version);
+#endif
+        return 0;
+    }
+
+    char issuer[16];
+    memcpy(issuer, data + 1, 16);
+
+    uint8_t entry_count = data[17];
+    if (entry_count > BLOCKLIST_MAX_ENTRIES) {
+#if SECURE_DEBUG
+        Serial.println("[PRO-98] Blocklist entry count overflow");
+#endif
+        return 0;
+    }
+
+    size_t needed = 18 + (size_t)entry_count * KEY_HASH_SIZE + BLOCKLIST_SIGNATURE_SIZE;
+    if (len < needed) {
+#if SECURE_DEBUG
+        Serial.println("[PRO-98] Blocklist data truncated");
+#endif
+        return 0;
+    }
+
+    // Verify Ed25519 signature
+    size_t data_len = 1 + 16 + 1 + entry_count * KEY_HASH_SIZE;
+    const uint8_t *signature = data + data_len;
+    int result = ed25519_verify(signature, data, data_len, blocklist_public_key);
+    if (!result) {
+#if SECURE_DEBUG
+        Serial.println("[PRO-98] Blocklist signature verification failed");
+#endif
+        return 0;
+    }
+
+    // Store the verified blocklist
+    current_blocklist.version = version;
+    memcpy(current_blocklist.issuer, issuer, 16);
+    current_blocklist.entry_count = entry_count;
+    memcpy(current_blocklist.entries, data + 18, entry_count * KEY_HASH_SIZE);
+    memcpy(current_blocklist.signature, data + data_len, BLOCKLIST_SIGNATURE_SIZE);
+    blocklist_valid = 1;
+
+#if SECURE_DEBUG
+    Serial.print("[PRO-98] Blocklist activated, version ");
+    Serial.print(current_blocklist.version);
+    Serial.print(", issuer ");
+    Serial.print(current_blocklist.issuer);
+    Serial.print(", ");
+    Serial.print(current_blocklist.entry_count);
+    Serial.println(" entries");
+#endif
+
+    return 1;
+}
+
+// PRO-98: handle optional blocklist update after key provisioning.
+// UNO Q sends MSG_BLOCKLIST (0xA6) followed by the signed blocklist data.
+// Fail-closed: blocklist is never applied without a valid signature,
+// and is only used after successful HMAC authentication.
+static uint8_t pollBlocklistUpdate() {
+    if (provPhase == PROV_PH_WAIT_TYPE) {
+        if (Serial.available() >= 1) {
+            uint8_t msgType = Serial.read();
+            if (msgType == MSG_BLOCKLIST) {
+                provPhase = PROV_PH_BLOCKLIST;
+                provT0 = millis();
+                blGot = 0;
+                memset(blBuf, 0, sizeof(blBuf));
+                return PROV_PENDING;
+            }
+            // Any other message type: ignore and reset
+#if SECURE_DEBUG
+            Serial.printf("[PRO-98] Unexpected msg in WAIT_TYPE: 0x%02X\n", msgType);
+#endif
+            provPhase = PROV_PH_HANDSHAKE;
+            return PROV_BLOCKLIST_DONE;
+        }
+        if (millis() - provT0 > BLOCKLIST_DIST_TIMEOUT) {
+            // Timeout: no blocklist update, key provisioning is still valid
+            provPhase = PROV_PH_HANDSHAKE;
+            return PROV_BLOCKLIST_DONE;
+        }
+        return PROV_PENDING;
+    }
+
+    if (provPhase == PROV_PH_BLOCKLIST) {
+        while (blGot < sizeof(blBuf) && Serial.available()) {
+            blBuf[blGot++] = (uint8_t)Serial.read();
+        }
+        // Minimum blocklist: version(1) + issuer(16) + count(1) + sig(64) = 82
+        if (blGot < 82) {
+            if (millis() - provT0 > BLOCKLIST_DIST_TIMEOUT) {
+#if SECURE_DEBUG
+                Serial.println("[PRO-98] Blocklist timeout");
+#endif
+                provPhase = PROV_PH_HANDSHAKE;
+                memset(blBuf, 0, sizeof(blBuf));
+                blGot = 0;
+                return PROV_BLOCKLIST_DONE;
+            }
+            return PROV_PENDING;
+        }
+
+        // Try to parse and verify the blocklist
+        // Full format: version(1) + issuer(16) + count(1) + entries + sig(64)
+        uint8_t entry_count = blBuf[17];
+        size_t needed = 18 + (size_t)entry_count * KEY_HASH_SIZE + BLOCKLIST_SIGNATURE_SIZE;
+        if (blGot < needed) {
+            if (millis() - provT0 > BLOCKLIST_DIST_TIMEOUT) {
+#if SECURE_DEBUG
+                Serial.println("[PRO-98] Blocklist data truncated");
+#endif
+                provPhase = PROV_PH_HANDSHAKE;
+                memset(blBuf, 0, sizeof(blBuf));
+                blGot = 0;
+                return PROV_BLOCKLIST_DONE;
+            }
+            return PROV_PENDING;
+        }
+
+        // Process the complete blocklist
+        uint8_t bl_ok = process_blocklist_message(blBuf, needed);
+        memset(blBuf, 0, sizeof(blBuf));
+        blGot = 0;
+        provPhase = PROV_PH_HANDSHAKE;
+
+        // Send ACK
+        Serial.write(MSG_BLOCKLIST_ACK);
+        Serial.write(bl_ok ? 0x01 : 0x00);
+        Serial.flush();
+
+        return PROV_BLOCKLIST_DONE;
+    }
+    return PROV_PENDING;
 }
 
 // =============================================================
@@ -524,7 +734,7 @@ void setup() {
   memset(provBuf, 0, sizeof(provBuf));
 
   // PRO-49: derive K_mac from master key at startup
-  den_derive_k_mac(DEN_DEV_KEY, kMac);
+  den_derive_k_mac(denDevKey, kMac);
 
   Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-49)");
 }
@@ -536,9 +746,12 @@ void loop() {
   uint8_t provResult = pollProvisioning();
   if (provResult == PROV_DONE) {
     // Key successfully provisioned; re-derive K_mac and stay in DENIED
-    den_derive_k_mac((uint8_t*)DEN_DEV_KEY, kMac);
+    den_derive_k_mac((uint8_t*)denDevKey, kMac);
     denState = DEN_ST_DENIED;
     denStateAt = now;
+  } else if (provResult == PROV_BLOCKLIST_DONE) {
+    // Blocklist distribution completed (or timed out); key unchanged
+    // No state change needed - key was already derived during provisioning
   } else if (provResult == PROV_FAILED) {
     // Provisioning failed; stay in current state but clear any staged key
     denState = DEN_ST_DENIED;
