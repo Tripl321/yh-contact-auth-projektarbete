@@ -187,23 +187,31 @@ bool receiveKey() {
       uint8_t targetId = Serial1.read();
 
       if (msgType == MSG_HANDSHAKE && targetId == TARGET_PLC) {
+#if SECURE_DEBUG
         Serial.println("[PRO-47] Handshake received.");
+#endif
         break;
       } else {
+#if SECURE_DEBUG
         Serial.printf("[PRO-47] Unexpected message: 0x%02X target: 0x%02X\n", msgType, targetId);
+#endif
         return false;
       }
     }
   }
   if (millis() - timeoutStart >= TIMEOUT_MS) {
+#if SECURE_DEBUG
     Serial.println("[PRO-47] Timeout waiting for handshake.");
+#endif
     return false;
   }
 
   // Step 2: Send READY + device ID
+#if SECURE_DEBUG
   Serial.print("[PRO-47] Sending READY with device ID: ");
   for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
   Serial.println();
+#endif
 
   Serial1.write(MSG_READY);
   Serial1.write(deviceId, 4);
@@ -216,19 +224,25 @@ bool receiveKey() {
     delay(1);
   }
   if (Serial1.available() < 22) {
+#if SECURE_DEBUG
     Serial.println("[PRO-47] Timeout waiting for key data.");
+#endif
     return false;
   }
 
   uint8_t msgType = Serial1.read();
   if (msgType != MSG_KEY_DATA) {
+#if SECURE_DEBUG
     Serial.printf("[PRO-47] Expected KEY_DATA, got 0x%02X\n", msgType);
+#endif
     return false;
   }
 
   uint8_t receivedKeyLen = Serial1.read();
   if (receivedKeyLen != AES_KEY_SIZE) {
+#if SECURE_DEBUG
     Serial.printf("[PRO-47] Unexpected key length: %d\n", receivedKeyLen);
+#endif
     return false;
   }
 
@@ -327,10 +341,14 @@ void setup() {
 
   // Attempt key reception
   if (receiveKey()) {
+#if SECURE_DEBUG
     Serial.println("[PRO-47] Key distribution successful.");
+#endif
     digitalWrite(LED_BUILTIN, HIGH);  // Solid LED = key stored
   } else {
+#if SECURE_DEBUG
     Serial.println("[PRO-47] Key distribution failed. No key stored.");
+#endif
     // Blink LED rapidly to indicate failure
     for (int i = 0; i < 10; i++) {
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
