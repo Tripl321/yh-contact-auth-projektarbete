@@ -147,7 +147,70 @@ verification, version checking, and truncation handling are mirrored in Python.
 | `BLOCKLIST_SIGNATURE_SIZE` | 64             | Ed25519 signature size                |
 | `DEN_REASON_BLOCKLISTED`   | 8              | Fail reason code for blocked PAWs     |
 
-## 11. TODO (future work)
+## 11. Security Review (Ed25519 Implementation)
+
+### 11.1 Private Key Handling
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Private key hardcoded in firmware | ✅ PASS | `blocklist_private_key` is zero-initialized static array; no hardcoded value |
+| Private key in test data | ✅ PASS | Test key only in `tests/test_pro88_den.py`, clearly marked `TEST_ED25519_PRIVATE_KEY` |
+| Private key in build config / repo | ✅ PASS | No private key material in any `.ino`, `.h`, `.cpp`, or build files |
+| Private key provisioning | ⚠️ TODO | `blocklist_key_provisioned = 0` flag; production must provision via secure out-of-band channel |
+| Private key zeroization | ✅ PASS | SRAM only; cleared on reset; no flash persistence |
+
+### 11.2 Public Key Handling
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| DEN contains only public key | ✅ PASS | `blocklist_public_key[32]` embedded in DEN; all-zero placeholder for production |
+| UNO Q contains only private key | ✅ PASS | Private key in UNO Q; public key derived internally if needed |
+| PAW has neither key | ✅ PASS | PAW firmware has no Ed25519 code or keys |
+
+### 11.3 Implementation Verification
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Signature size (64 bytes) | ✅ PASS | `BLOCKLIST_SIGNATURE_SIZE = 64` |
+| Private key size (32 bytes) | ✅ PASS | `ED25519_PRIVATE_KEY_SIZE = 32` |
+| Public key size (32 bytes) | ✅ PASS | `ED25519_PUBLIC_KEY_SIZE = 32` |
+| RFC 8032 test vectors | ✅ PASS | Empty msg, short msg, long msg, wrong msg, wrong pk all verified |
+| Custom implementation vs. cryptography | ✅ PASS | Custom tweetnacl-based impl matches cryptography library |
+| Constant-time operations | ✅ PASS | tweetnacl/ref10 reference implementation is constant-time |
+| Sensitive data logging | ✅ PASS | All blocklist debug under `SECURE_DEBUG`; no private key logging |
+
+### 11.4 Test Coverage
+
+| Test | Status |
+|------|--------|
+| `test_pro98_ed25519_sign_verify` | ✅ PASS |
+| `test_pro98_blocklist_signature_format` | ✅ PASS |
+| `test_pro98_blocklist_signature_verification` | ✅ PASS |
+| `test_pro98_manipulated_blocklist_rejected` | ✅ PASS |
+| `test_pro98_rollback_rejected` | ✅ PASS |
+| `test_pro98_wrong_public_key_rejected` | ✅ PASS |
+| `test_pro98_stolen_paw_cannot_sign` | ✅ PASS |
+| `test_pro98_blocked_paw_denied` | ✅ PASS |
+| `test_pro98_source_guards_ed25519` | ✅ PASS |
+
+### 11.5 What is Verified vs. Simulated vs. Requires Independent Review
+
+| Category | Items |
+|----------|-------|
+| **Verified (automated tests)** | Ed25519 sign/verify with RFC 8032 vectors; blocklist format; manipulated signature rejection; rollback rejection; wrong public key rejection; stolen PAW cannot sign; firmware source guards |
+| **Simulated (Python mock)** | Full blocklist distribution flow; DEN session state machine; HMAC-SHA256 challenge-response; UART framing/CRC |
+| **Requires independent crypto code review** | Custom tweetnacl/ref10 Ed25519 implementation in `libraries/Ed25519/`; SRAM-only private key storage; side-channel resistance on target hardware (STM32U585 / RP2350); secure provisioning channel for production private key |
+
+### 11.6 Open Items for Production Deployment
+
+- [ ] Secure provisioning process for Ed25519 private key on UNO Q (out-of-band, HSM-backed)
+- [ ] Embed production Ed25519 public key in DEN firmware (replace all-zero placeholder)
+- [ ] Independent cryptographic code review of `libraries/Ed25519/` implementation
+- [ ] Side-channel analysis on target hardware (STM32U585 for UNO Q, RP2350 for DEN)
+- [ ] Flash storage for blocklist across reboots (currently SRAM-only)
+- [ ] Key rotation / revocation procedure for Ed25519 key pair
+
+## 12. TODO (future work)
 
 - Add blocklist query RPC to the UNO Q bridge interface
 - Support incremental blocklist updates (add/remove individual entries)
