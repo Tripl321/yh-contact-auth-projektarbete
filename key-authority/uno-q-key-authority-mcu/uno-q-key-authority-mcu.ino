@@ -498,12 +498,14 @@ static bool distributeKey(uint8_t targetId) {
   }
 
   if (hashDiff != 0) {
+#if SECURE_DEBUG
     Serial.println("FAILED (hash mismatch)");
     Serial.print("[PRO-46] Expected: ");
     printHex(keyHash, KEY_HASH_SIZE);
     Serial.print("  Got: ");
     printHex(storedHash, KEY_HASH_SIZE);
     Serial.println();
+#endif
     Bridge.notify("key_authority_event", "distribution_failed",
                  String(targetName) + " hash mismatch");
     return false;

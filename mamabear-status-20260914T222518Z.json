@@ -1,0 +1,57 @@
+{
+  "tool": "shallot mamabear status",
+  "host_alias": "mamabear",
+  "timestamp_utc": "2026-09-14T22:25:18Z",
+  "transport": {
+    "via": "system-ssh",
+    "alias_source": "~/.ssh/config",
+    "batch_mode": true,
+    "connect_timeout_s": 10,
+    "command_timeout_s": 30
+  },
+  "commands": [
+    {
+      "name": "uname",
+      "command": "uname -a",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "Linux MamaBear 6.16.7-g0dd6551ae96b #1 SMP PREEMPT Tue Sep 23 12:46:06 UTC 2025 aarch64 GNU/Linux\n",
+      "stderr": ""
+    },
+    {
+      "name": "uptime",
+      "command": "uptime",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": " 22:25:16 up 15:21,  1 user,  load average: 0.03, 0.07, 0.06\n",
+      "stderr": ""
+    },
+    {
+      "name": "memory",
+      "command": "free -m",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "               total        used        free      shared  buff/cache   available\nMem:            3669         619        2548          38         687        3050\nSwap:           1834           0        1834\n",
+      "stderr": ""
+    },
+    {
+      "name": "disk",
+      "command": "df -h /",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "Filesystem       Size  Used Avail Use% Mounted on\n/dev/mmcblk0p68  9.8G  7.6G  1.7G  82% /\n",
+      "stderr": ""
+    }
+  ],
+  "passed": 4,
+  "failed": 0,
+  "aborted": false,
+  "transport_error": null,
+  "teststatus": "pass",
+  "exit_code": 0,
+  "scope_note": "Fysisk status-/sj\u00e4lvtestverifiering av MamaBear-noden. Inte bevis f\u00f6r hela DEN\u2013PAW-autentiseringskedjan."
+}

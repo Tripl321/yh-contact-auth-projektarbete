@@ -988,47 +988,61 @@ static void handleDockAuth() {
         den_status_t st = den_scanner_push(&denScanner, (uint8_t)Serial1.read(), now, &f);
         if (st == DEN_INCOMPLETE) continue;
         if (st != DEN_OK) {
+#if SECURE_DEBUG
             Serial.print("[PRO-84] Dock frame rejected, code ");
             Serial.println((int)st);
+#endif
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
-            if (f.type == DEN_TYPE_CHALLENGE) {
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-                // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
-                uint8_t mac[DEN_HMAC_LEN];
-                hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
-            uint8_t resp[DEN_MAX_FRAME];
-            size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
-            memset(mac, 0, sizeof(mac));
-            if (!n) {
-                Serial.println("[PRO-84] Response encode failed");
-                continue;
-            }
+        if (f.type == DEN_TYPE_CHALLENGE) {
+                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
+                 // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
+                 uint8_t mac[DEN_HMAC_LEN];
+                 hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
+             uint8_t resp[DEN_MAX_FRAME];
+             size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
+             memset(mac, 0, sizeof(mac));
+             if (!n) {
+#if SECURE_DEBUG
+                 Serial.println("[PRO-84] Response encode failed");
+#endif
+                 continue;
+             }
             Serial1.write(resp, n);
-            Serial1.flush();
-            paw_last_resp_sent_at = now;
-            paw_ack_pending = true;
-            memset(resp, 0, sizeof(resp));
+             Serial1.flush();
+             paw_last_resp_sent_at = now;
+             paw_ack_pending = true;
+             memset(resp, 0, sizeof(resp));
+#if SECURE_DEBUG
             Serial.println("[PRO-84] CHALLENGE answered over dock UART");
+#endif
         } else if (f.type == DEN_TYPE_ACK) {
             if (!paw_ack_pending) {
                 // Late ACK after PAW timeout: ignore to avoid
                 // overwriting FAILED for a session that already
                 // timed out from PAW's perspective.
+#if SECURE_DEBUG
                 Serial.println("[PRO-84] ACK ignored (no pending response)");
+#endif
                 continue;
             }
             paw_ack_pending = false;
             if (f.payloadLen == 1 && f.payload[0] == 0x01) {
-                epd.showStatus(EPD_STATUS_AUTHENTICATED);
-                Serial.println("[PRO-84] DEN acknowledged success");
-            } else {
-                epd.showStatus(EPD_STATUS_FAILED);
-                Serial.println("[PRO-84] DEN denied (ACK 0x00)");
-            }
-        } else {
-            Serial.print("[PRO-84] Dock frame ignored, type 0x");
-            Serial.println(f.type, HEX);
+                 epd.showStatus(EPD_STATUS_AUTHENTICATED);
+#if SECURE_DEBUG
+                 Serial.println("[PRO-84] DEN acknowledged success");
+#endif
+             } else {
+                 epd.showStatus(EPD_STATUS_FAILED);
+#if SECURE_DEBUG
+                 Serial.println("[PRO-84] DEN denied (ACK 0x00)");
+#endif
+             }
+         } else {
+#if SECURE_DEBUG
+             Serial.print("[PRO-84] Dock frame ignored, type 0x");
+             Serial.println(f.type, HEX);
+#endif
         }
     }
 }
@@ -1126,12 +1140,16 @@ void loop() {
         int state = radio.readData(rxBuffer, rxLen);
         if (state == RADIOLIB_ERR_NONE && rxLen > 0) {
             uint8_t msgType = rxBuffer[0];
+#if SECURE_DEBUG
             Serial.printf("[LoRa RX] Type: 0x%02X, Length: %u bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
                           msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
+#endif
 
             // Handle MSG_CHALLENGE (0xB1)
             if (msgType == MSG_CHALLENGE && rxLen >= (1 + CHALLENGE_SIZE)) {
+#if SECURE_DEBUG
                 Serial.println("[PRO-50] Challenge received from PLC over LoRa");
+#endif
                 memcpy(challenge, rxBuffer + 1, CHALLENGE_SIZE);
                 lastChallengeTime = millis();
                 currentState = STATE_COMPUTING_RESPONSE;
@@ -1147,7 +1165,9 @@ void loop() {
             else if (msgType == MSG_RESULT && rxLen >= 2) {
                 uint8_t result = rxBuffer[1];
                 if (result == 0x01) {
+#if SECURE_DEBUG
                     Serial.println("[PRO-50] Authentication SUCCESS (LoRa)");
+#endif
                     currentState = STATE_WAITING_FOR_CHALLENGE;
                     epd.showStatus(EPD_STATUS_AUTHENTICATED);
 
@@ -1158,7 +1178,9 @@ void loop() {
                         delay(100);
                     }
                 } else {
+#if SECURE_DEBUG
                     Serial.println("[PRO-50] Authentication FAILED (LoRa)");
+#endif
                     currentState = STATE_WAITING_FOR_CHALLENGE;
                     epd.showStatus(EPD_STATUS_FAILED);
 
@@ -1193,7 +1215,9 @@ void loop() {
         case STATE_WAITING_FOR_CHALLENGE:
             if (lastChallengeTime > 0 && (millis() - lastChallengeTime > CHALLENGE_TIMEOUT)) {
                 lastChallengeTime = 0;
+#if SECURE_DEBUG
                 Serial.println("[PRO-50] Challenge timeout.");
+#endif
                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
             }
             break;
@@ -1215,22 +1239,32 @@ void loop() {
                 if (loraInitialized) {
                     int txState = radio.transmit(txPacket, sizeof(txPacket));
                     if (txState == RADIOLIB_ERR_NONE) {
+#if SECURE_DEBUG
                         Serial.println("[PRO-50] Response sent over LoRa to PLC.");
+#endif
                     } else {
+#if SECURE_DEBUG
                         Serial.printf("[PRO-50] LoRa transmit error: %d\n", txState);
+#endif
                     }
                     radio.startReceive();
                 }
 
+                // PRO-93: HMAC response must not be sent over USB Serial
+                // in production. Guarded for debugging only.
+#if SECURE_DEBUG
                 // Also output over Serial for debugging/telemetry
                 Serial.write(MSG_RESPONSE);
                 Serial.write(response, HMAC_SIZE);
                 Serial.flush();
+#endif
 
                 currentState = STATE_WAITING_FOR_RESULT;
                 memset(challenge, 0, CHALLENGE_SIZE);
             } else {
+#if SECURE_DEBUG
                 Serial.println("[PRO-50] ERROR: No key stored!");
+#endif
                 currentState = STATE_WAITING_FOR_KEY;
                 epd.showStatus(EPD_STATUS_FAILED);
             }

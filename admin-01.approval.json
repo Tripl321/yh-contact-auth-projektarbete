@@ -1,0 +1,16 @@
+{
+  "format": "shallot-fido2-approval/1",
+  "user_id": "admin-01",
+  "credential_id": "8dACAuYAwB4tgRaK8BJW9AYnENSbgtZ1Bkm3Gl5xXxHUe3ZjNzr9ySIch4YiOXqxZbqkoDioqyqgMvuDnv0FQCnqT4dh-Kf8eBr3042tZ9ff3rOoCFq7_GgolA9_71p5IYeflEV9nVcLHPAzYC6muDgTJ0Cp4RJc0Po_LIpQzBR3ul_SM7Of1Si9a5ZL2IofMzoyR8KDq_A_BA",
+  "public_key": "pQECAyYgASFYIN3A7Z8qbmOuKKhtPBsvrgcDoZj0g6q90Df3HEzyLliVIlggckqskXfhDdN4xsipEglmktOFGL5FbRKi2WSpfwb_xtI",
+  "rp_id": "shallot.local",
+  "origin": "https://shallot.local",
+  "backend": "hardware",
+  "attestation": "packed-self",
+  "user_verification": "required",
+  "registered": "2026-09-14T21:06:04Z",
+  "status": "active",
+  "fingerprint": "ed556eca32380b21",
+  "exported_at": "2026-09-14T21:36:58Z",
+  "scope_note": "Endast publik metadata. Privat nyckel l\u00e4mnar aldrig authenticatorn. Godk\u00e4nnande hos MamaBear \u00e4r bokf\u00f6ring, \u00e4nnu ej verkst\u00e4llighet."
+}

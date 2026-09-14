@@ -1,0 +1,27 @@
+[project]
+name = "shallot"
+version = "0.1.0"
+description = "Lokal test-/simulerings-CLI för SHALLOT (DEN–PAW UART-autentisering). Styr eller verifierar ingen fysisk hårdvara."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "pyserial>=3.5",
+    "fido2>=1.1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+]
+
+[project.scripts]
+shallot = "shallot_cli.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["tools"]
+include = ["shallot_cli*"]
