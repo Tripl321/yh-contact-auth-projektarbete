@@ -42,22 +42,10 @@
 
 #define AES_KEY_SIZE 16
 
-// =============================================================
-// Key Storage (PRO-47 + PRO-49)
-// =============================================================
-//
-// Key hierarchy (SRAM-only, never flash/serial):
-//   denDevKey : master key (128-bit, development stub; replace with
-//               provisioned key in production via PRO-45 flow)
-//   kMac      : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
-//   kEnc      : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
-//
-// PRO-49: HMAC verification uses K_mac, never the master key directly.
-// K_mac is derived once at startup and kept in SRAM only.
-// =============================================================
-
-static uint8_t kMac[16];   // derived HMAC key (PRO-49)
-static uint8_t kEnc[16];   // derived encryption key (reserved)
+static uint8_t denDevKey[AES_KEY_SIZE];  // zero-initialised = unprovisioned
+static uint8_t kMac[AES_KEY_SIZE];   // derived HMAC key (PRO-49)
+static uint8_t kEnc[AES_KEY_SIZE];   // derived encryption key (reserved)
+static uint8_t key_provisioned = 0;  // PRO-94: fail-closed without provisioned key
 
 // PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
 static void den_derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
@@ -73,6 +61,8 @@ static void den_derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
 
 // PRO-47: secure wipe using volatile store to prevent compiler optimization
 static void secure_clear_key() {
+    volatile uint8_t* d = (volatile uint8_t*)denDevKey;
+    for (int i = 0; i < 16; i++) d[i] = 0;
     volatile uint8_t* k = (volatile uint8_t*)kMac;
     for (int i = 0; i < 16; i++) k[i] = 0;
     volatile uint8_t* e = (volatile uint8_t*)kEnc;
@@ -194,7 +184,9 @@ static uint8_t pollProvisioning() {
             uint8_t msgType = Serial.read();
             uint8_t targetId = Serial.read();
             if (msgType == MSG_HANDSHAKE && targetId == TARGET_DEN) {
+#if SECURE_DEBUG
                 Serial.println("[PRO-46] Handshake received.");
+#endif
                 Serial.write(MSG_READY);
                 Serial.write(deviceId, 4);
                 Serial.flush();
@@ -213,7 +205,9 @@ static uint8_t pollProvisioning() {
     }
     if (provGot < PROV_KEYDATA_LEN) {
         if (millis() - provT0 > KEY_DISTRIBUTION_TIMEOUT) {
+#if SECURE_DEBUG
             Serial.println("[PRO-46] Timeout waiting for key data.");
+#endif
             provPhase = PROV_PH_HANDSHAKE;
             provGot = 0;
             memset(provBuf, 0, sizeof(provBuf));
@@ -225,11 +219,15 @@ static uint8_t pollProvisioning() {
     uint8_t outcome = PROV_FAILED;
     do {
         if (provBuf[0] != MSG_KEY_DATA) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-46] Expected KEY_DATA, got 0x%02X\n", provBuf[0]);
+#endif
             break;
         }
         if (provBuf[1] != AES_KEY_SIZE) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-46] Unexpected key length: %d\n", provBuf[1]);
+#endif
             break;
         }
         uint32_t receivedCrc = ((uint32_t)provBuf[18] << 24)
@@ -238,18 +236,23 @@ static uint8_t pollProvisioning() {
                              | ((uint32_t)provBuf[21]);
         uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
         if (computedCrc != receivedCrc) {
+#if SECURE_DEBUG
             Serial.printf("[PRO-46] CRC mismatch! Expected: %08X Got: %08X\n",
                           computedCrc, receivedCrc);
+#endif
             Serial.write(MSG_ERROR);
             break;
         }
+#if SECURE_DEBUG
         Serial.println("[PRO-46] CRC verified OK.");
+#endif
 
         // Store key securely in denDevKey
         memcpy((uint8_t*)denDevKey, provBuf + 2, AES_KEY_SIZE);
 
         // Derive K_mac and K_enc from the new master key
         den_derive_k_mac((uint8_t*)denDevKey, kMac);
+        key_provisioned = 1;
 
         // Send confirmation with hash (fingerprint only, never key bytes)
         uint8_t fullHash[32];
@@ -262,9 +265,13 @@ static uint8_t pollProvisioning() {
         Serial.write(keyHash, KEY_HASH_SIZE);
         Serial.flush();
 
+        // PRO-93: sensitive debug output guarded — key fingerprint never
+        // printed to serial in production builds.
+#if SECURE_DEBUG
         Serial.print("[PRO-46] Key stored. Hash sent: ");
         for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
         Serial.println();
+#endif
         outcome = PROV_DONE;
     } while (0);
 
@@ -676,6 +683,11 @@ static void den_send_challenge(uint32_t now) {
 }
 
 static void den_on_response(const den_frame_t *f, uint32_t now) {
+  // PRO-94: fail-closed if no key provisioned
+  if (!key_provisioned) {
+    den_fail(DEN_REASON_HMAC_MISMATCH);
+    return;
+  }
   if (f->type != DEN_TYPE_RESPONSE) {
     den_fail(DEN_REASON_UNEXPECTED_TYPE);
     return;
@@ -733,10 +745,12 @@ void setup() {
   provGot = 0;
   memset(provBuf, 0, sizeof(provBuf));
 
-  // PRO-49: derive K_mac from master key at startup
-  den_derive_k_mac(denDevKey, kMac);
+  // PRO-94: No key derivation at startup — fail-closed until provisioned
+  key_provisioned = 0;
+  memset(kMac, 0, sizeof(kMac));
+  memset(kEnc, 0, sizeof(kEnc));
 
-  Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-49)");
+  Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-94)");
 }
 
 void loop() {
@@ -745,8 +759,7 @@ void loop() {
   // PRO-46: USB provisioning poll (non-blocking, takes precedence)
   uint8_t provResult = pollProvisioning();
   if (provResult == PROV_DONE) {
-    // Key successfully provisioned; re-derive K_mac and stay in DENIED
-    den_derive_k_mac((uint8_t*)denDevKey, kMac);
+    // Key already derived during provisioning; stay in DENIED
     denState = DEN_ST_DENIED;
     denStateAt = now;
   } else if (provResult == PROV_BLOCKLIST_DONE) {

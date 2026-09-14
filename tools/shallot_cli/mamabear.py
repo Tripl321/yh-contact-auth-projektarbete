@@ -1,0 +1,246 @@
+"""Säkert läsande MamaBear-fjärrläge över system-SSH.
+
+MamaBear är en SSH-nod som nås över Tailscale via användarens egna
+ssh-alias (``~/.ssh/config``). Denna modul äger allt fjärrrelaterat:
+
+- Hårdkodad allowlist av läsande kommandon — godtyckliga fjärrkommandon
+  från användarinput körs aldrig. Ingen nyckelgenerering, distribution,
+  provisionering, flashning eller annan skrivande åtgärd finns här.
+- Transport via systemets ``ssh``-binär med ``BatchMode=yes`` (frågar
+  aldrig efter lösenord — misslyckas fail-closed i stället) och
+  ``ConnectTimeout``. Inga lösenord, ``-i``-nycklar, ``user@``-former
+  eller IP-adresser hanteras någonsin; endast aliaset skickas vidare.
+  Host keys verifieras enligt användarens egen konfiguration och
+  accepteras aldrig automatiskt.
+- All fjärr-output saneras med :func:`sanitize` innan den visas, sparas
+  eller används vidare (t.ex. om den skickas till Ollama).
+- Tidsstämplade lokala JSON-resultat med kommando, tidpunkt, exit-kod,
+  teststatus och sanerad output.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONNECT_TIMEOUT_S = 10
+CMD_TIMEOUT_S = 30
+
+#: Tillåtna ssh-alias: enkelt token, aldrig user@-form, sökväg eller flaggor.
+ALIAS_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+#: IPv4-literaler ser ut som adresser, inte alias — avvisas explicit.
+IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+#: Läsande statuskommandon (informativa, inga förväntningar på output).
+STATUS_COMMANDS = (
+    {"name": "uname", "cmd": "uname -a"},
+    {"name": "uptime", "cmd": "uptime"},
+    {"name": "memory", "cmd": "free -m"},
+    {"name": "disk", "cmd": "df -h /"},
+)
+
+#: Läsande självtestkommandon med strikta förväntningar.
+#: Oväntad output eller nonzero exit betyder teststatus fail.
+TEST_COMMANDS = (
+    {"name": "exec-sanity", "cmd": "echo MAMABEAR_SELFTEST_OK",
+     "expect_exact": "MAMABEAR_SELFTEST_OK"},
+    {"name": "pipe-sanity", "cmd": "printf 'a\\nb\\n' | wc -l",
+     "expect_exact": "2"},
+    {"name": "clock", "cmd": "date -u +%Y-%m-%dT%H:%M:%SZ",
+     "expect_regex": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"},
+)
+
+#: stderr-fragment som betyder att SSH-transporten fallerade (fail closed).
+SSH_ERROR_HINTS = (
+    "could not resolve hostname",
+    "no route to host",
+    "connection refused",
+    "connection timed out",
+    "operation timed out",
+    "host key verification failed",
+    "permission denied",
+    "network is unreachable",
+    "tailnet policy",
+)
+
+SCOPE_NOTE = ("Fysisk status-/självtestverifiering av MamaBear-noden. "
+              "Inte bevis för hela DEN–PAW-autentiseringskedjan.")
+
+# (mönster, ersättning) — ordningen är avsiktlig: specifikt före generellt.
+REDACTIONS = [
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), "-----BEGIN REDACTED PRIVATE KEY-----"),
+    (re.compile(r"\b(api[_-]?key|private[_-]?key|secret|password|passwd|pwd|token)\b"
+                r"\s*[\"']?\s*[:=]\s*[\"']?[^\s\"']+[\"']?", re.IGNORECASE),
+     lambda m: "%s=[REDACTED]" % m.group(1)),
+    (re.compile(r"\bbearer\s+\S+", re.IGNORECASE), "bearer [REDACTED]"),
+    (re.compile(r"\bfingerprint\s*[:=]?\s*[0-9A-Fa-f:]{8,}"), "fingerprint=[REDACTED-FINGERPRINT]"),
+    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b"), "[REDACTED-MAC]"),
+    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){7,}[0-9A-Fa-f]{2}\b"), "[REDACTED-FINGERPRINT]"),
+    (re.compile(r"\b[0-9A-Fa-f]{32,}\b"), "[REDACTED-HEX]"),
+    (re.compile(r"\b[A-Za-z0-9_~+/-]{32,}={0,2}\b"), "[REDACTED-TOKEN]"),
+    (re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+                r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+                r"|192\.168\.\d{1,3}\.\d{1,3}"
+                r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
+                r"|127\.\d{1,3}\.\d{1,3}\.\d{1,3})\b"), "[REDACTED-IP]"),
+    (re.compile(r"\bfe80:[0-9A-Fa-f:]*[0-9A-Fa-f]\b"), "[REDACTED-IP]"),
+    (re.compile(r"(?<![0-9A-Fa-f:])::1(?![0-9A-Fa-f:])"), "[REDACTED-IP]"),
+]
+
+
+def sanitize(text: str) -> str:
+    """Maskera hemligheter: nycklar, token, fingerprint, payload-hex,
+    privata IP-adresser (inkl. Tailscale 100.64/10) och MAC-adresser."""
+    out = text or ""
+    for pattern, repl in REDACTIONS:
+        out = pattern.sub(repl, out)
+    return out
+
+
+def validate_alias(host: str) -> str:
+    """Validera ssh-alias. Aldrig adresser, user@-former eller flaggor."""
+    alias = (host or "").strip()
+    if IPV4_RE.fullmatch(alias) or alias.startswith("["):
+        raise ValueError("'%s' ser ut som en adress — ange ssh-alias från ~/.ssh/config." % host)
+    if not ALIAS_RE.fullmatch(alias) or alias.startswith("-"):
+        raise ValueError("ogiltigt ssh-alias %r — använd ett alias från ~/.ssh/config "
+                         "(aldrig user@värd, adress, sökväg eller flaggor)." % host)
+    return alias
+
+
+def run_remote(alias: str, remote_cmd: str, timeout_s: int = CMD_TIMEOUT_S) -> dict:
+    """Kör ett allowlistat kommando via system-ssh. Returnerar fakta-dict.
+
+    Kastar RuntimeError om ssh-binären saknas eller inte kan startas.
+    Skriver aldrig något på fjärrnoden (kommandot kommer från allowlist).
+    """
+    argv = ["ssh", "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S, alias, remote_cmd]
+    try:
+        proc = subprocess.run(argv, shell=False, capture_output=True,
+                              text=True, errors="replace", timeout=timeout_s)
+    except FileNotFoundError:
+        raise RuntimeError("ssh-binären hittades inte — installera OpenSSH.") from None
+    except subprocess.TimeoutExpired:
+        return {"exit_code": None, "timed_out": True, "stdout": "", "stderr": ""}
+    except OSError as e:
+        raise RuntimeError("kunde inte starta ssh: %s" % e) from None
+    return {"exit_code": proc.returncode, "timed_out": False,
+            "stdout": proc.stdout or "", "stderr": proc.stderr or ""}
+
+
+def is_transport_error(result: dict) -> bool:
+    """True om resultatet visar att SSH-transporten fallerade."""
+    if result.get("timed_out"):
+        return True
+    if result.get("exit_code") != 255:
+        return False
+    blob = ((result.get("stdout") or "") + "\n" + (result.get("stderr") or "")).lower()
+    return any(hint in blob for hint in SSH_ERROR_HINTS)
+
+
+def check_entry(entry: dict, result: dict) -> str:
+    """'pass' om kommandot lyckades och output matchar förväntningar."""
+    if result.get("timed_out") or result.get("exit_code") != 0:
+        return "fail"
+    out = (result.get("stdout") or "").strip()
+    if "expect_exact" in entry and out != entry["expect_exact"]:
+        return "fail"
+    if "expect_regex" in entry and not re.fullmatch(entry["expect_regex"], out):
+        return "fail"
+    return "pass"
+
+
+def run_suite(alias: str, entries: tuple, timeout_s: int = CMD_TIMEOUT_S) -> dict:
+    """Kör en allowlist-svit. Avbryter fail-closed vid transportfel.
+
+    Returnerar {"results", "transport_error", "aborted"}. All output i
+    results är redan sanerad.
+    """
+    results = []
+    transport_error = None
+    aborted = False
+    for entry in entries:
+        result = run_remote(alias, entry["cmd"], timeout_s=timeout_s)
+        if is_transport_error(result):
+            transport_error = sanitize(
+                (result.get("stderr") or result.get("stdout") or "okänd transportfel").strip())
+            aborted = True
+            if result.get("timed_out"):
+                transport_error = "timeout efter %ds: %s" % (timeout_s, entry["name"])
+            break
+        results.append({
+            "name": entry["name"],
+            "command": entry["cmd"],
+            "exit_code": result["exit_code"],
+            "timed_out": False,
+            "check": check_entry(entry, result),
+            "output": sanitize(result.get("stdout") or ""),
+            "stderr": sanitize(result.get("stderr") or ""),
+        })
+    return {"results": results, "transport_error": transport_error, "aborted": aborted}
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def default_output_path(kind: str) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return Path.cwd() / ("mamabear-%s-%s.json" % (kind, stamp))
+
+
+def build_payload(tool: str, alias: str, suite: dict) -> dict:
+    """Bygg det tidsstämpta JSON-resultatet (endast sanerad output)."""
+    results = suite["results"]
+    passed = sum(1 for r in results if r["check"] == "pass")
+    failed = len(results) - passed
+    aborted = suite["aborted"]
+    teststatus = "pass" if (results and failed == 0 and not aborted) else "fail"
+    return {
+        "tool": tool,
+        "host_alias": alias,
+        "timestamp_utc": utc_now_iso(),
+        "transport": {"via": "system-ssh", "alias_source": "~/.ssh/config",
+                      "batch_mode": True, "connect_timeout_s": CONNECT_TIMEOUT_S,
+                      "command_timeout_s": CMD_TIMEOUT_S},
+        "commands": results,
+        "passed": passed,
+        "failed": failed,
+        "aborted": aborted,
+        "transport_error": suite["transport_error"],
+        "teststatus": teststatus,
+        "exit_code": 0 if teststatus == "pass" else 1,
+        "scope_note": SCOPE_NOTE,
+    }
+
+
+def save_result(path: Path, payload: dict) -> Path:
+    """Spara resultatfil lokalt. Kastar RuntimeError vid skrivfel."""
+    try:
+        Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        raise RuntimeError("kunde inte skriva resultatfil %s: %s" % (path, e)) from None
+    return Path(path)
+
+
+def render_summary(payload: dict, result_path: Path | None) -> str:
+    """Tydlig terminalsammanfattning: anslutning, status, passerat/misslyckat, fil."""
+    lines = [
+        "%s — läsande fjärrläge, ingen skrivning på MamaBear." % payload["tool"],
+        "anslutning : %s ... %s" % (
+            payload["host_alias"],
+            "OK" if not payload["aborted"] else "FEL: %s" % payload["transport_error"]),
+    ]
+    for r in payload["commands"]:
+        first = (r["output"].strip().splitlines() or [""])[0][:100]
+        lines.append("  %-12s exit=%s check=%s %s" % (
+            r["name"], r["exit_code"], r["check"], first))
+    lines.append("status     : %s (passerade=%d misslyckade=%d)" % (
+        payload["teststatus"].upper(), payload["passed"], payload["failed"]))
+    lines.append("resultatfil: %s" % (result_path if result_path else "(ingen fil skriven)"))
+    lines.append("Notera: %s" % SCOPE_NOTE)
+    return "\n".join(lines)

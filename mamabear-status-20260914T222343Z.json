@@ -1,0 +1,20 @@
+{
+  "tool": "shallot mamabear status",
+  "host_alias": "mamabear",
+  "timestamp_utc": "2026-09-14T22:23:43Z",
+  "transport": {
+    "via": "system-ssh",
+    "alias_source": "~/.ssh/config",
+    "batch_mode": true,
+    "connect_timeout_s": 10,
+    "command_timeout_s": 30
+  },
+  "commands": [],
+  "passed": 0,
+  "failed": 0,
+  "aborted": true,
+  "transport_error": "ssh: Could not resolve hostname <mamabear.taila70236.ts.net>: nodename nor servname provided, or not known",
+  "teststatus": "fail",
+  "exit_code": 1,
+  "scope_note": "Fysisk status-/sj\u00e4lvtestverifiering av MamaBear-noden. Inte bevis f\u00f6r hela DEN\u2013PAW-autentiseringskedjan."
+}

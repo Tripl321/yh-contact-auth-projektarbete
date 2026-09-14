@@ -1,0 +1,57 @@
+{
+  "tool": "shallot mamabear status",
+  "host_alias": "mamabear",
+  "timestamp_utc": "2026-09-14T22:18:29Z",
+  "transport": {
+    "via": "system-ssh",
+    "alias_source": "~/.ssh/config",
+    "batch_mode": true,
+    "connect_timeout_s": 10,
+    "command_timeout_s": 30
+  },
+  "commands": [
+    {
+      "name": "uname",
+      "command": "uname -a",
+      "exit_code": 255,
+      "timed_out": false,
+      "check": "fail",
+      "output": "",
+      "stderr": "tailscale: tailnet policy does not permit you to SSH as user \"johannes\"\nConnection closed by [REDACTED-IP] port 22\n"
+    },
+    {
+      "name": "uptime",
+      "command": "uptime",
+      "exit_code": 255,
+      "timed_out": false,
+      "check": "fail",
+      "output": "",
+      "stderr": "tailscale: tailnet policy does not permit you to SSH as user \"johannes\"\nConnection closed by [REDACTED-IP] port 22\n"
+    },
+    {
+      "name": "memory",
+      "command": "free -m",
+      "exit_code": 255,
+      "timed_out": false,
+      "check": "fail",
+      "output": "",
+      "stderr": "tailscale: tailnet policy does not permit you to SSH as user \"johannes\"\nConnection closed by [REDACTED-IP] port 22\n"
+    },
+    {
+      "name": "disk",
+      "command": "df -h /",
+      "exit_code": 255,
+      "timed_out": false,
+      "check": "fail",
+      "output": "",
+      "stderr": "tailscale: tailnet policy does not permit you to SSH as user \"johannes\"\nConnection closed by [REDACTED-IP] port 22\n"
+    }
+  ],
+  "passed": 0,
+  "failed": 4,
+  "aborted": false,
+  "transport_error": null,
+  "teststatus": "fail",
+  "exit_code": 1,
+  "scope_note": "Fysisk status-/sj\u00e4lvtestverifiering av MamaBear-noden. Inte bevis f\u00f6r hela DEN\u2013PAW-autentiseringskedjan."
+}
