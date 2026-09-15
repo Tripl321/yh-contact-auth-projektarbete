@@ -93,44 +93,65 @@ step_copy() {
 step_flash() {
     log "Steg 3: Flasha PAW på $REMOTE_HOST"
     remote_cmd "ls $REMOTE_PATH" || { err "UF2-fil saknas på MamaBear"; return 1; }
+    warn "Fysiskt steg: håll BOOTSEL på PAW, anslut/släpp USB till MamaBear"
 
-    # Försök picotool först (renaste API)
+    # Try picotool first (cleanest API — no sudo needed for udev rules)
     if remote_cmd "command -v picotool" 2>/dev/null; then
         log "Använder picotool för flashning"
-        remote_cmd "sudo picotool load -x $REMOTE_PATH" || {
-            err "picotool misslyckades — försök BOOTSEL-manuellt"
+        remote_cmd "picotool load -x $REMOTE_PATH" 2>&1 || {
+            err "picotool misslyckades — försök BOOTSEL-metoden manuellt"
             return 1
         }
         ok "PAW flashad via picotool"
         return 0
     fi
 
-    # Fallback: BOOTSEL drag-and-drop via mount
-    warn "picotool saknas — använder BOOTSEL-metoden"
-    warn "Fysiskt steg: håll BOOTSEL på PAW, anslut USB till MamaBear, släpp BOOTSEL"
+    # Fallback: BOOTSEL drag-and-drop via mount (sudo -n = no password prompt)
+    log "picotool saknas — försöker BOOTSEL mount-metoden"
     remote_cmd "
         set -e
-        # Vänta på att RPI-RP2 ska monteras
-        echo 'Väntar på RPI-RP2-enhet...'
+        echo 'Väntar på RPI-RP2-enheten upp till 30s...'
+        MOUNT_POINT=''
         for i in \$(seq 1 30); do
-            if lsblk -no NAME,TYPE,MOUNTPOINT | grep -q 'part.*RPI-RP2'; then
+            # Kolla om redan monterad (auto-mounter)
+            MOUNT_POINT=\$(findmnt -n -o TARGET -L LABEL=RPI-RP2 2>/dev/null || true)
+            if [ -n \"\$MOUNT_POINT\" ]; then
+                echo \"Redan monterad: \$MOUNT_POINT\"
                 break
             fi
+            # Kolla om enheten finns men inte är monterad
+            DEV=\$(lsblk -no NAME,LABEL,TYPE | awk '\$2==\"RPI-RP2\" && \$3==\"part\" {print \$1; exit}')
+            if [ -n \"\$DEV\" ]; then
+                MOUNT_POINT=/tmp/rp2_paw_\$\$.\$i
+                mkdir -p \"\$MOUNT_POINT\"
+                # sudo -n = fail immediately if password required
+                sudo -n mount \"/dev/\$DEV\" \"\$MOUNT_POINT\" 2>/dev/null || mount \"/dev/\$DEV\" \"\$MOUNT_POINT\" 2>/dev/null || true
+                if mountpoint -q \"\$MOUNT_POINT\"; then
+                    echo \"Monterad /dev/\$DEV på \$MOUNT_POINT\"
+                    break
+                fi
+            fi
+            rm -rf \"\$MOUNT_POINT\" 2>/dev/null || true
             sleep 1
         done
-        MOUNT_POINT=\$(lsblk -no NAME,MOUNTPOINT | awk '/RPI-RP2/ {print \$1}' | xargs -I{} findmnt -n -o TARGET /dev/{} 2>/dev/null || echo '')
-        if [[ -z \"\$MOUNT_POINT\" ]]; then
-            # Försök standardmontering
-            MOUNT_POINT=/tmp/rp2_paw
-            mkdir -p \"\$MOUNT_POINT\"
-            sudo mount /dev/sda1 \"\$MOUNT_POINT\" || { echo 'Kan inte montera RPI-RP2'; exit 1; }
+
+        if [ -z \"\$MOUNT_POINT\" ] || [ ! -d \"\$MOUNT_POINT\" ]; then
+            echo 'ERROR: PAW hittades inte i BOOTSEL-läge.'
+            echo 'Säkerhetscheck: kör detta på mamabear med PAW i BOOTSEL:'
+            echo '  1. Håll BOOTSEL på Feather RP2350'
+            echo '  2. Anslut USB till mamabear'
+            echo '  3. Släpp BOOTSEL — RPI-RP2 ska monteras automatiskt'
+            echo '  4. Kör: sudo mount /dev/sda1 /mnt && cp $REMOTE_PATH /mnt/'
+            exit 1
         fi
+
         cp $REMOTE_PATH \"\$MOUNT_POINT/paw-main.uf2\"
         sync
-        sudo umount \"\$MOUNT_POINT\"
+        sudo -n umount \"\$MOUNT_POINT\" 2>/dev/null || umount \"\$MOUNT_POINT\" 2>/dev/null || true
+        rm -rf \"\$MOUNT_POINT\"
         echo 'Flashning klar — PAW startas om automatiskt'
     " || { err "BOOTSEL-flashning misslyckades"; return 1; }
-    ok "PAW flashad via UF2BOOTSEL"
+    ok "PAW flashad via UF2 BOOTSEL"
 }
 
 step_verify() {
