@@ -79,6 +79,11 @@ shallot test all --json
 shallot simulate auth --scenario success
 shallot simulate auth --scenario wrong-key   # även: timeout|crc|disconnect|late-ack
 
+# Reproducerbart 4-stegsflöde: distribution -> challenge -> response ->
+# display (lyckat + fail-closed: wrong-key|timeout|crc|disconnect|late-ack|no-key)
+shallot verify flow                          # alla scenarier, förväntat utfall
+shallot verify flow --scenario no-key        # även: --json för maskinläsbart
+
 # Koda/avkoda UART-ramar: AA | len u16 LE | type | payload | CRC32 LE
 shallot protocol encode --type challenge --payload 0001020304050607
 shallot protocol decode --frame aa08000100010203040506071cf3b72b
@@ -115,6 +120,16 @@ CLI:ts egna tester (kräver inte hårdvara):
 ```bash
 python3 -m pytest tools/shallot_cli/tests -q
 ```
+
+### Automatiserat vs fysisk hårdvara
+
+`shallot verify flow` och `shallot test`/`simulate` är helautomatiserade
+och hårdvarufria (deterministiska testvektorer, SIMULATED / TEST-ONLY).
+Varje `verify flow`-utskrift avslutas med de bänksteg (H1–H5) som måste
+köras separat på fysisk DEN+PAW-docka: UNO Q-ceremoni med
+fingerprint-jämförelse, challenge/response-jämförelse mot logg,
+DEN-verdict i USB-loggen samt visuell e-paper-kontroll. Fullständiga
+bänkguider: `docs/16`, `docs/13` §9 (H1–H7), `docs/18` (K1–K7).
 
 ### Begränsningar (MVP)
 

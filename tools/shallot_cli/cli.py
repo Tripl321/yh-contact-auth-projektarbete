@@ -15,9 +15,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from shallot_cli.commands import build_cmd, device_cmd, doctor_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
+from shallot_cli.commands import build_cmd, device_cmd, doctor_cmd, fido2_cmd, flow_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
 from shallot_cli.fido2 import SCENARIOS as FIDO2_SCENARIOS
 from shallot_cli.fido2 import UV_POLICIES
+from shallot_cli.flow import SCENARIOS as FLOW_SCENARIOS
 from shallot_cli.sim import SCENARIOS
 from shallot_cli import tui
 
@@ -40,6 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
     a = ssub.add_parser("auth", help="simulera DEN–PAW challenge-response")
     a.add_argument("--scenario", required=True, choices=list(SCENARIOS),
                    help="felscenario att simulera")
+
+    v = sub.add_parser("verify", help="reproducerbart testflöde (TEST-ONLY)")
+    vsub = v.add_subparsers(dest="what", required=True)
+    vf = vsub.add_parser("flow", help="distribution -> challenge -> response -> display")
+    vf.add_argument("--scenario", default="all", choices=list(FLOW_SCENARIOS) + ["all"],
+                    help="scenario eller alla (default: all)")
+    vf.add_argument("--json", action="store_true", help="maskinläsbar output")
 
     pr = sub.add_parser("protocol", help="UART-ramformatet (utan hårdvara)")
     prsub = pr.add_subparsers(dest="what", required=True)
@@ -136,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         return test_cmd.run_suite(args.suite, as_json=args.json)
     if args.command == "simulate":
         return simulate_cmd.run(args.scenario)
+    if args.command == "verify":
+        return flow_cmd.run(args.scenario, as_json=args.json)
     if args.command == "protocol":
         if args.what == "encode":
             return protocol_cmd.run_encode(args.type, args.payload)
