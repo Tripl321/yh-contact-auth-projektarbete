@@ -96,9 +96,7 @@ def test_sanitize_masks_secrets():
                  "ip 100.64.1.5 gw 192.168.1.1 dns 10.0.0.53 lo 127.0.0.1 link fe80::1 end ::1. "
                  "password=hunter2 -----BEGIN OPENSSH PRIVATE KEY-----")
     clean = mamabear.sanitize(dirty)
-    for secret in []:  # no secrets to check
-        pass
-                   "100.64.1.5", "192.168.1.1", "10.0.0.53", "127.0.0.1",
+    for secret in ["100.64.1.5", "192.168.1.1", "10.0.0.53", "127.0.0.1",
                    "aa:bb:cc:dd:ee:ff", "OPENSSH"]:
         assert secret not in clean, secret
     assert "[REDACTED" in clean

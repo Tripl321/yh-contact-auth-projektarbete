@@ -35,13 +35,22 @@ sessionen — ny session kräver ny CHALLENGE med färsk nonce.
 | Typ | Värde | Riktning | Payload | Storlek |
 |---|---|---|---|---|
 | CHALLENGE | 0x01 | DEN → PAW | färsk nonce (RP2350 TRNG, 64-bit) | **8 B** |
-| RESPONSE | 0x02 | PAW → DEN | HMAC-SHA256(K, epoch \|\| nonce) | **32 B** |
+| RESPONSE | 0x02 | PAW → DEN | HMAC-SHA256(K_mac, nonce) — se avvikelsenot nedan | **32 B** |
 | HEARTBEAT | 0x03 | valfri → valfri | ingen (närvaro = liv) | **0 B** |
 | ALARM | 0x04 | PAW → DEN | larmkod (t.ex. 0x01 sabotage, 0x02 lågt batteri) | **1 B** |
 | ACK | 0xFF | DEN → PAW | status (0x01 godkänd / 0x00 nekad) | **1 B** |
 
 Avvikande payload-storlek för känd typ, okänd typ, LEN > 64, eller CRC-fel
 → ramen kasseras i sin helhet (fail closed, ingen delvis tolkning).
+
+> **Avvikelsenot (låst beteende, se README "Kända specifikationskonflikter"):**
+> tidigare revisioner angav `HMAC-SHA256(K, epoch || nonce)`. Båda
+> firmwaresidorna + pytest-sviten implementerar och pinnar
+> `HMAC-SHA256(K_mac, nonce)` med härledd nyckel
+> `K_mac = SHA-256(master || "MAC")[:16]` och utan epoch — epoch finns
+> endast i provisioneringsprotokollet (`docs/12`, `docs/14`), där ingen
+> epoch distribueras över dock-länken. Ändra inte ensidigt: det bryter
+> DEN↔PAW-interop.
 
 ## 4. Parser: resynk, partial frames, timeout, fel
 

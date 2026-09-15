@@ -9,7 +9,7 @@ DEN-side session master for the PAW↔DEN docked UART link
 - **State machine: `DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED`**
   fail-closed across the full session lifecycle.
   Every error leaves/returns DEN to DENIED.
-- Flow per session: `CHALLENGE(16B TRNG nonce)` → wait ≤2000 ms →
+- Flow per session: `CHALLENGE(8B TRNG nonce)` → wait ≤2000 ms →
   `RESPONSE(32B HMAC)` → constant-time verify → `ACK(0x01/0x00)` +
   `AUTHENTICATED (code 0)` / `FAILED (code N)` log.
   ACK is informational; the access decision is made before ACK
@@ -18,17 +18,23 @@ DEN-side session master for the PAW↔DEN docked UART link
   DEN decision observable without exposing secrets.
 - PAW display/UI and other peripherals do not alter the DEN
   decision or deadline.
-- Development shared key (`DEN_DEV_KEY` 00..0F) is bring-up only and
-  `#warning`-marked — replace with the provisioned key before production.
+- No hardcoded keys: PRO-93 removed the bring-up dev key; DEN starts
+  unprovisioned and denies until PRO-46 provisioning completes.
 - Framing/CRC/parser: shared `libraries/DenUartProtocol` (no duplication).
+- Ed25519 blocklist verify: `libraries/Ed25519` adapter over the
+  rweather Crypto library (see `docs/13-pro-53-fail-closed.md`).
 - See `docs/13-pro-53-fail-closed.md` for the full specification,
   state machine diagram, threat model, and hardware acceptance record.
 
 ## Build
 
 ```bash
+# One-time: Ed25519 adapter dependency (tested v0.4.0)
+arduino-cli lib install "Crypto@0.4.0"
+
 arduino-cli compile \
   --fqbn rp2040:rp2040:rpipico2 \
+  --libraries libraries \
   --output-dir build \
   plc/den-main/den-main.ino
 ```
