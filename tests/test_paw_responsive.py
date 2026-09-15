@@ -65,14 +65,20 @@ class MockEpd:
 class MockProv:
     """Mirror of pollProvisioning: handshake scan -> READY -> accumulate
     exactly 22 key-data bytes -> strict validate -> store. Never waits.
-    PRO-47: clears stored key on timeout, new handshake, or failure."""
+    PRO-47: clears stored key on timeout, new handshake, or failure.
+    Zero master rejected as corrupt (indistinguishable from wiped SRAM)."""
 
     def __init__(self):
         self.phase = 'hs'
         self.buf = bytearray()
         self.t0 = 0
         self.key_stored = False
+        self.key = None  # stored master bytes (None when missing/cleared)
         self.stored_sent = []
+
+    def is_valid(self):
+        """Mirror of key_is_valid(): flag set AND master non-zero."""
+        return bool(self.key_stored and self.key and any(self.key))
 
     def poll(self, usb_in, now):
         if self.phase == 'hs':
@@ -86,6 +92,7 @@ class MockProv:
                     self.buf = bytearray()
                     # PRO-47: new provisioning session clears any prior key
                     self.key_stored = False
+                    self.key = None
                     return 'ready'
             return 'pending'
         self.buf += bytes(usb_in)
@@ -95,6 +102,7 @@ class MockProv:
                 self.buf = bytearray()
                 # PRO-47: timeout clears stored key
                 self.key_stored = False
+                self.key = None
                 return 'failed'
             return 'pending'
         tag, ln, key, crc = (self.buf[0], self.buf[1], bytes(self.buf[2:18]),
@@ -104,13 +112,21 @@ class MockProv:
         if tag != 0xA3 or ln != 16:
             # PRO-47: malformed frame clears stored key
             self.key_stored = False
+            self.key = None
             return 'failed'
         import binascii
         if binascii.crc32(key) & 0xFFFFFFFF != crc:
             # PRO-47: CRC mismatch clears stored key
             self.key_stored = False
+            self.key = None
+            return 'failed'
+        if not any(key):
+            # Corrupt (all-zero) master: indistinguishable from wiped SRAM
+            self.key_stored = False
+            self.key = None
             return 'failed'
         self.key_stored = True
+        self.key = bytes(key)
         fp = hashlib.sha256(key).digest()[:4]
         self.stored_sent.append(fp)
         return 'done'

@@ -72,15 +72,15 @@ def test_pro50_fail_closed_no_key():
     """PAW does not answer challenge when key is not stored."""
     paw = MockPawResponder()
     # MockPawResponder doesn't check keyStored, but the real firmware does
-    # Verify source guard: hmac_sha256 is only called when keyStored is true
+    # Verify source guard: hmac_sha256 is only called when key_is_valid()
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Find STATE_COMPUTING_RESPONSE and verify keyStored check
+    # Find STATE_COMPUTING_RESPONSE and verify validated-retrieval check
     state_start = src.index('case STATE_COMPUTING_RESPONSE:')
     state_end = src.index('break;', state_start) + 5
     state_body = src[state_start:state_end]
-    assert 'if (keyStored)' in state_body
+    assert 'if (key_is_valid())' in state_body
     assert 'hmac_sha256' in state_body
 
 

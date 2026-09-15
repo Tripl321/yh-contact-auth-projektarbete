@@ -96,6 +96,8 @@ class MockDenSession:
     def __init__(self, key):
         self.key = key  # master key (for K_mac derivation in real firmware)
         self.k_mac = K_MAC  # PRO-49: derived HMAC key
+        self.provisioned = bool(key is not None and len(bytes(key)) == 16
+                                and any(bytes(key)))
         self.nonce = None
         self.sent_at = None
         self.state = "DENIED"  # DEN_ST_DENIED initially
@@ -115,12 +117,34 @@ class MockDenSession:
         self.done = None
         return self.nonce
 
+    def provision(self, master):
+        """Mirror of DEN provisioning store: only a non-zero 16 B master
+        becomes valid (zero/corrupt rejected fail-closed)."""
+        if master is None or len(bytes(master)) != 16 or not any(bytes(master)):
+            self.clear_key()
+            return False
+        self.key = bytes(master)
+        self.provisioned = True
+        return True
+
+    def clear_key(self):
+        """Mirror of secure_clear_key(): wipe master + reset flag."""
+        self.key = None
+        self.provisioned = False
+        self.nonce = None
+
+    def is_valid(self):
+        """Mirror of den_key_valid(): flag set AND master non-zero."""
+        return bool(self.provisioned and self.key and any(self.key))
+
     def on_frame(self, ptype, payload, now, crc_ok=True, size_ok=True):
         """Handle a received frame in CHALLENGE_SENT."""
         if self.state != "CHALLENGE_SENT" or self.nonce is None:
             return self.done
         if now - self.sent_at > DEADLINE_MS:
             return self._finish(False, REASON_TIMEOUT)
+        if not self.is_valid():
+            return self._finish(False, REASON_HMAC_MISMATCH)
         if not crc_ok:
             return self._finish(False, REASON_PARSE_ERROR)
         if ptype != 0x02:

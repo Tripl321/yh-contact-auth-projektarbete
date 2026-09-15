@@ -94,7 +94,10 @@ def test_pro94_paw_fail_closed_no_key():
     else:
         raise AssertionError("unbalanced: handleDockAuth")
     dock_body = "\n".join(lines[start:dock_end + 1])
-    assert "if (!keyStored)" in dock_body
+    assert "if (!key_is_valid())" in dock_body
+    # Validated retrieval rejects a corrupt (all-zero) master even with flag set
+    assert "static bool key_is_valid()" in src
+    assert "aesKey[i] != 0" in src
     # Error path when no key
     assert "ERROR: No key stored" in src
     # State goes to WAITING_FOR_KEY on error
