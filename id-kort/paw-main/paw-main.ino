@@ -1200,7 +1200,17 @@ void loop() {
 #endif
             }
             // Handle MSG_RESULT (0xB3)
+            // Grant-gated like the dock ACK path (paw_ack_pending): an
+            // unsolicited RESULT must never drive the display. Only a
+            // RESULT for a response we actually sent (WAITING_FOR_RESULT)
+            // may show AUTHENTICATED; anything else leaves the display
+            // untouched (ongoing/denied never shows authenticated).
             else if (msgType == MSG_RESULT && rxLen >= 2) {
+                if (currentState != STATE_WAITING_FOR_RESULT) {
+#if SECURE_DEBUG
+                    Serial.println("[PRO-50] RESULT ignored (no pending response)");
+#endif
+                } else {
                 uint8_t result = rxBuffer[1];
                 if (result == 0x01) {
 #if SECURE_DEBUG
@@ -1228,6 +1238,7 @@ void loop() {
                         digitalWrite(LED_BUILTIN, LOW);
                         delay(50);
                     }
+                }
                 }
             }
         }

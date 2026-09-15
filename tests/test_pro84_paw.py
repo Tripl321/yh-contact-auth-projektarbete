@@ -378,3 +378,188 @@ def test_pro59_source_has_text_rendering():
     assert 'void drawText(const char* text, int x, int y)' in src
     assert 'drawText("AUTHENTICATED"' in src
     assert 'PRO-59' in src
+
+
+# ============================================================================
+# PRO-59b: AUTHENTICATED shown only on grant (ongoing/denied never shows it)
+# ============================================================================
+#
+# Render contract mirrors ShallotEPD::showStatus/drawIcon: only the granted
+# state renders checkmark + text. Both grant paths are gated on a pending
+# response (dock: paw_ack_pending, LoRa: STATE_WAITING_FOR_RESULT), so an
+# unsolicited ACK/RESULT can never light AUTHENTICATED.
+
+def render_epd(status):
+    """Content contract mirror of showStatus+drawIcon (icon, text)."""
+    if status == 'authenticating':
+        return ('dots-in-circle', None)
+    if status == 'authenticated':
+        return ('checkmark-in-circle', 'AUTHENTICATED')
+    if status == 'failed':
+        return ('x-in-circle', None)
+    raise AssertionError('unknown status: %r' % (status,))
+
+
+class MockLoRaResult:
+    """Mirror of the LoRa MSG_RESULT branch: grant-gated display."""
+
+    W_KEY, W_CHAL, COMPUTING, W_RES = 'key', 'challenge', 'computing', 'wait_result'
+
+    def __init__(self):
+        self.state = self.W_KEY
+        self.display = None
+        self.log = []
+
+    def provision(self):
+        self.state = self.W_CHAL
+
+    def challenge(self):
+        self.display = 'authenticating'
+        self.state = self.COMPUTING
+        self.log.append('challenge')
+
+    def respond(self):
+        assert self.state == self.COMPUTING
+        self.state = self.W_RES
+
+    def on_result(self, ok):
+        if self.state != self.W_RES:
+            self.log.append('ignored: no pending response')
+            return
+        self.state = self.W_CHAL
+        if ok:
+            self.display = 'authenticated'
+            self.log.append('result_authenticated')
+        else:
+            self.display = 'failed'
+            self.log.append('result_failed')
+
+
+def test_pro59b_ongoing_never_shows_authenticated():
+    """AUTHENTICATING render carries no checkmark and no grant text."""
+    icon, text = render_epd('authenticating')
+    assert icon != 'checkmark-in-circle'
+    assert text is None
+
+
+def test_pro59b_denied_never_shows_authenticated():
+    """FAILED render carries no checkmark and no grant text."""
+    icon, text = render_epd('failed')
+    assert icon != 'checkmark-in-circle'
+    assert text is None
+
+
+def test_pro59b_granted_shows_checkmark_and_text():
+    """AUTHENTICATED render is checkmark + grant text (no green: the 1.54
+    panel is monochrome-driven, see paw-main README)."""
+    assert render_epd('authenticated') == ('checkmark-in-circle', 'AUTHENTICATED')
+
+
+def test_pro59b_lora_unsolicited_result_ignored():
+    """RESULT 0x01 with no pending response changes nothing (all states)."""
+    cases = [
+        (lambda m: None, ['ignored: no pending response'], None),
+        (lambda m: m.provision(), ['ignored: no pending response'], None),
+        (lambda m: (m.provision(), m.challenge()),
+         ['challenge', 'ignored: no pending response'], 'authenticating'),
+    ]
+    for setup, want_log, want_display in cases:
+        m = MockLoRaResult()
+        setup(m)
+        m.on_result(True)
+        assert m.display == want_display
+        assert m.display != 'authenticated'
+        assert m.log == want_log
+
+
+def test_pro59b_lora_result_grant_and_deny():
+    """Pending RESULT 0x01 -> authenticated, 0x00 -> failed."""
+    m = MockLoRaResult()
+    m.provision()
+    m.challenge()
+    m.respond()
+    m.on_result(True)
+    assert m.display == 'authenticated'
+    assert render_epd(m.display)[1] == 'AUTHENTICATED'
+    m2 = MockLoRaResult()
+    m2.provision()
+    m2.challenge()
+    m2.respond()
+    m2.on_result(False)
+    assert m2.display == 'failed'
+    assert render_epd(m2.display) == ('x-in-circle', None)
+
+
+def test_pro59b_lora_duplicate_result_after_grant_ignored():
+    """Second RESULT for the same session cannot re-light authenticated."""
+    m = MockLoRaResult()
+    m.provision()
+    m.challenge()
+    m.respond()
+    m.on_result(False)
+    assert m.display == 'failed'
+    m.on_result(True)  # late/duplicate: no pending response anymore
+    assert m.display == 'failed'
+    assert m.log[-1] == 'ignored: no pending response'
+
+
+def test_pro59b_new_challenge_resets_grant():
+    """A new challenge returns the display to AUTHENTICATING (grant is
+    per-session, never sticky)."""
+    m = MockLoRaResult()
+    m.provision()
+    m.challenge()
+    m.respond()
+    m.on_result(True)
+    assert m.display == 'authenticated'
+    m.challenge()
+    assert m.display == 'authenticating'
+    assert render_epd(m.display)[1] is None
+
+
+def test_pro59b_source_grant_sites_are_exactly_two():
+    """Only the two grant paths may request AUTHENTICATED (dock ACK 0x01
+    with pending response, LoRa RESULT 0x01 while waiting)."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    assert src.count('showStatus(EPD_STATUS_AUTHENTICATED)') == 2
+
+
+def test_pro59b_source_lora_result_gated_on_pending():
+    """LoRa RESULT branch ignores unsolicited results before touching
+    the display (mirrors the dock paw_ack_pending gate)."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    start = src.index('Handle MSG_RESULT')
+    end = src.index('Resume listening', start)
+    branch = src[start:end]
+    assert 'currentState != STATE_WAITING_FOR_RESULT' in branch
+    assert 'RESULT ignored (no pending response)' in branch
+    assert branch.count('showStatus(EPD_STATUS_AUTHENTICATED)') == 1
+    assert branch.index('currentState != STATE_WAITING_FOR_RESULT') < \
+        branch.index('showStatus(EPD_STATUS_AUTHENTICATED)')
+
+
+def test_pro59b_source_grant_text_gated_on_status():
+    """The AUTHENTICATED text renders only inside the authenticated branch."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    assert src.count('drawText("AUTHENTICATED"') == 1
+    idx = src.index('drawText("AUTHENTICATED"')
+    gate = src[max(0, idx - 300):idx]
+    assert 'status == EPD_STATUS_AUTHENTICATED' in gate
+
+
+def test_pro59b_source_setup_never_grants_or_denies():
+    """Boot shows AUTHENTICATING only; AUTHENTICATED/FAILED are unreachable
+    before the first grant/deny."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    setup = src[src.index('void setup()'):src.index('void loop()')]
+    assert 'EPD_STATUS_AUTHENTICATING' in setup
+    assert 'EPD_STATUS_AUTHENTICATED' not in setup
+    assert 'EPD_STATUS_FAILED' not in setup
