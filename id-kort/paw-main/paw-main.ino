@@ -178,6 +178,18 @@ static void secure_clear_key() {
     keyStored = false;
 }
 
+// Validated retrieval: a stored key is usable only when the flag is set
+// AND the master buffer is non-zero. An all-zero master is
+// indistinguishable from unprovisioned/wiped SRAM, so it must never
+// authenticate (fail closed on corrupt key).
+static bool key_is_valid() {
+    if (!keyStored) return false;
+    for (int i = 0; i < AES_KEY_SIZE; i++) {
+        if (aesKey[i] != 0) return true;
+    }
+    return false;
+}
+
 // PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
 // RP2350 SHA-256 accelerator is used where available; falls back to software.
 static void derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
@@ -887,6 +899,22 @@ static uint8_t pollProvisioning() {
         Serial.println("[PRO-48] CRC verified OK.");
 #endif
 
+        // Fail-closed: an all-zero master is indistinguishable from
+        // unprovisioned/wiped SRAM — reject it as corrupt (never store).
+        {
+            bool allZero = true;
+            for (int i = 0; i < AES_KEY_SIZE; i++) {
+                if (provBuf[2 + i] != 0) { allZero = false; break; }
+            }
+            if (allZero) {
+#if SECURE_DEBUG
+                Serial.println("[PRO-48] Zero key rejected.");
+#endif
+                Serial.write(MSG_ERROR);
+                break;
+            }
+        }
+
         // Store key securely
         memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
         keyStored = true;
@@ -995,10 +1023,11 @@ static void handleDockAuth() {
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
         if (f.type == DEN_TYPE_CHALLENGE) {
-                 // PRO-94: fail-closed without provisioned key. Never answer
-                 // (and never touch display state) when unprovisioned: an
-                 // HMAC under the zeroed K_mac is not a credential.
-                 if (!keyStored) {
+                 // PRO-94: fail-closed without a valid provisioned key. Never
+                 // answer (and never touch display state) when missing or
+                 // corrupt (all-zero): an HMAC under a wiped/zero key is not
+                 // a credential.
+                 if (!key_is_valid()) {
 #if SECURE_DEBUG
                      Serial.println("[PRO-84] CHALLENGE ignored, no key stored");
 #endif
@@ -1232,7 +1261,7 @@ void loop() {
             break;
 
         case STATE_COMPUTING_RESPONSE:
-            if (keyStored) {
+            if (key_is_valid()) {
                 hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
 #if SECURE_DEBUG
                 Serial.print("[PRO-50] HMAC Response computed: ");

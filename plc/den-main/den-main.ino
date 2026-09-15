@@ -67,6 +67,19 @@ static void secure_clear_key() {
     for (int i = 0; i < 16; i++) k[i] = 0;
     volatile uint8_t* e = (volatile uint8_t*)kEnc;
     for (int i = 0; i < 16; i++) e[i] = 0;
+    key_provisioned = 0;
+}
+
+// Validated retrieval: a stored key is usable only when the flag is set
+// AND the master buffer is non-zero. An all-zero master is
+// indistinguishable from unprovisioned/wiped SRAM, so it must never
+// authenticate (fail closed on corrupt key).
+static uint8_t den_key_valid() {
+    if (!key_provisioned) return 0;
+    for (int i = 0; i < 16; i++) {
+        if (denDevKey[i] != 0) return 1;
+    }
+    return 0;
 }
 
 #define DEN_UART_BAUD      115200
@@ -196,6 +209,9 @@ static uint8_t pollProvisioning() {
                 provT0 = millis();
                 provGot = 0;
                 memset(provBuf, 0, sizeof(provBuf));
+                // PRO-47: new provisioning session starts - clear any
+                // previously stored key (SRAM hygiene, fail-closed).
+                secure_clear_key();
                 return PROV_PENDING;
             }
         }
@@ -213,6 +229,8 @@ static uint8_t pollProvisioning() {
             provPhase = PROV_PH_HANDSHAKE;
             provGot = 0;
             memset(provBuf, 0, sizeof(provBuf));
+            // PRO-47: timeout -> clear stored key (fail-closed).
+            secure_clear_key();
             return PROV_FAILED;
         }
         return PROV_PENDING;
@@ -249,10 +267,26 @@ static uint8_t pollProvisioning() {
         Serial.println("[PRO-46] CRC verified OK.");
 #endif
 
+        // Fail-closed: an all-zero master is indistinguishable from
+        // unprovisioned/wiped SRAM — reject it as corrupt (never store).
+        {
+            uint8_t allZero = 1;
+            for (int i = 0; i < AES_KEY_SIZE; i++) {
+                if (provBuf[2 + i] != 0) { allZero = 0; break; }
+            }
+            if (allZero) {
+#if SECURE_DEBUG
+                Serial.println("[PRO-46] Zero key rejected.");
+#endif
+                Serial.write(MSG_ERROR);
+                break;
+            }
+        }
+
         // Store key securely in denDevKey
         memcpy((uint8_t*)denDevKey, provBuf + 2, AES_KEY_SIZE);
 
-        // Derive K_mac and K_enc from the new master key
+        // Derive K_mac from the new master key
         den_derive_k_mac((uint8_t*)denDevKey, kMac);
         key_provisioned = 1;
 
@@ -284,6 +318,8 @@ static uint8_t pollProvisioning() {
         provPhase = PROV_PH_WAIT_TYPE;
         provT0 = millis();
     } else {
+        // PRO-47: on any failure, ensure no stale key remains in SRAM.
+        secure_clear_key();
         provPhase = PROV_PH_HANDSHAKE;
     }
     return outcome;
@@ -685,8 +721,8 @@ static void den_send_challenge(uint32_t now) {
 }
 
 static void den_on_response(const den_frame_t *f, uint32_t now) {
-  // PRO-94: fail-closed if no key provisioned
-  if (!key_provisioned) {
+  // PRO-94: fail-closed if no valid key provisioned (missing or corrupt).
+  if (!den_key_valid()) {
     den_fail(DEN_REASON_HMAC_MISMATCH);
     return;
   }

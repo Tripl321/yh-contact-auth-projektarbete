@@ -208,10 +208,10 @@ def _paw_dock_handler_body():
 
 
 def test_pro84_dock_checks_key_stored():
-    """PRO-94: handleDockAuth gates CHALLENGE on keyStored (fail-closed);
+    """PRO-94: handleDockAuth gates CHALLENGE on key_is_valid (fail-closed);
     RESPONSE is encoded at exactly one site."""
     body = _paw_dock_handler_body()
-    assert 'if (!keyStored)' in body
+    assert 'if (!key_is_valid())' in body
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent /
            'id-kort/paw-main/paw-main.ino').read_text()

@@ -1,8 +1,8 @@
 # PRO-94 Security Review Report: Sensitive State Handling Across SHALLOT Flow
 
-**Date:** 2026-09-14
+**Date:** 2026-09-14 (key-storage retrieval update 2026-09-15)
 **Scope:** PAW, DEN, UNO Q/MamaBear firmware
-**Test Results:** 211/211 tests pass (including 27 new PRO-94 tests)
+**Test Results:** 401/401 tests pass (mock + source-guard verification; hardware rows below remain bench-only)
 
 ---
 
@@ -143,6 +143,28 @@ No RPC returns raw key material (`aesKey`, `blocklist_private_key`, etc.).
 | LoRa link budget / reliability | RF environment testing |
 | e-Paper BUSY timeout behavior | Physical panel testing |
 
+### RP2350 key-storage bench checklist (PAW + DEN, per device)
+
+Python-sviten bevisar lagrings-/hämtningslogiken mot mockar
+(`MockProv`/`MockDenSession`: saknad/noll/korrupt nyckel nekar,
+`secure_clear_key` nollställer buffert + flagga) samt att källkoden
+innehåller grindarna (`key_is_valid`/`den_key_valid`, nollavvisning vid
+lagring, clear vid handshake/timeout/fel). Följande går inte att bevisa
+utan enheten och stängs endast via `docs/16`-guiden på sammansatt bänk:
+
+| # | Beroende | Bänkacceptans |
+|---|---|---|
+| K1 | SRAM-volatilitet: nyckel dör vid spänningsbortfall | Bryt matningen efter provisionering → efter omstart krävs ny ceremoni; ingen auth utan nyckel |
+| K2 | Ingen flash-persistens (nyckel hamnar aldrig i flash/UF2) | Inspektera UF2 + power-cykla; nyckel/fingerprint får ej överleva |
+| K3 | Volatile-wipe biter (kompilatorn optimerar ej bort nollställning) | Granska genererad assembler för `secure_clear_key` med repoets toolchain; verifiera nollställda buffertar i minnesdump |
+| K4 | Noll/korrupt nyckel nekar på enheten | Provisionera giltig nyckel (grön blink/AUTH), korrumpera via omprovisionering med nollnyckel → `MSG_ERROR`, därefter nekas challenge (fail closed) |
+| K5 | Timeout/handshake-clear på riktig USB-serie | Håll inne key-data > 10 s → `PROV_FAILED`, lagrad nyckel borta; ny handshake mitt i session nollställer |
+| K6 | Nyckel aldrig på tråd utom fingerprint | Logikanalysator på USB + dock-UART under ceremoni och session: endast 4-byte fingerprint, aldrig nyckelbyte |
+| K7 | Enstaka SRAM-bitfel detekteras ej (nollkoll fångar wipe, ej bitflip) | Restrisk: accepteras för MVP; ingen ECC på RP2350-SRAM — dokumenteras, ingen bänkåtgärd |
+
+K1–K6 kryssas med loggutdrag per rad; K7 är en accepterad restrisk tills
+nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
+
 ---
 
 ## Independent Cryptographic Code Review Required
@@ -172,7 +194,7 @@ No RPC returns raw key material (`aesKey`, `blocklist_private_key`, etc.).
 | `test_pro87_uart.py` | 13 | UART protocol |
 | `test_paw_responsive.py` | 5 | Responsiveness |
 | `test_paw_uart_split.py` | 6 | UART split |
-| **Total** | **211** | **All passing** |
+| **Total** | **401** | **All passing (point-in-time; per-suite rows above are historical)** |
 
 ---
 
@@ -198,5 +220,5 @@ No RPC returns raw key material (`aesKey`, `blocklist_private_key`, etc.).
 
 ---
 
-**Reviewed by:** Automated test suite (211 tests) + static source analysis
-**Next Review:** After independent crypto audit and hardware verification
+**Reviewed by:** Automated test suite (401 tests) + static source analysis
+**Next Review:** After independent crypto audit and hardware verification (K1–K7 bench checklist above)
