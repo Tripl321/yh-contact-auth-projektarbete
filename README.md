@@ -83,6 +83,11 @@ shallot simulate auth --scenario wrong-key   # även: timeout|crc|disconnect|lat
 shallot protocol encode --type challenge --payload 0001020304050607
 shallot protocol decode --frame aa08000100010203040506071cf3b72b
 
+# Simulerad säkerhetsincident för presentation (alltid märkt SIMULERING).
+# Börja inzoomad på larmet, zooma sedan ut för avslöjandet. Deterministisk,
+# hårdvarufri, ändrar inga verkliga flöden. Exakt kommando:
+shallot demo incident
+
 # Skrivfri miljökontroll (verktyg, kataloger, portar, osäkra byggen)
 shallot doctor
 

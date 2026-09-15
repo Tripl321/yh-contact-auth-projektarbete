@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from shallot_cli.commands import build_cmd, device_cmd, doctor_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
+from shallot_cli.commands import build_cmd, device_cmd, demo_cmd, doctor_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
 from shallot_cli.fido2 import SCENARIOS as FIDO2_SCENARIOS
 from shallot_cli.fido2 import UV_POLICIES
 from shallot_cli.sim import SCENARIOS
@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     a = ssub.add_parser("auth", help="simulera DEN–PAW challenge-response")
     a.add_argument("--scenario", required=True, choices=list(SCENARIOS),
                    help="felscenario att simulera")
+
+    dm = sub.add_parser("demo", help="simulerad incident för presentation (SIMULERING)")
+    dmsub = dm.add_subparsers(dest="what", required=True)
+    dmsub.add_parser("incident", help="simulerad driftlarmscen som avslöjar SHALLOT CLI")
 
     pr = sub.add_parser("protocol", help="UART-ramformatet (utan hårdvara)")
     prsub = pr.add_subparsers(dest="what", required=True)
@@ -136,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         return test_cmd.run_suite(args.suite, as_json=args.json)
     if args.command == "simulate":
         return simulate_cmd.run(args.scenario)
+    if args.command == "demo":
+        return demo_cmd.run()
     if args.command == "protocol":
         if args.what == "encode":
             return protocol_cmd.run_encode(args.type, args.payload)
