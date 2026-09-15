@@ -995,6 +995,15 @@ static void handleDockAuth() {
             continue;  // fail-closed: keep seeking SYNC, change nothing
         }
         if (f.type == DEN_TYPE_CHALLENGE) {
+                 // PRO-94: fail-closed without provisioned key. Never answer
+                 // (and never touch display state) when unprovisioned: an
+                 // HMAC under the zeroed K_mac is not a credential.
+                 if (!keyStored) {
+#if SECURE_DEBUG
+                     Serial.println("[PRO-84] CHALLENGE ignored, no key stored");
+#endif
+                     continue;
+                 }
                  epd.showStatus(EPD_STATUS_AUTHENTICATING);
                  // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
                  uint8_t mac[DEN_HMAC_LEN];

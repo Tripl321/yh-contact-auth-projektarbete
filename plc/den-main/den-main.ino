@@ -109,6 +109,8 @@ static uint32_t crc32(const uint8_t* data, size_t len) {
 #define MSG_KEY_DATA       0xA3
 #define MSG_STORED         0xA4
 #define MSG_ERROR          0xA5
+#define MSG_BLOCKLIST      0xA6  // PRO-98: signed blocklist (matches UNO Q + docs/17)
+#define MSG_BLOCKLIST_ACK  0xA7  // PRO-98: blocklist receipt ack
 
 #define PROV_PENDING 0
 #define PROV_DONE    1
