@@ -4,8 +4,9 @@ PRO-53 DEN fail-closed watchdog: state-machine mirror.
 Mirror of plc/den-main/den-main.ino session logic
 (DENIED → CHALLENGE_SENT → AUTHENTICATED → DENIED).
 HMAC oracle is hashlib; the firmware C SHA/HMAC was separately
-KAT-verified by host extraction. DEV key below equals the
-firmware DEN_K_MAC stub (bring-up only, #warning-marked).
+KAT-verified by host extraction. PRO-93 removed the firmware
+DEN_K_MAC dev-key stub; DEV vectors below are test-only key material
+(the 16-byte master 00..0F and its derived K_mac).
 
 PRO-53: DEN starts in DENIED after boot, reset, disconnect,
 malformed input, or session expiry. Only a complete, valid
@@ -22,7 +23,7 @@ K_MAC = bytes(range(16))
 DEADLINE_MS = 2000
 SESSION_GAP_MS = 1000
 
-DEV_KEY = bytes(range(16))  # development key, must match DEN_DEV_KEY
+DEV_KEY = bytes(range(16))  # test-only master; PRO-93 forbids it in firmware
 K_MAC = bytes.fromhex(
     "99c7117275f487623752e6d5d0eb438f"
 )  # SHA-256(master || "MAC")[:16]

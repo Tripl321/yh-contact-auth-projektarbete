@@ -80,6 +80,21 @@ def test_pro94_paw_fail_closed_no_key():
 
     # Dock auth checks keyStored (continues only if keyStored is true)
     assert "if (keyStored)" in src
+    # Dock responder gates CHALLENGE on keyStored inside handleDockAuth
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if "void handleDockAuth()" in l)
+    depth, begun = 0, False
+    for i in range(start, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if "{" in lines[i]:
+            begun = True
+        if begun and depth == 0:
+            dock_end = i
+            break
+    else:
+        raise AssertionError("unbalanced: handleDockAuth")
+    dock_body = "\n".join(lines[start:dock_end + 1])
+    assert "if (!keyStored)" in dock_body
     # Error path when no key
     assert "ERROR: No key stored" in src
     # State goes to WAITING_FOR_KEY on error

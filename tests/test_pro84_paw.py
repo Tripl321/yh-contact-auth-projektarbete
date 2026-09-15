@@ -14,7 +14,7 @@ from tests.test_pro87_uart import (encode, decode, DenError, Scanner,
                                    T_CHALLENGE, T_RESPONSE, T_HEARTBEAT,
                                    T_ALARM, T_ACK, MAX_PAYLOAD)
 
-DEV_KEY = bytes(range(16))  # must equal DEN_DEV_KEY (guarded below)
+DEV_KEY = bytes(range(16))  # test-only master; PRO-93 forbids it in firmware
 K_MAC = bytes.fromhex('99c7117275f487623752e6d5d0eb438f')  # SHA-256(master || "MAC")[:16]
 DEV_HMAC_HEX = '782b6a817980c559128e9804f6434d4a08ca0dacb2107658e7f777b1ecb57bda'
 
@@ -27,13 +27,14 @@ def paw_hmac(nonce):
 class MockPawResponder:
     """Mirror of handleDockAuth: responder-only, CHALLENGE-only."""
 
-    def __init__(self):
+    def __init__(self, key_stored=True):
         self.sc = Scanner()
         self.sent = []  # frames PAW transmitted
         self.log = []
         self.display_status = None   # last epd.showStatus value
         self.ack_pending = False      # waiting for DEN ACK
         self.last_resp_sent_at = 0    # millis of last RESPONSE transmit
+        self.key_stored = key_stored  # PRO-94: no key -> never answer
 
     def feed(self, data, now=1000):
         for b in bytes(data):
@@ -58,6 +59,11 @@ class MockPawResponder:
                     self.log.append('ignored: no pending response')
                 else:
                     self.log.append('ignored type 0x%02x' % ptype)
+                continue
+            if not self.key_stored:
+                # PRO-94 fail-closed: unprovisioned PAW never answers,
+                # touches no display state, transmits nothing.
+                self.log.append('ignored: no key')
                 continue
             self.display_status = 'authenticating'
             self.sent.append(encode(T_RESPONSE, paw_hmac(payload)))
@@ -150,6 +156,66 @@ def test_pro84_never_initiates():
     paw.feed(bytes([0xAA]))  # lone SYNC, nothing follows
     paw.feed(encode(T_HEARTBEAT, b''))
     assert paw.sent == []
+
+
+def test_pro84_unprovisioned_ignores_challenge():
+    """PRO-94 fail-closed: no key -> CHALLENGE ignored, zero transmissions,
+    no display state change (mirrors handleDockAuth keyStored gate)."""
+    paw = MockPawResponder(key_stored=False)
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x10, 0x18))))
+    assert paw.sent == []
+    assert paw.display_status is None
+    assert paw.ack_pending is False
+    assert paw.log == ['ignored: no key']
+
+
+def test_pro84_unprovisioned_ignores_everything():
+    """Unprovisioned PAW transmits nothing for any inbound traffic."""
+    paw = MockPawResponder(key_stored=False)
+    paw.feed(encode(T_CHALLENGE, bytes(8)))
+    paw.feed(encode(T_HEARTBEAT, b''))
+    paw.feed(encode(T_ACK, b'\x01'))
+    paw.feed(encode(T_ALARM, b'\x02'))
+    paw.feed(encode(T_RESPONSE, bytes(32)))
+    assert paw.sent == []
+    assert paw.display_status is None
+    assert paw.ack_pending is False
+
+
+def test_pro84_provisioned_still_answers():
+    """The keyStored gate only affects unprovisioned units."""
+    paw = MockPawResponder(key_stored=True)
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x10, 0x18))))
+    assert len(paw.sent) == 1
+    assert paw.display_status == 'authenticating'
+
+
+def _paw_dock_handler_body():
+    """Extract handleDockAuth() body for source-guard assertions."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if 'void handleDockAuth()' in l)
+    depth, begun = 0, False
+    for i in range(start, len(lines)):
+        depth += lines[i].count('{') - lines[i].count('}')
+        if '{' in lines[i]:
+            begun = True
+        if begun and depth == 0:
+            return '\n'.join(lines[start:i + 1])
+    raise AssertionError('unbalanced: handleDockAuth')
+
+
+def test_pro84_dock_checks_key_stored():
+    """PRO-94: handleDockAuth gates CHALLENGE on keyStored (fail-closed);
+    RESPONSE is encoded at exactly one site."""
+    body = _paw_dock_handler_body()
+    assert 'if (!keyStored)' in body
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    assert src.count('den_encode(DEN_TYPE_RESPONSE') == 1
 
 
 def test_pro84_source_guards():

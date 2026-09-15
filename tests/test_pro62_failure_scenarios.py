@@ -26,7 +26,7 @@ from tests.test_pro88_den import (
     REASON_DISCONNECT, REASON_STALE_RESPONSE
 )
 from tests.test_pro84_paw import MockPawResponder, encode, T_CHALLENGE, T_ACK, T_HEARTBEAT, T_ALARM, T_RESPONSE, paw_hmac
-from tests.test_pro87_uart import decode
+from tests.test_pro87_uart import decode, Scanner, DenError
 
 
 def hmac16(key, nonce):
@@ -353,4 +353,126 @@ def test_pro62_constant_time_compare_used():
     assert 'den_ct_compare' in src
     # DEN firmware uses den_ct_compare, not memcmp
     assert 'memcmp(expect' not in src
+
+
+# ============================================================================
+# Wire-level fail-closed composition (Scanner -> DEN decision)
+# ============================================================================
+#
+# Session tests above drive MockDenSession with abstract flags; parser
+# tests in test_pro87 stop at decode. The firmware loop composes them:
+# any scanner error -> den_fail(PARSE_ERROR) -> DENIED, a decodable
+# RESPONSE -> den_on_response (type/size/HMAC/deadline gates). These
+# tests pin that composition at the byte level without new abstractions.
+
+def _feed_raw_to_den(s, raw, now, last_ms=None):
+    """Mirror of den-main.ino loop: scanner errors become PARSE_ERROR
+    (fail closed); a decoded frame goes to on_frame. Returns the
+    scanner outcome ('ok:<type>' or 'err:<code>')."""
+    sc = Scanner()
+    for i, b in enumerate(bytes(raw)):
+        try:
+            # Only the final byte can carry a byte-timeout gap, mirroring
+            # a mid-frame stall (>100 ms without byte).
+            lm = last_ms if (last_ms is not None and i == len(raw) - 1) else None
+            r = sc.push(b, now, last_ms=lm)
+        except DenError as e:
+            s.on_frame(0x02, bytes(32), now, crc_ok=False)
+            return 'err:' + str(e)
+        if r is not None:
+            ptype, payload = r
+            s.on_frame(ptype, payload, now)
+            return 'ok:0x%02x' % ptype
+    return 'incomplete'
+
+
+def test_pro62_wire_timeout_denied():
+    """Mid-frame stall (>100 ms) -> scanner timeout -> DENIED, nonce wiped."""
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
+    s.send_challenge(nonce, 10000)
+    full = encode(T_RESPONSE, hmac16(K_MAC, nonce))
+    # Feed all but the last byte, then stall past BYTE_TIMEOUT_MS.
+    sc = Scanner()
+    for b in full[:-1]:
+        assert sc.push(b, 10000) is None
+    try:
+        sc.push(full[-1], 10000 + 101, last_ms=10000)
+        assert False
+    except DenError as e:
+        assert str(e) == 'timeout'
+    # Firmware maps the scanner timeout to den_fail(PARSE_ERROR).
+    s.on_frame(0x02, bytes(32), 10050, crc_ok=False)
+    assert s.done == (False, 0x00, REASON_PARSE_ERROR)
+    assert s.state == 'DENIED'
+    assert s.nonce is None
+
+
+def test_pro62_wire_crc_denied():
+    """Corrupt CRC on the wire -> frame discarded -> DENIED."""
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
+    s.send_challenge(nonce, 10000)
+    bad = bytearray(encode(T_RESPONSE, hmac16(K_MAC, nonce)))
+    bad[-1] ^= 0x01
+    assert _feed_raw_to_den(s, bytes(bad), 10100) == 'err:crc'
+    assert s.done == (False, 0x00, REASON_PARSE_ERROR)
+    assert s.state == 'DENIED'
+    assert s.nonce is None
+
+
+def test_pro62_wire_frame_denied():
+    """Unknown type / wrong size / oversize LEN on the wire -> DENIED."""
+    import struct
+    import binascii
+    # Unknown type 0x09.
+    body = struct.pack('<H', 0) + bytes([0x09])
+    unknown = bytes([0xAA]) + body + struct.pack(
+        '<I', binascii.crc32(body) & 0xFFFFFFFF)
+    s = MockDenSession(K_MAC)
+    s.send_challenge(bytes(8), 10000)
+    assert _feed_raw_to_den(s, unknown, 10100) == 'err:type'
+    assert s.done == (False, 0x00, REASON_PARSE_ERROR)
+    assert s.state == 'DENIED'
+    # CHALLENGE with wrong size (7 instead of 8).
+    body = struct.pack('<H', 7) + bytes([T_CHALLENGE]) + bytes(7)
+    wrong_size = bytes([0xAA]) + body + struct.pack(
+        '<I', binascii.crc32(body) & 0xFFFFFFFF)
+    s2 = MockDenSession(K_MAC)
+    s2.send_challenge(bytes(8), 20000)
+    assert _feed_raw_to_den(s2, wrong_size, 20100) in ('err:type', 'err:length')
+    assert s2.done == (False, 0x00, REASON_PARSE_ERROR)
+    assert s2.state == 'DENIED'
+    # Oversize LEN (>64) rejected before more bytes are read.
+    oversize = bytes([0xAA, 65, 0, T_HEARTBEAT]) + bytes(65 + 4)
+    s3 = MockDenSession(K_MAC)
+    s3.send_challenge(bytes(8), 30000)
+    assert _feed_raw_to_den(s3, oversize, 30100) == 'err:length'
+    assert s3.done == (False, 0x00, REASON_PARSE_ERROR)
+    assert s3.state == 'DENIED'
+
+
+def test_pro62_wire_hmac_mismatch_denied():
+    """Decodable RESPONSE with wrong HMAC -> HMAC_MISMATCH -> DENIED."""
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
+    s.send_challenge(nonce, 10000)
+    bad = bytearray(hmac16(K_MAC, nonce))
+    bad[0] ^= 0x01
+    assert _feed_raw_to_den(s, encode(T_RESPONSE, bytes(bad)), 10100) == 'ok:0x02'
+    assert s.done == (False, 0x00, REASON_HMAC_MISMATCH)
+    assert s.state == 'DENIED'
+    assert s.nonce is None
+
+
+def test_pro62_wire_late_valid_response_denied():
+    """Valid bytes arriving after the 2 s deadline -> TIMEOUT -> DENIED."""
+    s = MockDenSession(K_MAC)
+    nonce = bytes(range(0x10, 0x18))
+    s.send_challenge(nonce, 10000)
+    frame = encode(T_RESPONSE, hmac16(K_MAC, nonce))
+    assert _feed_raw_to_den(s, frame, 10000 + 2000 + 1) == 'ok:0x02'
+    assert s.done == (False, 0x00, REASON_TIMEOUT)
+    assert s.state == 'DENIED'
+    assert s.nonce is None
 

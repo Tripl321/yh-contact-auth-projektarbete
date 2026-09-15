@@ -97,9 +97,13 @@ DEN↔PAW docked authentication. **LoRa is explicitly out of scope.**
 ### Bench commands
 
 ```bash
-# Compile DEN firmware
+# One-time dependency (Ed25519 adapter forwards to this reviewed library)
+arduino-cli lib install "Crypto@0.4.0"
+
+# Compile DEN firmware (repo libraries required for DenUartProtocol/Ed25519)
 arduino-cli compile \
   --fqbn rp2040:rp2040:rpipico2 \
+  --libraries libraries \
   --output-dir build \
   plc/den-main/den-main.ino
 
@@ -121,11 +125,11 @@ $ python3 -m pytest tests/test_pro88_den.py tests/test_pro87_uart.py -v
 41 passed total
 ```
 
-Full suite: **102 tests passing**.
+Full suite: **225 tests passing**.
 
 ```
 $ python3 -m pytest tests/ -q
-102 passed in 0.11s
+225 passed in 2.84s
 ```
 
 ## 5. Transport scope
@@ -156,7 +160,6 @@ LoRa is explicitly out of scope. This is documented in:
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Development shared key (`DEN_DEV_KEY`) | Bring-up only; not production | `#warning`-marked; must be replaced with provisioned key |
 | No hardware secure element | `id_sk` extraction possible | Future: secure element (ATECC608A/SE050) |
 | UART byte-level timeout only | Fast byte-level stall handled; no session-level keepalive | 2 s session deadline covers this |
 | MCU reboot resets epoch counter | PAW rejects next envelope | Operator re-runs ceremony; documented |
@@ -164,3 +167,21 @@ LoRa is explicitly out of scope. This is documented in:
 ## 8. LoRa status
 
 **LoRa is out of scope.** No LoRa behavior is present in the DEN firmware, the PAW UART responder, or the protocol. The architecture pivot (2026-09-09) designates UART as the primary transport. LoRa TX-only alarm channel remains a future consideration for a separate task, not part of PRO-53.
+
+## 9. Remaining hardware dependencies
+
+Python-sviten verifierar protokoll, tillståndsmaskin och kryptovektorer —
+men inte fysiken. Följande kräver bänk och är öppna tills ikryssade:
+
+| # | Beroende | Varför endast HW duger | Status |
+|---|---|---|---|
+| H1 | RP2350 TRNG-entropi (`get_rand_64`) | Nonce-unikhet går ej att bevisa i mock; noll-RNG fångas fail-closed men svag entropi syns inte | Öppen |
+| H2 | UART-signalintegritet 115200 över pogo-docka | Bitfel, jitter och jordstudsning finns ej i modellen; CRC + deadline är skyddet | Delvis (acceptanstest 1–9 i §3) |
+| H3 | 2 s-deadline mot verkliga klockor | `millis()`-drift och interrupt-latens (RadioLib, e-paper) på PAW-sidan kan äta av budgeten | Öppen |
+| H4 | PAW svarar ej oprovisionerad (PRO-94 dock-gate) | Mock pinnar logiken; att ingen RESPONSE lämnar Serial1 kräver bänk | Öppen |
+| H5 | UNO Q-ceremoni (knapptryck + USB-distribution) | Operatörsbekräftelse och fysisk USB-timing finns ej i modellen | Öppen (se docs/16) |
+| H6 | SRAM-volatilitet vid spänningsbortfall | Att nyckel dör med kraften är ett kretspåstående, ej testbart i pytest | Öppen |
+| H7 | e-paper-degradering under dock-session | Död panel får ej påverka DEN-beslut; mockat som nollkostnad, panelbeteende kräver bänk | Delvis (PRO-11) |
+
+Acceptanskriterier för att stänga H1–H7: kör `docs/16`-guiden på
+sammansatt DEN+PAW-docka och bocka av varje rad med loggutdrag.
