@@ -109,8 +109,23 @@ Kombinerad firmware för **Adafruit Feather RP2350 + Core1262-868M + 1.54" Waves
 ### e-Paper Status
 
 - **AUTHENTICATING**: Tre punkter i triangelmönster (väntar på nyckel/challenge)
-- **AUTHENTICATED**: Bock i en cirkel (lyckad autentisering)
-- **FAILED**: X i en cirkel (misslyckad autentisering)
+- **AUTHENTICATED**: Bock i en cirkel + texten `AUTHENTICATED` (PRO-59) —
+  visas endast efter beviljad autentisering
+- **FAILED**: X i en cirkel (nekad autentisering / timeout)
+
+Grant-kontrakt: `AUTHENTICATED` kräver en beviljad session — dock-ACK
+`0x01` med väntande svar (`paw_ack_pending`) eller LoRa-`RESULT 0x01`
+under `STATE_WAITING_FOR_RESULT`. Obeställd ACK/RESULT ignoreras utan
+displayändring; pågående eller nekad autentisering visar därför aldrig
+`AUTHENTICATED`. Boot visar endast `AUTHENTICATING`.
+
+Panelnot: firmwaren driver 1.54"-panelen monokromt (svart plan; rött plan
+hålls vitt) — grön färg finns inte på denna panel, så bock + text är
+beviljandesignalen. Ingen PII visas någonsin (endast ikoner + statustext).
+
+Bänkcheck: provocera nekat (fel nyckel), timeout (ingen ACK inom 2,5 s)
+och obeställd `RESULT 0x01` utan föregående svar — displayen ska aldrig
+visa bock/text förrän vid verklig beviljad session.
 
 ### LED Indikator
 
@@ -169,7 +184,7 @@ aldrig något svar på skräp.
 ## Säkerhetsnotiser
 
 - AES-128 nyckeln lagras i **volatilt SRAM** - försvinner vid strömbortfall
-- e-Paper visar **endast statusikoner** - ingen text, ingen PII
+- e-Paper visar **endast statusikoner + beviljandetext** - ingen PII
 - HMAC-SHA256 beräknas med mottagen nyckel och challenge
 - CRC32-verifiering av nyckel vid mottagande
 
