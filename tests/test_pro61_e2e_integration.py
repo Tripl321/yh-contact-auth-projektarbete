@@ -90,7 +90,8 @@ def test_pro61_full_flow_happy_path():
     assert t == 0x02  # RESPONSE
     assert len(mac) == 32
     
-    # Step 6: DEN verifies response
+    # Step 6: DEN verifies response (valid list required since PRO-98)
+    den.install_blocklist([b"\xca\xfe\xba\xbe"])
     ok, ack, reason = den.on_frame(0x02, mac, 10100)
     assert ok is True
     assert ack == 0x01
@@ -129,9 +130,10 @@ def test_pro61_full_flow_with_mock_paw_loop():
     assert t_ans - t_tx < 2000  # within deadline
     assert mac == hmac16(K_MAC, nonce)
     
-    # Verify DEN would accept this response
+    # Verify DEN would accept this response (valid list required since PRO-98)
     den = MockDenSession(key)
     den.send_challenge(nonce, 10000)
+    den.install_blocklist([b"\xca\xfe\xba\xbe"])
     ok, ack, reason = den.on_frame(0x02, mac, 10100)
     assert ok is True
     assert ack == 0x01
@@ -359,7 +361,8 @@ def test_pro61_challenge_response_with_provisioned_key():
     expected_mac = hmac16(K_MAC, nonce)
     assert mac == expected_mac
     
-    # DEN verifies
+    # DEN verifies (valid list required since PRO-98 enforcement)
+    den.install_blocklist([b"\xca\xfe\xba\xbe"])
     ok, ack, reason = den.on_frame(0x02, mac, 10100)
     assert ok is True
     assert ack == 0x01

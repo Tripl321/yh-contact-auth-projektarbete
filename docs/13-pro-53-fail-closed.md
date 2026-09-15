@@ -38,6 +38,7 @@ DEN↔PAW docked authentication. **LoRa is explicitly out of scope.**
 |------|---------|----|-------|
 | DENIED | `millis() - stateAt ≥ SESSION_GAP_MS` | CHALLENGE_SENT | Automatic; sends CHALLENGE |
 | CHALLENGE_SENT | Valid RESPONSE, HMAC matches | AUTHENTICATED | Access granted; ACK sent |
+| CHALLENGE_SENT | Valid HMAC but blocked fp / no valid list | DENIED | `den_fail(REASON_BLOCKLISTED)` before any grant (PRO-98, `docs/17`) |
 | CHALLENGE_SENT | Timeout (≥ 2 s) | DENIED | `den_fail(REASON_TIMEOUT)` |
 | CHALLENGE_SENT | CRC error, parse error, unexpected type, invalid size | DENIED | `den_fail(REASON_PARSE_ERROR/UNEXPECTED_TYPE/INVALID_SIZE)` |
 | CHALLENGE_SENT | HMAC mismatch | DENIED | `den_fail(REASON_HMAC_MISMATCH)` |
@@ -55,7 +56,7 @@ DEN↔PAW docked authentication. **LoRa is explicitly out of scope.**
 4. **Prior successful sessions do not remain valid.** After the session gap, DEN returns to DENIED; a new challenge is required.
 5. **ACK is informational.** The access decision is made before ACK and never depends on it.
 6. **PAW display/UI and other peripherals** do not alter the DEN decision or deadline.
-7. **Authentication status is observable over USB serial** with non-secret reason codes (integers 0–7).
+7. **Authentication status is observable over USB serial** with non-secret reason codes (integers 0–8).
 
 ## 2. Reason codes (non-secret, observable over USB serial)
 
@@ -69,6 +70,7 @@ DEN↔PAW docked authentication. **LoRa is explicitly out of scope.**
 | 5 | HMAC_MISMATCH | Constant-time compare failed |
 | 6 | DISCONNECT | PAW UART disconnect detected |
 | 7 | STALE_RESPONSE | Response for a prior (wiped) nonce |
+| 8 | BLOCKLISTED | Revoked fingerprint, or no valid list (PRO-98, `docs/17`) |
 
 ## 3. Hardware acceptance record
 

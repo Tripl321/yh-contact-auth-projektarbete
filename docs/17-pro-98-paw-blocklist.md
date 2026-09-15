@@ -23,8 +23,8 @@ the DEN denies access even though the HMAC is valid.
                                                 │  During auth:                  │
                                                 │  1. Verify HMAC (existing)    │
                                                 │  2. Compute SHA-256(key)[:4]   │
-                                                │  3. Check against blocklist    │
-                                                │  4. Deny if found              │
+ │  3. Require valid list (else deny) │
+ │  4. Deny if found, else grant      │
                                                 └────────────────────────────────┘
 ```
 
@@ -36,7 +36,7 @@ the DEN denies access even though the HMAC is valid.
 | issuer      | 16 bytes                | Null-padded ASCII issuer identifier                                  |
 | entry_count | 1 byte                  | Number of blocked entries (0–16)                                     |
 | entries     | 4 × `entry_count` bytes | SHA-256(shared_key)\[:4\] fingerprints                               |
-| signature   | 32 bytes                | HMAC-SHA256 over (version \|\| issuer \|\| entry_count \|\| entries) |
+| signature   | 64 bytes                | Ed25519 over (version \|\| issuer \|\| entry_count \|\| entries)       |
 
 Total size: `18 + 4*N + 64` bytes (82–146 bytes for 0–16 entries).
 
@@ -69,14 +69,22 @@ This is a true digital signature scheme: only MamaBear can produce valid signatu
 
 ## 6. Authentication with blocklist
 
-The blocklist check is performed **after** successful HMAC verification:
+The blocklist check runs **after** successful HMAC verification and
+**before** any grant artefact (no ACK 0x01, no LED, no AUTHENTICATED
+state/display — the deny path sends ACK 0x00 like every other deny):
 
 1. DEN sends CHALLENGE (nonce)
 2. PAW responds with RESPONSE (HMAC-SHA256)
-3. DEN verifies HMAC
-4. **If valid:** DEN computes `SHA-256(DEN_DEV_KEY)[:4]` and checks against blocklist
-5. If found in blocklist → `DEN_REASON_BLOCKLISTED`, ACK(0x00), transition to DENIED
-6. If not found → `DEN_REASON_OK`, ACK(0x01), transition to AUTHENTICATED
+3. DEN verifies HMAC (mismatch → `DEN_REASON_HMAC_MISMATCH`, gate never runs)
+4. **No valid signed list** → spärrstatus okänd → `DEN_REASON_BLOCKLISTED`, ACK(0x00), DENIED
+5. Fingerprint `SHA-256(denDevKey)[:4]` **on the list** → `DEN_REASON_BLOCKLISTED`, ACK(0x00), DENIED
+6. Fingerprint **not on a valid list** (known-good) → `DEN_REASON_OK`, ACK(0x01), AUTHENTICATED
+
+Kravtolkning "okänt PAW-ID": i en deny-list kan ett okänt fingerprint
+under en giltig lista inte nekas utan att systemet blir stängt för all
+trafik (ingen allowlist-design finns i repot). "Okänt" betyder därför
+okänd spärrstatus — ingen giltig lista att pröva mot — vilket nekas
+enligt steg 4.
 
 Checking after HMAC verification ensures the blocklist lookup never runs
 on unauthenticated input, preventing probing attacks.
@@ -86,10 +94,12 @@ on unauthenticated input, preventing probing attacks.
 | Failure mode                              | Response                               |
 | ----------------------------------------- | -------------------------------------- |
 | Invalid signature                         | Blocklist not activated; old list kept |
+| Wrong issuer                              | Blocklist not activated; old list kept |
 | Version too old                           | Blocklist not activated; old list kept |
 | Truncated/corrupt data                    | Blocklist not activated; old list kept |
-| `blocklist_valid = 0` (no valid list yet) | All PAWs allowed (no blocking)         |
-| PAW with blocklisted key                  | Denied after HMAC verification         |
+| `blocklist_valid = 0` (no valid list yet) | **All PAWs denied** (`DEN_REASON_BLOCKLISTED`, fail closed) |
+| PAW with blocklisted key                  | Denied after HMAC verification (`DEN_REASON_BLOCKLISTED`) |
+| Trust root still placeholder (all-zero)   | No signature verifies; no list activates; **all PAWs denied** — pin production key to activate (see §11.6) |
 
 ## 8. PAW identity binding
 
@@ -103,20 +113,22 @@ because:
 
 ## 9. Simulation vs. physical verification
 
-### What is simulated in tests (`tests/test_pro88_den.py`)
+### What is simulated in tests (`tests/test_pro88_den.py`, `tests/test_pro98_den_blocklist.py`)
 
 | Test                                        | What it verifies                               |
 | ------------------------------------------- | ---------------------------------------------- |
-| `test_pro98_valid_blocklist_update`         | Valid HMAC signature, correct format, accepted |
-| `test_pro98_manipulated_signature_rejected` | Flipped signature bit → rejected               |
-| `test_pro98_rollback_rejected`              | Lower version → rejected                       |
-| `test_pro98_truncated_data_rejected`        | Incomplete message → rejected                  |
-| `test_pro98_empty_blocklist_accepted`       | Zero entries with valid signature → accepted   |
-| `test_pro98_blocked_paw_denied_after_auth`  | Valid HMAC but blocked key → denied            |
-| `test_pro98_non_blocked_paw_accepted`       | Valid HMAC and clean key → authenticated       |
-| `test_pro98_blocklist_checked_after_hmac`   | Bad HMAC → HMAC_MISMATCH, not BLOCKLISTED      |
-| `test_pro98_source_has_blocklist`           | Source contains blocklist symbols              |
-| `test_pro98_uno_q_source_guards`            | UNO Q source has distribution support          |
+| `test_pro98_ed25519_sign_verify` (pro88)    | Ed25519 sign/verify with test vectors          |
+| `test_pro98_blocklist_signature_format` (pro88) | Format: version, issuer, entries, 64 B sig  |
+| `test_pro98_*_rejected` (pro88)             | Manipulated sig / rollback / wrong key rejected |
+| `test_pro98_valid_list_unlisted_fp_grants`  | Valid list + clean key → authenticated         |
+| `test_pro98_empty_valid_list_grants`        | Zero-entry valid list → authenticated          |
+| `test_pro98_blocked_fp_denied_before_grant` | Blocked key → DENIED + code 8, never grant     |
+| `test_pro98_missing_list_denies_unknown_status` | No list → DENIED + code 8 (fail closed)    |
+| `test_pro98_invalid_signature/rollback/truncated/oversize/issuer/wrong-trust-root_rejected` | Bad lists never activate → DENIED |
+| `test_pro98_keeps_last_valid_on_error`      | Failed update keeps previous valid list        |
+| `test_pro98_bad_hmac_never_reaches_gate`    | HMAC checked before blocklist gate             |
+| `test_pro98_deny_chain_never_shows_authenticated` | ACK 0x00 → PAW FAILED, never grant         |
+| `test_pro98_source_*`                       | Reason code 8, gate placement, fp hygiene, issuer check, placeholder scope |
 
 All tests are **Python mock simulations** of the firmware logic. The HMAC
 verification, version checking, and truncation handling are mirrored in Python.

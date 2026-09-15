@@ -151,7 +151,14 @@ static uint32_t crc32(const uint8_t* data, size_t len) {
 
 // PRO-98: Ed25519 public key for blocklist verification.
 // Only MamaBear (UNO Q) holds the private key for signing.
-// This public key is embedded in DEN firmware for verification.
+//
+// PLACEHOLDER TRUST ROOT (deliberately scoped): this array is all zeros
+// until a production public key is pinned here at build time. No signature
+// verifies against it, so no list can become valid and den_on_response
+// denies every session with DEN_REASON_BLOCKLISTED (fail closed). Bench or
+// test builds may pin a TEST-ONLY key, but such builds must never be
+// deployed: grep for "TEST-ONLY trust root" before any production flash.
+// See docs/17 §11.6.
 static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -346,6 +353,23 @@ static uint8_t process_blocklist_message(const uint8_t *data, size_t len) {
     char issuer[16];
     memcpy(issuer, data + 1, 16);
 
+    // Issuer must be exactly SHALLOT-AUTH (zero-padded): a validly signed
+    // list from any other issuer is not ours -> reject (fail closed).
+    // Plain byte loop here; constant-time compare stays reserved for secrets.
+    static const char kExpectedIssuer[16] = BLOCKLIST_ISSUER;
+    {
+        uint8_t issuerOk = 1;
+        for (uint8_t i = 0; i < 16; i++) {
+            if (issuer[i] != kExpectedIssuer[i]) { issuerOk = 0; break; }
+        }
+        if (!issuerOk) {
+#if SECURE_DEBUG
+            Serial.println("[PRO-98] Blocklist issuer mismatch");
+#endif
+            return 0;
+        }
+    }
+
     uint8_t entry_count = data[17];
     if (entry_count > BLOCKLIST_MAX_ENTRIES) {
 #if SECURE_DEBUG
@@ -519,6 +543,7 @@ typedef enum {
   DEN_REASON_HMAC_MISMATCH,       // constant-time compare failed
   DEN_REASON_DISCONNECT,          // 2s deadline hit, zero bytes received
   DEN_REASON_STALE_RESPONSE,      // all-zero nonce: TRNG failure or wiped
+  DEN_REASON_BLOCKLISTED,         // PRO-98: revoked fp, or no valid list (unknown status)
 } DenReason;
 
 // =============================================================
@@ -675,6 +700,7 @@ static void den_fail(uint8_t reason) {
     case DEN_REASON_HMAC_MISMATCH: label = "hmac mismatch"; break;
     case DEN_REASON_DISCONNECT:    label = "disconnect"; break;
     case DEN_REASON_STALE_RESPONSE: label = "stale response"; break;
+    case DEN_REASON_BLOCKLISTED:  label = "blocked"; break;
     default: break;
   }
   Serial.print("[DEN] FAILED: "); Serial.print(label);
@@ -757,6 +783,35 @@ static void den_on_response(const den_frame_t *f, uint32_t now) {
   memset(denNonce, 0, sizeof(denNonce));
   if (!ok) {
     den_fail(DEN_REASON_HMAC_MISMATCH);
+    return;
+  }
+  // PRO-98 revocation gate. Fail closed in both directions, before any
+  // grant (no ACK 0x01, no LED, no AUTHENTICATED, no display change beyond
+  // the deny ACK 0x00 that den_fail sends):
+  //   - no valid signed list -> revocation status unknown -> deny;
+  //   - fingerprint on a valid list -> revoked -> deny.
+  // An unknown fingerprint under a valid list is known-good -> grant
+  // (deny-list semantics; see docs/17).
+  if (!blocklist_valid) {
+    den_fail(DEN_REASON_BLOCKLISTED);
+    return;
+  }
+  uint8_t fp[KEY_HASH_SIZE];
+  uint8_t kh[32];
+  den_sha256(denDevKey, AES_KEY_SIZE, kh);
+  memcpy(fp, kh, KEY_HASH_SIZE);
+  memset(kh, 0, sizeof(kh));
+  uint8_t blocked = 0;
+  for (uint8_t i = 0; i < current_blocklist.entry_count; i++) {
+    uint8_t diff = 0;
+    for (uint8_t j = 0; j < KEY_HASH_SIZE; j++) {
+      diff |= (uint8_t)(fp[j] ^ current_blocklist.entries[i][j]);
+    }
+    if (diff == 0) { blocked = 1; break; }
+  }
+  memset(fp, 0, sizeof(fp));
+  if (blocked) {
+    den_fail(DEN_REASON_BLOCKLISTED);
     return;
   }
   Serial.println("[DEN] AUTHENTICATED (code 0)");

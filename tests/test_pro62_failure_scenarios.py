@@ -288,7 +288,8 @@ def test_pro62_end_to_end_failure_then_retry():
     assert s.state == 'CHALLENGE_SENT'
     assert s.nonce == nonce2
 
-    # Second session: valid HMAC -> AUTHENTICATED
+    # Second session: valid HMAC + valid list -> AUTHENTICATED
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])
     ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce2), 10100 + 1000 + 1 + 1000 + 100)
     assert ok is True
     assert ack == 0x01

@@ -281,6 +281,7 @@ def test_pro47_den_clear_resets_flag_and_reprovision_works():
     assert s.is_valid() is True
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list required since PRO-98
     ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert (ok, ack, reason) == (True, 0x01, REASON_OK)
 

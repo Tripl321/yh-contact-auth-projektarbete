@@ -98,6 +98,8 @@ class MockDenSession:
         self.k_mac = K_MAC  # PRO-49: derived HMAC key
         self.provisioned = bool(key is not None and len(bytes(key)) == 16
                                 and any(bytes(key)))
+        self.blocklist_entries = None  # None = no valid list (unknown status)
+        self.blocklist_valid = False
         self.nonce = None
         self.sent_at = None
         self.state = "DENIED"  # DEN_ST_DENIED initially
@@ -137,6 +139,21 @@ class MockDenSession:
         """Mirror of den_key_valid(): flag set AND master non-zero."""
         return bool(self.provisioned and self.key and any(self.key))
 
+    def install_blocklist(self, entries):
+        """Mirror of a validated list install (process_blocklist_message
+        accepted): entries = iterable of 4-byte fingerprints."""
+        self.blocklist_entries = [bytes(e) for e in entries]
+        self.blocklist_valid = True
+
+    def clear_blocklist(self):
+        """Mirror of missing/invalid list: revocation status unknown."""
+        self.blocklist_entries = None
+        self.blocklist_valid = False
+
+    def fingerprint(self):
+        """Mirror of SHA-256(denDevKey)[:4] (non-secret key fingerprint)."""
+        return hashlib.sha256(bytes(self.key)).digest()[:4]
+
     def on_frame(self, ptype, payload, now, crc_ok=True, size_ok=True):
         """Handle a received frame in CHALLENGE_SENT."""
         if self.state != "CHALLENGE_SENT" or self.nonce is None:
@@ -154,6 +171,12 @@ class MockDenSession:
         expect = hmac16(self.k_mac, self.nonce)
         if not hmac_module.compare_digest(expect, bytes(payload)):
             return self._finish(False, REASON_HMAC_MISMATCH)
+        # PRO-98 revocation gate (mirrors den_on_response order): unknown
+        # status (no valid list) or listed fingerprint -> deny, before grant.
+        if not self.blocklist_valid:
+            return self._finish(False, REASON_BLOCKLISTED)
+        if bytes(self.fingerprint()) in (self.blocklist_entries or []):
+            return self._finish(False, REASON_BLOCKLISTED)
         return self._finish(True, REASON_OK)
 
     def poll_timeout(self, now):
@@ -204,6 +227,7 @@ def test_pro53_happy_path_auth_then_denied():
     s = MockDenSession(K_MAC)
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list, our fp not on it
     assert s.state == "CHALLENGE_SENT"
     ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert ok and ack == 0x01 and reason == REASON_OK
@@ -281,6 +305,7 @@ def test_pro53_stale_response_denied():
     nonce = bytes(range(0x10, 0x18))
     # Complete a session successfully.
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list, our fp not on it
     s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert s.state == "AUTHENTICATED"
     s.advance_gap(10100 + SESSION_GAP_MS + 1)
@@ -297,6 +322,7 @@ def test_pro53_prior_success_not_authorizing():
     s = MockDenSession(K_MAC)
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list, our fp not on it
     s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert s.state == "AUTHENTICATED"
     s.advance_gap(10100 + SESSION_GAP_MS + 1)
@@ -317,6 +343,7 @@ def test_pro53_ack_is_informational():
     s = MockDenSession(K_MAC)
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list, our fp not on it
     # Decision is made by on_frame; ACK is just the output.
     ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
     assert ok and ack == 0x01
@@ -341,6 +368,7 @@ def test_pro53_display_does_not_affect_decision():
     s = MockDenSession(K_MAC)
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
+    s.install_blocklist([b"\xca\xfe\xba\xbe"])  # valid list, our fp not on it
     # Simulating a display change (not modeled) does not change
     # the outcome; only the UART frame matters.
     ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, nonce), 10100)
@@ -354,9 +382,9 @@ def test_pro53_non_secret_reason_codes():
     transmitted on the wire and never contain secret material."""
     # Reason codes are enum values: 0=OK, 1=timeout, etc.
     # They are logged as integers in [DEN] FAILED: label (code N).
-    for code in range(0, 8):
+    for code in range(0, 9):
         assert isinstance(code, int)
-        assert 0 <= code <= 7
+        assert 0 <= code <= 8
     # The reason codes appear in Serial output only; the ACK
     # byte is 0x01 or 0x00 (never the reason code).
 
