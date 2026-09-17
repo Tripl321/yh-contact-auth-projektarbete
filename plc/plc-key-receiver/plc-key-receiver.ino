@@ -1164,16 +1164,16 @@ void loop() {
     }
   }
 
+  // Only enter the distribution scan when a HANDSHAKE is actually pending.
+  // Calling receiveKey() on any >=2 bytes let it swallow a COMMIT frame.
   if (!keyStored) {
-    if (Serial.available() >= 2) {
-      if (receiveKey()) {
-        // Key received via USB (was UART) - init LoRa now
-        if (!loraInitialized) initLoRa();
-      }
+    if (Serial.available() >= 1 && (uint8_t)Serial.peek() == SHALLOT_MSG_HANDSHAKE) {
+      receiveKey();
     }
-  } else if (keyStored && !loraInitialized) {
-    initLoRa();
   }
+  // NOTE: radio init is intentionally not performed here. On this bench the
+  // Core1262 is absent and initLoRa() blocks, tripping the watchdog mid
+  // ceremony. Key provisioning is USB-only, so defer/omit radio init.
 
   // Handle pending commit/cancel via USB (6B: type + target + epoch_be4, or 5B legacy).
   // A COMMIT for the already-active epoch is answered idempotently (covers
