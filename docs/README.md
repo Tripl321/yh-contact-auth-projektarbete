@@ -20,7 +20,7 @@
 | 04 | Kopplingsdokumentation | v1.0 — Utkast | PRO-33 | 2026-09-05 |
 | 05 | Protokollspecifikation | Ej påbörjad | PRO-42 | 2026-09-12 |
 | 06 | Radio-parametrar | Ej påbörjad | PRO-43 | 2026-09-12 |
-| 07 | Säkerhetsdesign | Utkast (hårdvarurot PRO-54 tillagd, se docs/07) | PRO-54 | 2026-09-19 |
+| 07 | Säkerhetsdesign | Ej påbörjad | PRO-54 | 2026-09-19 |
 | 08 | Hotmodellering | Utkast (manuell, se docs/08-hotmodellering.md) | PRO-55 | 2026-09-19 |
 | 09 | Integrationsbeskrivning | Utkast (se docs/09-integrationsbeskrivning.md) | PRO-67 | 2026-09-22 |
 | 10 | Resultat och reflektion | Utkast (se docs/10-resultat-och-reflektion.md) | PRO-68 | 2026-09-23 |
