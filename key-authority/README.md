@@ -23,3 +23,21 @@ UNO Q har en dubbelprocessorarkitektur:
 2. Nyckeln distribueras till båda noder via USB efter fysisk bekräftelse
 3. Nyckeln lagras säkert på STM32U585 och aldrig exponeras i klartext utanför säker domän
 4. **Air-gap**: Allt fungerar helt utan anslutning till host-dator (Mama Bear MPU agerar USB-värd)
+
+## USB-provisionering i drift (MPU-relä)
+
+MCU:ns distributionsväg är USB CDC (`Serial`). Enheterna når MCU:ns
+arbitrerrouter-uttag via ett MPU-sida relä som kopierar ramar byte-för-byte mellan
+MCU:s övervakningsuttag (`127.0.0.1:7500`) och enheternas `/dev/ttyACM`-portar:
+
+    python3 scripts/usb_provisioning_relay.py
+
+Reläet filtrerar endast icke-hemlig debug (`<0x80`), routar ramar utan target
+(KEY_DATA) till den pågående utväxlingens enhet och återöppnar enheter via
+deras stabila `by-id`-sökväg vid EIO. Det deltar inte i nyckelhanteringen;
+audit bärs endast av fingerprint-taggar (`0xA4` STORED, `0xA6` COMMIT).
+
+Verifierat på bänken (epok 1 och 2): PLC och PAW lagrar identiska nycklar,
+MCU gör konstant-tids hashverifiering mot pending-hash och distributionen
+fails closed vid CRC-mismatch/tidsutgång utan att lagra del-nyckel. Enda
+sändarväg är USB; Serial1-UART-sändaren är borttagen (ingen dubbel sändare).
