@@ -28,3 +28,45 @@ AES-CCM kombinerar kryptering och autentisering i en AEAD-mod och skulle minska 
 AES-CCM ingår inte i MVP för att inte riskera tidslinjen. Det rekommenderas som en post-MVP-förbättring.
 
 Referenser: [NIST SP 800-38C](https://csrc.nist.gov/pubs/sp/800/38/c/upd1/final), [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final), [kivicore.com](http://kivicore.com) och pico-hsm på GitHub.
+
+## Hårdvarurot för PAW-nycklar (PRO-54 tillägg)
+
+### Produktionskrav
+PAW-nycklar (operationsnyckel, `kMac`/`kEnc`, Ed25519-identiteter om de
+införs) ska i produktion bo i secure element eller motsvarande
+hårdvarurot med minst: (a) nyckelgenerering/lagring som aldrig exponerar
+rått material utanför elementet, (b) säker uppstart (verified/secure
+boot) som vägrar manipulerad firmware, (c) krypterad eller åtkomstskyddad
+flash så att avdumpning inte ger nycklar eller klonbar image, (d) fysisk
+manipulationsresistens anpassad till hotbilden (passivt skydd räcker för
+prototypmiljö; aktivt skydd vid fientlig fysisk åtkomst).
+
+### Prototypens begränsningar
+Feather RP2350 / Pico 2 (RP2350) saknar secure boot, flashkryptering och
+secure element: UF2 kan flashas via BOOTSEL av var och en med fysisk
+åtkomst, flash kan dumpas, SRAM har ingen ECC och e-paper är bistabil.
+Nycklarna skyddas därför endast av SRAM-volatilitet (dör med strömmen),
+fail-closed logik och fysisk procedursäkerhet — giltigt för bänk, inte
+för produktion.
+
+### Hot som kvarstår utan secure boot/flashkryptering
+- Omflashning till angriparfirmware via BOOTSEL (fullständig
+  kompromettering vid fysisk possession).
+- Flash-dump: ger ingen nyckel (SRAM-only) men avslöjar protokollogik
+  och möjliggör kloning av beteende samt offline-analys.
+- Kallstarts-SRAM-kvarlevor och bitfel (ingen ECC) — K7.
+- Fryst e-paper-bild vid strömavbrott (vilseledande indikation, ingen
+  åtkomst).
+- FIDO2 admin-token kan dumpas (se PRO-55 risk 2/10).
+
+### Realistiska post-MVP-alternativ
+1. Externt secure element över I2C (t.ex. ATECC608-klass) för
+   nyckellagring + P-256/Ed25519 i elementet; RP2350 håller endast
+   sessionsflyktiga värden.
+2. MCU med hårdvarurot (t.ex. STM32U5 TrustZone + secure boot + OTP,
+   redan delvis tillgänglig på UNO-Q-sidan) för DEN/PAW-nästa generation.
+3. Krypterad provisionering med HSM-hållen KEK + nyckelrotation och
+   återkallelse via signerad blocklist (blocklist-flödet finns, privat-
+   nyckelns HSM-process saknas — PRO-55 risk 3).
+4. Först: oberoende kryptoaudit + sidokanalsmätning innan hårdvarulåsning
+   (låser annars in ogranskade primitiver).
