@@ -411,6 +411,9 @@ static bool distributeKey(uint8_t targetId) {
   keyPacket[21] = (uint8_t)(crc & 0xFF);
   Serial1.write(keyPacket, 22);
   Serial1.flush();
+  // PRO-94: keyPacket holds the raw AES key — wipe immediately after use
+  // so no key bytes linger in SRAM beyond the transmit.
+  memset(keyPacket, 0, sizeof(keyPacket));
   Serial.println("sent");
 
   // Step 3: Wait for storage confirmation
@@ -516,7 +519,13 @@ static bool sign_blocklist(uint8_t version, const char *issuer,
 
     int result = ed25519_sign(signature, data, data_len, blocklist_private_key);
     memset(data, 0, sizeof(data));
-    return result == 1;
+    if (result != 1) {
+        // PRO-94: never hand out a partial/garbage signature — wipe the
+        // output buffer so a caller cannot transmit it by mistake.
+        memset(signature, 0, BLOCKLIST_SIGNATURE_SIZE);
+        return false;
+    }
+    return true;
 }
 
 static bool distributeBlocklist() {
@@ -544,7 +553,14 @@ static bool distributeBlocklist() {
   }
 
   uint8_t signature[BLOCKLIST_SIGNATURE_SIZE];
-  sign_blocklist(BLOCKLIST_VERSION, BLOCKLIST_ISSUER, entries, entry_count, signature);
+  // PRO-94: never transmit a blocklist with a failed signature — a
+  // garbage signature would look valid on the wire (DEN stays
+  // fail-closed, but we must not send it in the first place).
+  if (!sign_blocklist(BLOCKLIST_VERSION, BLOCKLIST_ISSUER, entries, entry_count, signature)) {
+    memset(entries, 0, sizeof(entries));
+    memset(signature, 0, sizeof(signature));
+    return false;
+  }
 
   // Send MSG_BLOCKLIST
   Serial1.write(MSG_BLOCKLIST);
