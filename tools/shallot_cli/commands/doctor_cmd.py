@@ -28,7 +28,12 @@ REQUIRED_FILES = [
 FIRMWARE_GUARD_FILES = [
     "plc/den-main/den-main.ino",
     "id-kort/paw-main/paw-main.ino",
+    "plc/edge-challenge-response/edge-challenge-response.ino",
 ]
+
+#: Mönster som aldrig får förekomma ogardat i aktiv firmware.
+#: Arkivet (id-kort/archive/) är historik och skannas inte.
+DEVKEY_PATTERNS = ("DEN_DEV_KEY", "#warning", "DEVELOPMENT-ONLY", "MASTER_KEY")
 
 
 def _tool_version(cmd: list[str]) -> str | None:
@@ -60,14 +65,20 @@ def _find_upload_scripts() -> list[str]:
 
 
 def _firmware_devkey_guard() -> list[str]:
-    """Firmware får inte innehålla hårdkodade utvecklingsnycklar."""
+    """Firmware får inte innehålla hårdkodade utvecklingsnycklar.
+
+    Edge-responserns TEST-ONLY-nyckel accepteras endast bakom explicit
+    opt-in-guard (EDGE_ALLOW_DEV_KEY); saknas guardet flaggas filen.
+    """
     bad = []
     for rel in FIRMWARE_GUARD_FILES:
         try:
             text = (REPO_ROOT / rel).read_text(errors="replace")
         except OSError:
             continue
-        if "DEN_DEV_KEY" in text or "#warning" in text:
+        if any(p in text for p in DEVKEY_PATTERNS):
+            if "EDGE_ALLOW_DEV_KEY" in text:
+                continue  # explicit opt-in-guard finns — bänkbygge, OK
             bad.append(rel)
     return bad
 

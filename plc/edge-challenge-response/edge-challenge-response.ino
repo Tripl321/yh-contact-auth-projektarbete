@@ -17,6 +17,14 @@
  *
  * LoRa config (PRO-78): 868.1 MHz, SF7, BW125, CR4/5, sync 0x12, 20 dBm
  * Protocol (PRO-81): challenge-response with HMAC-SHA256 truncated to 8 bytes
+ *
+ * TEST-ONLY DEVELOPMENT KEY (bench fixture, NEVER production):
+ * This sketch embeds the public dev vector MASTER_KEY = 00..0F so the
+ * bench pair can run without a provisioning flow. Any firmware built
+ * from this file MUST be treated as a test artifact. Production builds
+ * are fail-closed: compilation requires the explicit opt-in
+ * -DEDGE_ALLOW_DEV_KEY=1 (CI bench job passes it; default builds
+ * refuse to compile, see guard below).
  */
 
 #include <SPI.h>
@@ -41,6 +49,14 @@
 #define LORA_TX_POWER   20
 #define LORA_TIMEOUT_MS 5000
 #define LORA_RETRIES    3
+
+// Fail-closed dev-key guard: the hardcoded MASTER_KEY below is a public
+// bench test vector (00..0F). Refuse to compile unless the builder
+// explicitly opts in with -DEDGE_ALLOW_DEV_KEY=1 (bench/CI only).
+// This mirrors PRO-93 (no silent dev keys in firmware artifacts).
+#ifndef EDGE_ALLOW_DEV_KEY
+#error "edge-challenge-response embeds a TEST-ONLY dev key; rebuild with -DEDGE_ALLOW_DEV_KEY=1 for bench use only"
+#endif
 
 static const uint8_t MASTER_KEY[SHALLOT_MASTER_KEY_LEN] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
