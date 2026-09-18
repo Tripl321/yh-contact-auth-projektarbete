@@ -15,9 +15,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from shallot_cli.commands import build_cmd, device_cmd, demo_cmd, doctor_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
+from shallot_cli.commands import build_cmd, device_cmd, demo_cmd, doctor_cmd, explain_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
 from shallot_cli.fido2 import SCENARIOS as FIDO2_SCENARIOS
 from shallot_cli.fido2 import UV_POLICIES
+from shallot_cli.explain import TOPICS as EXPLAIN_TOPICS
 from shallot_cli.sim import SCENARIOS
 from shallot_cli import tui
 
@@ -44,6 +45,16 @@ def build_parser() -> argparse.ArgumentParser:
     dm = sub.add_parser("demo", help="simulerad incident för presentation (SIMULERING)")
     dmsub = dm.add_subparsers(dest="what", required=True)
     dmsub.add_parser("incident", help="simulerad driftlarmscen som avslöjar SHALLOT CLI")
+
+    ex = sub.add_parser("explain", help="lokal förklaring av begrepp (offline; --ai via Ollama)")
+    ex.add_argument("topic", nargs="?", default=None,
+                    help="ämne (%s) eller utelämna med --list" % "|".join(sorted(EXPLAIN_TOPICS)))
+    ex.add_argument("--list", action="store_true", help="lista ämnen")
+    ex.add_argument("--ai", action="store_true",
+                    help="utveckla med lokal Ollama-modell (endast localhost)")
+    ex.add_argument("--model", default="llama3.2", help="Ollama-modell (default: llama3.2)")
+    ex.add_argument("--host", default=None,
+                    help="Ollama-bas-URL (default: $OLLAMA_HOST eller localhost; endast loopback)")
 
     pr = sub.add_parser("protocol", help="UART-ramformatet (utan hårdvara)")
     prsub = pr.add_subparsers(dest="what", required=True)
@@ -142,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
         return simulate_cmd.run(args.scenario)
     if args.command == "demo":
         return demo_cmd.run()
+    if args.command == "explain":
+        if args.list or args.topic is None:
+            return explain_cmd.run_list()
+        return explain_cmd.run(args.topic, ai=args.ai, model=args.model, host=args.host)
     if args.command == "protocol":
         if args.what == "encode":
             return protocol_cmd.run_encode(args.type, args.payload)
