@@ -1277,13 +1277,6 @@ void loop() {
         }
 
         case STATE_WAITING_FOR_CHALLENGE:
-            // PRO-95: grant indication expires — revert a stale
-            // AUTHENTICATED image to the locked indication. Fires at most
-            // once per grant (flag cleared on fire).
-            if (authDisplayed && (millis() - authGrantedAt > AUTH_GRANTED_DISPLAY_MS)) {
-                authDisplayed = false;
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            }
             if (lastChallengeTime > 0 && (millis() - lastChallengeTime > CHALLENGE_TIMEOUT)) {
                 lastChallengeTime = 0;
 #if SECURE_DEBUG
@@ -1343,6 +1336,16 @@ void loop() {
 
         case STATE_WAITING_FOR_RESULT:
             break;
+    }
+
+    // PRO-95: grant indication expires regardless of protocol state — revert
+    // a stale AUTHENTICATED image to the locked indication. Placed outside
+    // the switch on purpose: WAITING_FOR_RESULT has no timeout (it waits
+    // for LoRa RESULT), so a grant shown mid-session would otherwise never
+    // expire. Fires at most once per grant (flag cleared on fire).
+    if (authDisplayed && (millis() - authGrantedAt > AUTH_GRANTED_DISPLAY_MS)) {
+        authDisplayed = false;
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 
     // 4. Heartbeat LED Indicator

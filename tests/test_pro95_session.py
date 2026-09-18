@@ -34,6 +34,19 @@ def test_pro95_expiry_reverts_to_locked():
     assert "epd.showStatus(EPD_STATUS_AUTHENTICATING)" in PAW
 
 
+def test_pro95_expiry_runs_regardless_of_protocol_state():
+    """Förfallet ligger efter switchen, inte i ett enskilt case:
+    WAITING_FOR_RESULT har ingen timeout (väntar på LoRa-RESULT), så ett
+    beviljande visat mitt i en session skulle annars aldrig förfalla."""
+    loop = PAW[PAW.find("void loop()"):]
+    case_at = loop.find("case STATE_WAITING_FOR_RESULT:")
+    exp_at = loop.find("if (authDisplayed")
+    hb_at = loop.find("// 4. Heartbeat")
+    assert 0 <= case_at < exp_at < hb_at
+    between = loop[case_at:exp_at]
+    assert any(l.strip() == "}" for l in between.splitlines())  # switchen stängd
+
+
 def test_pro95_boot_is_locked():
     setup = PAW[PAW.find("void setup()"):]
     setup = setup[: setup.find("\n}\n")]
