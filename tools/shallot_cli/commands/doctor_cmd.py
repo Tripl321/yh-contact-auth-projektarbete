@@ -8,6 +8,7 @@ beroenden eller osäkra konfigurationer hittades.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,60 @@ REQUIRED_FILES = [
 FIRMWARE_GUARD_FILES = [
     "plc/den-main/den-main.ino",
     "id-kort/paw-main/paw-main.ino",
+    "plc/edge-challenge-response/edge-challenge-response.ino",
 ]
+
+#: Mönster som aldrig får förekomma ogardat i aktiv firmware.
+#: Arkivet (id-kort/archive/) är historik och skannas inte.
+DEVKEY_PATTERNS = ("DEN_DEV_KEY", "#warning", "DEVELOPMENT-ONLY", "MASTER_KEY")
+
+_OPT_IN = "EDGE_ALLOW_DEV_KEY"
+_OPEN = re.compile(r"^\s*#\s*(?:ifndef\s+%s\b|if\s+!defined\s*\(\s*%s\s*\))" % (_OPT_IN, _OPT_IN))
+_IF = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
+_ELSE = re.compile(r"^\s*#\s*(?:else|elif)\b")
+_ENDIF = re.compile(r"^\s*#\s*endif\b")
+_ERROR = re.compile(r"^\s*#\s*error\b")
+_DEFINE = re.compile(r"^\s*#\s*define\s+%s\b" % _OPT_IN)
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _has_fail_closed_opt_in(text: str) -> bool:
+    """True endast vid ett verkligt fail-closed preprocessor-guard.
+
+    Kräver `#ifndef EDGE_ALLOW_DEV_KEY` (eller `#if !defined(...)`) med
+    `#error` före matchande `#endif`, på djup 0 och före ev. `#else` —
+    dvs. utan flaggan stoppas bygget ovillkorligt. Guardet måste stå på
+    toppnivå: ett guard nästlat i ett annat villkor utvärderas kanske
+    aldrig och godkänns inte. En förekomst i kommentar/sträng räcker
+    inte (direktiv måste stå vid radstart), och en egen `#define` av
+    flaggan underkänner (opt-in måste komma från byggflaggan -D,
+    annars är guardet teater).
+    """
+    lines = _BLOCK_COMMENT.sub("", text).splitlines()
+    if any(_DEFINE.match(l) for l in lines):
+        return False
+    outer = 0  # global häckningsnivå — openern måste stå på toppnivå
+    for i, line in enumerate(lines):
+        if _OPEN.match(line) and outer == 0:
+            depth = 0
+            else_seen = False
+            for later in lines[i + 1:]:
+                if _IF.match(later):
+                    depth += 1
+                elif _ENDIF.match(later):
+                    if depth == 0:
+                        break  # guardet stängt utan #error
+                    depth -= 1
+                elif depth == 0 and _ELSE.match(later):
+                    else_seen = True
+                elif _ERROR.match(later):
+                    if depth == 0 and not else_seen:
+                        return True
+        if _IF.match(line):
+            outer += 1
+        elif _ENDIF.match(line):
+            outer = max(0, outer - 1)
+    return False
 
 
 def _tool_version(cmd: list[str]) -> str | None:
@@ -60,14 +114,21 @@ def _find_upload_scripts() -> list[str]:
 
 
 def _firmware_devkey_guard() -> list[str]:
-    """Firmware får inte innehålla hårdkodade utvecklingsnycklar."""
+    """Firmware får inte innehålla hårdkodade utvecklingsnycklar.
+
+    Edge-responserns TEST-ONLY-nyckel accepteras endast bakom ett
+    verkligt fail-closed preprocessor-guard (utan flaggan stoppas
+    bygget med #error); saknas guardet flaggas filen.
+    """
     bad = []
     for rel in FIRMWARE_GUARD_FILES:
         try:
             text = (REPO_ROOT / rel).read_text(errors="replace")
         except OSError:
             continue
-        if "DEN_DEV_KEY" in text or "#warning" in text:
+        if any(p in text for p in DEVKEY_PATTERNS):
+            if _has_fail_closed_opt_in(text):
+                continue  # verkligt guard-block finns — bänkbygge, OK
             bad.append(rel)
     return bad
 

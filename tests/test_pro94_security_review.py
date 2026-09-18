@@ -442,3 +442,51 @@ def test_pro94_no_key_in_bridge_rpc():
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])
+
+
+def _func_body(src, signature):
+    """Return the brace-balanced body of a C function starting at signature."""
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if signature in l)
+    depth, begun = 0, False
+    for i in range(start, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if "{" in lines[i]:
+            begun = True
+        if begun and depth == 0:
+            return "\n".join(lines[start:i + 1])
+    raise AssertionError("unbalanced: " + signature)
+
+
+def test_pro94_unoq_sign_failure_wipes_signature():
+    """sign_blocklist wipes the output buffer when Ed25519 fails, so no
+    partial/garbage signature can be handed out."""
+    src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
+    body = _func_body(src, "static bool sign_blocklist(")
+    assert "result != 1" in body
+    assert "memset(signature, 0, BLOCKLIST_SIGNATURE_SIZE)" in body
+    assert "return false" in body
+
+
+def test_pro94_unoq_no_transmit_on_sign_failure():
+    """distributeBlocklist never reaches the wire when signing fails —
+    the failure return after the sign guard precedes MSG_BLOCKLIST
+    transmit (asserts on positions, not mere presence: the file also
+    contains an earlier fail-closed return in the provisioned guard)."""
+    src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
+    body = _func_body(src, "static bool distributeBlocklist()")
+    guard_at = body.find("if (!sign_blocklist(")
+    write_at = body.find("Serial1.write(MSG_BLOCKLIST)")
+    assert guard_at >= 0 and write_at > guard_at
+    ret_after_guard = body.find("return false", guard_at)
+    assert guard_at < ret_after_guard < write_at
+
+
+def test_pro94_unoq_key_packet_wiped_after_use():
+    """distributeKey wipes keyPacket (holds the raw AES key) right after
+    transmit so no key bytes linger in SRAM."""
+    src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
+    body = _func_body(src, "static bool distributeKey(")
+    assert "memset(keyPacket, 0, sizeof(keyPacket))" in body
+    assert body.find("Serial1.write(keyPacket, 22)") < \
+        body.find("memset(keyPacket, 0, sizeof(keyPacket))")
