@@ -7,6 +7,7 @@ till en firmware-artefakt: bygget kräver explicit -DEDGE_ALLOW_DEV_KEY=1
 """
 
 import pathlib
+import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EDGE = ROOT / "plc/edge-challenge-response/edge-challenge-response.ino"
@@ -23,9 +24,12 @@ def test_edge_dev_vector_is_marked_test_only():
 
 
 def test_edge_build_is_fail_closed_without_opt_in():
+    """Guardet måste vara verkliga preprocessordirektiv vid radstart
+    (inte omnämnanden i kommentarer): #ifndef ... #error ... #endif."""
     src = _src()
-    assert "#ifndef EDGE_ALLOW_DEV_KEY" in src
-    assert "#error" in src
+    assert re.search(r"^\s*#\s*ifndef\s+EDGE_ALLOW_DEV_KEY\b", src, re.M)
+    assert re.search(r"^\s*#\s*error\b", src, re.M)
+    assert re.search(r"^\s*#\s*endif\b", src, re.M)
 
 
 def test_edge_opt_in_flag_name_is_stable():
