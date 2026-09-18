@@ -13,7 +13,9 @@
  * mode fails closed (deny, no retry inside the session).
  *
  * Transport: Serial1 @115200, TX=GPIO0, RX=GPIO1 (RP2350 UART0 defaults).
- * USB Serial is logs only. Non-blocking: loop polls Serial1.available
+ * USB Serial carries logs, PRO-46/PRO-98 binary frames and the PRO-97
+ * service console (strict ASCII lines, idle only — never during a
+ * provisioning ceremony). Non-blocking: loop polls Serial1.available
  * against millis() deadlines; only short bounded ops (SHA/HMAC ~100us,
  * 24-byte UART write ~2ms) ever run to completion inline.
  *
@@ -519,7 +521,9 @@ static uint8_t pollBlocklistUpdate() {
 typedef enum {
   DEN_ST_DENIED,          // initial / fail-closed; after gap, sends CHALLENGE
   DEN_ST_CHALLENGE_SENT,  // challenge sent, awaiting RESPONSE (deadline)
-  DEN_ST_AUTHENTICATED    // HMAC verified; brief confirmation then DENIED
+  DEN_ST_AUTHENTICATED,   // HMAC verified; brief confirmation then DENIED
+  DEN_ST_BG_ARMED,        // PRO-97: ticket issued, awaiting CONFIRM
+  DEN_ST_BG_GRANTED       // PRO-97: supervised service access inside window
 } DenSession;
 
 static DenSession denState = DEN_ST_DENIED;
@@ -544,7 +548,258 @@ typedef enum {
   DEN_REASON_DISCONNECT,          // 2s deadline hit, zero bytes received
   DEN_REASON_STALE_RESPONSE,      // all-zero nonce: TRNG failure or wiped
   DEN_REASON_BLOCKLISTED,         // PRO-98: revoked fp, or no valid list (unknown status)
+  DEN_REASON_BG_ARMED = 9,        // PRO-97: break-glass ticket issued
+  DEN_REASON_BG_GRANTED = 10,     // PRO-97: supervised service access granted
+  DEN_REASON_BG_DENIED = 11,      // PRO-97: break-glass attempt denied/expired
 } DenReason;
+
+// =============================================================
+// Break-glass service access (PRO-97)
+// =============================================================
+//
+// Separate, time-limited service flow for supervised recovery when
+// ordinary challenge-response is unavailable. It NEVER creates a
+// permanent bypass: no flash, no persistent flags, no change to the
+// ordinary auth path (den_on_response runs only in CHALLENGE_SENT,
+// which break-glass never enters).
+//
+// Ceremony — two operators, fresh ticket, short windows:
+//   1. Operator A at the DEN USB console (physical presence) sends
+//      "BG ARM". Accepted only from idle DENIED with no provisioning
+//      in flight. DEN draws a fresh 4-byte ticket from the RP2350
+//      TRNG, prints it, enters BG_ARMED for BG_ARM_WINDOW_MS and
+//      audit-logs the event. Operator B confirms with
+//      "BG CONFIRM <8 hex>" inside the window: a correct ticket grants
+//      BG_GRANTED for BG_GRANT_WINDOW_MS with alarm; anything else
+//      denies, audit-logs and relocks to DENIED. "BG ABORT" relocks
+//      early from ARMED or GRANTED.
+//
+// Scoped service mode (not general unlock): inside GRANTED only the
+// defined actions run — "BG STATUS" (read-only flags + audit dump,
+// every invocation audit-logged) and "BG ABORT". Any other line is
+// denied and audit-logged without effect. Break-glass is NOT process
+// access and NEVER a substitute for emergency stop or other physical
+// process safety; it only supervises DEN-local recovery.
+//
+// Fail-closed exits (all audit-logged, all to DENIED): arm/grant
+// windows expire, malformed input, confirm without arm, arm outside
+// idle, restart (SRAM-only state). Input bytes are never echoed —
+// the wire also carries key material, so only fixed strings print.
+//
+// Shared-wire note: USB Serial also carries PRO-46/PRO-98 binary
+// frames. The console engages only on a leading 'B' while
+// provPhase == PROV_PH_HANDSHAKE; binary MSG bytes (0xA1..0xA7) never
+// trigger it. A stray byte can at most arm — never grant — and the
+// arm expires audit-logged.
+
+#define BG_ARM_WINDOW_MS   60000   // 60 s to confirm after ARM
+#define BG_GRANT_WINDOW_MS 120000  // 120 s supervised service access
+#define BG_LINE_MAX        40      // longest accepted service line
+#define BG_LINE_TIMEOUT_MS 1000    // line must complete within 1 s
+
+#define BG_EV_BOOT     0
+#define BG_EV_ARMED    1
+#define BG_EV_GRANTED  2
+#define BG_EV_DENIED   3
+#define BG_EV_EXPIRED  4
+#define BG_EV_ENDED    5
+#define BG_EV_STATUS   6  // PRO-97: defined-action read (STATUS), granted mode
+#define BG_AUDIT_N     16  // SRAM ring; oldest overwritten, console captures
+
+typedef struct { uint32_t seq; uint32_t t; uint8_t ev; } bg_audit_t;
+static bg_audit_t bgAudit[BG_AUDIT_N];
+static uint8_t bgAuditNext = 0;
+static uint32_t bgAuditSeq = 0;
+
+static uint8_t bgTicket[4];
+static uint8_t bgHaveTicket = 0;
+static char bgLine[BG_LINE_MAX + 1];
+static uint8_t bgLineLen = 0;
+static uint32_t bgLineT0 = 0;
+static uint32_t bgBlinkAt = 0;
+static uint8_t bgBlinkOn = 0;
+
+static void bg_audit(uint8_t ev) {
+  bgAudit[bgAuditNext].seq = ++bgAuditSeq;
+  bgAudit[bgAuditNext].t = millis();
+  bgAudit[bgAuditNext].ev = ev;
+  bgAuditNext = (bgAuditNext + 1) % BG_AUDIT_N;
+  Serial.print("[AUDIT] seq "); Serial.print(bgAuditSeq);
+  Serial.print(" t "); Serial.print(millis());
+  Serial.print(" ev "); Serial.println(ev);
+}
+
+// Relock to DENIED from any break-glass state. Wipes the ticket,
+// clears the line buffer, parks the LED off. Audit + reason logged.
+static void bg_relock(uint8_t ev, uint8_t code, const char *msg) {
+  memset(bgTicket, 0, sizeof(bgTicket));
+  bgHaveTicket = 0;
+  bgLineLen = 0;
+  denState = DEN_ST_DENIED;
+  denStateAt = millis();
+  digitalWrite(LED_BUILTIN, LOW);
+  bg_audit(ev);
+  Serial.print(msg);
+  Serial.print(" (code "); Serial.print(code); Serial.println(")");
+}
+
+static void bg_hex4(const uint8_t *b) {
+  static const char H[] = "0123456789ABCDEF";
+  for (int i = 0; i < 4; i++) {
+    Serial.print(H[(b[i] >> 4) & 0x0F]);
+    Serial.print(H[b[i] & 0x0F]);
+  }
+}
+
+static int bg_hexval(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+
+static void bg_arm(uint32_t now) {
+  if (denState != DEN_ST_DENIED) return;  // idle only, never mid-session
+  uint64_t r = get_rand_64();
+  if (r == 0) r = get_rand_64();  // single redraw, like den_send_challenge
+  if (r == 0) {
+    Serial.println("[BG] RNG failure, arm aborted");
+    bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: rng failure");
+    return;
+  }
+  memcpy(bgTicket, &r, 4);
+  memset(&r, 0, sizeof(r));
+  bgHaveTicket = 1;
+  denState = DEN_ST_BG_ARMED;
+  denStateAt = now;
+  bg_audit(BG_EV_ARMED);
+  Serial.print("[BG] ARMED (code ");
+  Serial.print(DEN_REASON_BG_ARMED);
+  Serial.print(") ticket ");
+  bg_hex4(bgTicket);
+  Serial.println(" — confirm within 60 s: BG CONFIRM <ticket>");
+}
+
+static void bg_confirm(const char *hex, uint32_t now) {
+  (void)now;
+  if (denState != DEN_ST_BG_ARMED || !bgHaveTicket) {
+    bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: no open arm");
+    return;
+  }
+  uint8_t cand[4];
+  for (int i = 0; i < 4; i++) {
+    int hi = bg_hexval(hex[2 * i]);
+    int lo = bg_hexval(hex[2 * i + 1]);
+    if (hi < 0 || lo < 0) {
+      memset(cand, 0, sizeof(cand));
+      bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: malformed ticket");
+      return;
+    }
+    cand[i] = (uint8_t)((hi << 4) | lo);
+  }
+  volatile uint8_t diff = 0;  // constant-time compare, codebase convention
+  for (int i = 0; i < 4; i++) diff |= (uint8_t)(cand[i] ^ bgTicket[i]);
+  memset(cand, 0, sizeof(cand));
+  if (diff != 0) {
+    bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: wrong ticket");
+    return;
+  }
+  denState = DEN_ST_BG_GRANTED;
+  denStateAt = millis();
+  bg_audit(BG_EV_GRANTED);
+  Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  Serial.print("!!! BREAKGLASS GRANTED — SERVICE MODE (code ");
+  Serial.print(DEN_REASON_BG_GRANTED);
+  Serial.println(") !!!");
+  Serial.println("!!! Defined actions only: BG STATUS, BG ABORT.");
+  Serial.println("!!! NOT process access, NOT an emergency stop.  !!!");
+  Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+}
+
+// PRO-97 defined action: read-only service status. Flags only, never
+// secrets. Every invocation is audit-logged so all use stays traceable.
+static void bg_status(void) {
+  bg_audit(BG_EV_STATUS);
+  Serial.print("[BG] STATUS key_provisioned=");
+  Serial.print(key_provisioned);
+  Serial.print(" blocklist_valid=");
+  Serial.print(blocklist_valid);
+  Serial.print(" state=");
+  Serial.print(denState == DEN_ST_BG_GRANTED ? "GRANTED" : "ARMED");
+  Serial.print(" audit_seq=");
+  Serial.println(bgAuditSeq);
+  Serial.println("[BG] AUDIT-DUMP (seq t ev, oldest first):");
+  for (uint8_t k = 0; k < BG_AUDIT_N; k++) {
+    uint8_t idx = (bgAuditNext + k) % BG_AUDIT_N;
+    if (bgAudit[idx].seq == 0) continue;
+    Serial.print("  ");
+    Serial.print(bgAudit[idx].seq);
+    Serial.print(" ");
+    Serial.print(bgAudit[idx].t);
+    Serial.print(" ");
+    Serial.println(bgAudit[idx].ev);
+  }
+}
+
+// Strict line protocol: "BG ARM" | "BG CONFIRM <8hex>" | "BG ABORT"
+// | "BG STATUS". Runs before provisioning poll; engages only on leading
+// 'B' while no ceremony is in flight, so binary PRO-46/PRO-98 bytes
+// pass through. In GRANTED only the defined actions run — anything else
+// is denied and audit-logged without effect (the window bounds all).
+static void bg_poll_console(uint32_t now) {
+  if (provPhase != PROV_PH_HANDSHAKE) { bgLineLen = 0; return; }
+  if (bgLineLen == 0) {
+    if (Serial.available() == 0 || Serial.peek() != 'B') return;
+    bgLineT0 = now;
+  } else if (now - bgLineT0 > BG_LINE_TIMEOUT_MS) {
+    bgLineLen = 0;  // stale partial line dropped, bytes already consumed
+    if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+      bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: input timeout");
+    }
+    return;
+  }
+  while (Serial.available() && bgLineLen < BG_LINE_MAX) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') goto process;
+    bgLine[bgLineLen++] = c;
+  }
+  if (bgLineLen >= BG_LINE_MAX) {  // overlong line: malformed input
+    bgLineLen = 0;
+    while (Serial.available()) {  // drain to newline, never echo
+      if ((char)Serial.read() == '\n') break;
+    }
+    if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+      bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: malformed input");
+    }
+    return;
+  }
+  return;
+process:
+  bgLine[bgLineLen] = '\0';
+  bgLineLen = 0;
+  if (strcmp(bgLine, "BG ARM") == 0) {
+    bg_arm(now);
+  } else if (strncmp(bgLine, "BG CONFIRM ", 11) == 0 && strlen(bgLine) == 19) {
+    bg_confirm(bgLine + 11, now);
+  } else if (strcmp(bgLine, "BG ABORT") == 0) {
+    if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+      bg_relock(BG_EV_ENDED, DEN_REASON_BG_DENIED, "[BG] ABORTED by operator");
+    }
+  } else if (strcmp(bgLine, "BG STATUS") == 0) {
+    if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+      bg_status();  // defined action: read-only, always audit-logged
+    }
+  } else if (denState == DEN_ST_BG_ARMED) {
+    bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: malformed input");
+  } else if (denState == DEN_ST_BG_GRANTED) {
+    // Defined-actions-only: deny + audit, stay inside the bounding window.
+    bg_audit(BG_EV_DENIED);
+    Serial.print("[BG] DENIED: unknown command");
+    Serial.print(" (code "); Serial.print(DEN_REASON_BG_DENIED); Serial.println(")");
+  }
+  // Idle DENIED + unknown line: ignored (provisioning framing untouched).
+}
 
 // =============================================================
 // Minimal SHA-256 (public-domain style, stack-only, no heap)
@@ -844,10 +1099,18 @@ void setup() {
   memset(kEnc, 0, sizeof(kEnc));
 
   Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-94)");
+  // PRO-97: boot is always locked; SRAM-only break-glass state dies here.
+  bg_audit(BG_EV_BOOT);
+  Serial.println("[DEN] BOOT locked (DENIED); break-glass cleared (fail-closed)");
 }
 
 void loop() {
   uint32_t now = millis();
+
+  // PRO-97: service console first (idle only, leading 'B'); it never
+  // consumes binary provisioning bytes, so pollProvisioning below is
+  // unaffected.
+  bg_poll_console(now);
 
   // PRO-46: USB provisioning poll (non-blocking, takes precedence)
   uint8_t provResult = pollProvisioning();
@@ -862,6 +1125,29 @@ void loop() {
     // Provisioning failed; stay in current state but clear any staged key
     denState = DEN_ST_DENIED;
     denStateAt = now;
+  }
+
+  // PRO-97: break-glass states own the pass — no challenge traffic, no
+  // ordinary auth while armed or granted. Every exit relocks to DENIED.
+  if (denState == DEN_ST_BG_ARMED) {
+    if ((uint32_t)(now - denStateAt) >= BG_ARM_WINDOW_MS) {
+      bg_relock(BG_EV_EXPIRED, DEN_REASON_BG_DENIED, "[BG] DENIED: arm expired");
+    } else if (now - bgBlinkAt >= 500) {  // slow blink: awaiting confirm
+      bgBlinkAt = now;
+      bgBlinkOn = !bgBlinkOn;
+      digitalWrite(LED_BUILTIN, bgBlinkOn ? HIGH : LOW);
+    }
+    return;
+  }
+  if (denState == DEN_ST_BG_GRANTED) {
+    if ((uint32_t)(now - denStateAt) >= BG_GRANT_WINDOW_MS) {
+      bg_relock(BG_EV_ENDED, DEN_REASON_BG_DENIED, "[BG] ENDED: window elapsed — DENIED");
+    } else if (now - bgBlinkAt >= 150) {  // fast blink: alarm active
+      bgBlinkAt = now;
+      bgBlinkOn = !bgBlinkOn;
+      digitalWrite(LED_BUILTIN, bgBlinkOn ? HIGH : LOW);
+    }
+    return;
   }
 
   // DEN_ST_DENIED: waiting for session gap before next challenge.
