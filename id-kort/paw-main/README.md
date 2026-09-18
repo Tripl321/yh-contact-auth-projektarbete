@@ -119,6 +119,19 @@ under `STATE_WAITING_FOR_RESULT`. Obeställd ACK/RESULT ignoreras utan
 displayändring; pågående eller nekad autentisering visar därför aldrig
 `AUTHENTICATED`. Boot visar endast `AUTHENTICATING`.
 
+PRO-95 (kortlivad giltighet): beviljande-visningen förfaller efter
+`AUTH_GRANTED_DISPLAY_MS` (30 s) och återgår till `AUTHENTICATING`.
+Protokolltillståndet återgår redan vid beviljandet till
+`STATE_WAITING_FOR_CHALLENGE`; DEN låser efter `DEN_SESSION_GAP_MS`.
+Sessionen upphör alltså vid timeout, fel, omstart eller ogiltigt resultat
+— aldrig stillastående beviljad.
+
+Kvarvarande begränsningar: e-paper är bistabil och behåller sista bilden
+utan ström — ett strömavbrott fryser indikationen tills nästa boot (som
+alltid visar låst läge; nyckeln dör med SRAM så ingen åtkomst kvarstår).
+Visningsfönstret (30 s) överlever DEN-beslutet (~1 s) avsiktligt som
+mänskligt läsbar bekräftelse — det är en indikation, inte en behörighet.
+
 Panelnot: firmwaren driver 1.54"-panelen monokromt (svart plan; rött plan
 hålls vitt) — grön färg finns inte på denna panel, så bock + text är
 beviljandesignalen. Ingen PII visas någonsin (endast ikoner + statustext).

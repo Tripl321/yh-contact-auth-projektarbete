@@ -964,6 +964,17 @@ enum AuthState {
 static AuthState currentState = STATE_WAITING_FOR_KEY;
 static bool loraInitialized = false;
 
+// PRO-95: bounded grant indication. The AUTHENTICATED e-paper image is a
+// stale-access risk if shown indefinitely (e-paper is bistable and keeps
+// the image without power). A grant is therefore only *displayed* for
+// AUTH_GRANTED_DISPLAY_MS; afterwards the display reverts to the locked
+// AUTHENTICATING indication. Protocol state already returns to
+// STATE_WAITING_FOR_CHALLENGE at grant time, so this only bounds the
+// human-readable indication — DEN re-locks after DEN_SESSION_GAP_MS.
+#define AUTH_GRANTED_DISPLAY_MS 30000  // ms, same scale as CHALLENGE_TIMEOUT
+static uint32_t authGrantedAt = 0;
+static bool authDisplayed = false;
+
 // =============================================================
 // Docked UART responder (PRO-84, DEN link over Serial1)
 // =============================================================
@@ -1067,6 +1078,8 @@ static void handleDockAuth() {
             paw_ack_pending = false;
             if (f.payloadLen == 1 && f.payload[0] == 0x01) {
                  epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                 authGrantedAt = millis();  // PRO-95: arm the display window
+                 authDisplayed = true;
 #if SECURE_DEBUG
                  Serial.println("[PRO-84] DEN acknowledged success");
 #endif
@@ -1218,6 +1231,8 @@ void loop() {
 #endif
                     currentState = STATE_WAITING_FOR_CHALLENGE;
                     epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                    authGrantedAt = millis();  // PRO-95: arm the display window
+                    authDisplayed = true;
 
                     for (int i = 0; i < 5; i++) {
                         digitalWrite(LED_BUILTIN, HIGH);
@@ -1321,6 +1336,16 @@ void loop() {
 
         case STATE_WAITING_FOR_RESULT:
             break;
+    }
+
+    // PRO-95: grant indication expires regardless of protocol state — revert
+    // a stale AUTHENTICATED image to the locked indication. Placed outside
+    // the switch on purpose: WAITING_FOR_RESULT has no timeout (it waits
+    // for LoRa RESULT), so a grant shown mid-session would otherwise never
+    // expire. Fires at most once per grant (flag cleared on fire).
+    if (authDisplayed && (millis() - authGrantedAt > AUTH_GRANTED_DISPLAY_MS)) {
+        authDisplayed = false;
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 
     // 4. Heartbeat LED Indicator
