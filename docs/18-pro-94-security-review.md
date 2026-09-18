@@ -102,10 +102,11 @@ No RPC returns raw key material (`aesKey`, `blocklist_private_key`, etc.).
 **Risk:** Heap fragmentation, allocation failure in constrained environments.
 **Recommendation:** Use stack-allocated buffer (like UNO Q/PAW main/DEN firmware).
 
-### 2. UNO Q Blocklist Private Key Not Explicitly Wiped on Error
+### 2. UNO Q Blocklist Private Key Not Explicitly Wiped on Error — FIXED
 **File:** `key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino`
-**Issue:** `blocklist_private_key` zero-initialized but no explicit wipe on `sign_blocklist` failure or `distributeBlocklist` error.
-**Mitigation:** Key is in SRAM, wiped on reset; provisioning flag `blocklist_key_provisioned=0` prevents use.
+**Issue:** `blocklist_private_key` zero-initialized but no explicit wipe on `sign_blocklist` failure; `distributeBlocklist` ignored the sign return value and transmitted with a garbage signature buffer.
+**Fix Applied:** `sign_blocklist` wipes `signature` on Ed25519 failure and returns false; `distributeBlocklist` checks the return, wipes `entries`/`signature` and returns without transmitting. `distributeKey` wipes `keyPacket` (raw AES key) immediately after transmit.
+**Remaining limitation:** `blocklist_private_key` has no provisioning flow yet (`blocklist_key_provisioned` never set) — the sign/distribute paths are fail-closed dead code until a secure HSM-backed provisioning process exists (recommendation 5 below remains open). No hardware wipe of SRAM on the STM32U585 beyond power-cycle; RP2350 SRAM has no ECC (see K7).
 
 ### 3. DEN Firmware Had Missing `denDevKey` Declaration (Fixed)
 **File:** `plc/den-main/den-main.ino`
@@ -180,7 +181,7 @@ nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
 
 | Test Suite | Tests | Coverage |
 |------------|-------|----------|
-| `test_pro94_security_review.py` | 27 | PRO-94 specific checks |
+| `test_pro94_security_review.py` | 30 | PRO-94 specific checks |
 | `test_pro88_den.py` + `test_pro98_*` | 26 | DEN + PRO-98 Ed25519 |
 | `test_pro45_key_generation.py` | 16 | UNO Q key gen |
 | `test_pro46_usb_distribution.py` | 20 | Key distribution |
@@ -215,7 +216,8 @@ nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
 | File | Changes |
 |------|---------|
 | `plc/den-main/den-main.ino` | Added `denDevKey`, `key_provisioned`, updated `secure_clear_key`, removed startup key derivation, added fail-closed check |
-| `tests/test_pro94_security_review.py` | New: 27 PRO-94 security review tests |
+| `key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino` | `sign_blocklist` wipes signature on failure; `distributeBlocklist` checks sign return, no transmit on failure; `distributeKey` wipes `keyPacket` after transmit |
+| `tests/test_pro94_security_review.py` | New: 27 PRO-94 security review tests + 3 wipe/transmit-guard tests |
 | `tests/test_pro88_den.py` | Updated for PRO-94 fail-closed checks |
 
 ---
