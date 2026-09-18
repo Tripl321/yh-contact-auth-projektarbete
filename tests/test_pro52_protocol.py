@@ -195,13 +195,13 @@ def test_pr2_source_guards():
     assert 'counter[0] = (uint8_t)(blockCtr >> 8)' in hdr  # dedicated bytes
     assert 'counter[14]' not in hdr  # never overlaps nonce tail
     for rel, miso in [('plc/edge-challenge-response/edge-challenge-response.ino', '12'),
-                      ('id-kort/paw-challenge-response/paw-challenge-response.ino', '24')]:
+                      ('id-kort/archive/paw-challenge-response-responder/paw-challenge-response.ino', '24')]:
         src = (ROOT / rel).read_text()
         assert 'new Module(LORA_CS, LORA_DIO1, LORA_RST, LORA_BUSY' in src
         assert 'radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,' in src
         assert 'RadioLibModule' not in src
         assert 'static SPIClass spi1(spi1)' not in src
-    paw = (ROOT / 'id-kort/paw-challenge-response/paw-challenge-response.ino').read_text()
+    paw = (ROOT / 'id-kort/archive/paw-challenge-response-responder/paw-challenge-response.ino').read_text()
     assert '#define LORA_MISO  24' in paw
 
 
@@ -451,7 +451,7 @@ def test_resync_source_guards():
     assert 'verify_echo_binding(keys, response.payload' in edge
     assert 'seqWhitelist.resync(response.seqNum)' in edge
     assert 'aes_ctr_crypt(keys.k_enc, pkt.seqNum, pkt.nonce, pkt.payload' in edge
-    paw = (ROOT / 'id-kort/paw-challenge-response/paw-challenge-response.ino').read_text()
+    paw = (ROOT / 'id-kort/archive/paw-challenge-response-responder/paw-challenge-response.ino').read_text()
     assert 'seqWhitelist.resync(challenge.seqNum)' in paw
     assert 'awaitingVerdict' in paw and 'outstandingNonce' in paw
     assert 'verdict.msgType != MSG_SUCCESS && verdict.msgType != MSG_FAILURE' in paw

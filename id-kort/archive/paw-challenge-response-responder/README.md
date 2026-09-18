@@ -19,3 +19,11 @@ Den arkiveras här med denna banner så att inget framtida arbete råkar aktiver
 
 - **Ingen** `#include <RadioLib.h>` i aktiv firmware.
 - **Ingen** LoRa-P2P-sändning på 868 MHz utan ny duty-cycle-verifiering per AGENTS.md.
+
+## Säkerhetsnot (historik)
+
+Den arkiverade `.ino`-filen innehåller en hårdkodad utvecklingsnyckel
+(`MASTER_KEY = 00..0F`, publik testvektor). Den är historik och byggs inte
+längre av CI (jobbet `build-paw-pro52` är borttaget). Återaktivera aldrig
+filen utan att ersätta nyckeln med provisionering eller explicit
+opt-in-guard enligt mönstret i `plc/edge-challenge-response/`.
