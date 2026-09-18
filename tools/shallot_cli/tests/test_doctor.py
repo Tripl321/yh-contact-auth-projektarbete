@@ -89,3 +89,14 @@ def test_guard_flags_nested_hidden_error(tmp_path, monkeypatch):
         "#endif\n" + KEY_LINE
     )
     assert _guard_result(tmp_path, monkeypatch, content) == ["fw.ino"]
+
+
+def test_guard_flags_nested_guard(tmp_path, monkeypatch):
+    """Guardet måste stå på toppnivå — nästlat i ett annat villkor
+    utvärderas det kanske aldrig utan flaggan."""
+    content = (
+        "#if SOME_PLATFORM\n"
+        "#ifndef EDGE_ALLOW_DEV_KEY\n#error bench only\n#endif\n"
+        "#endif\n" + KEY_LINE
+    )
+    assert _guard_result(tmp_path, monkeypatch, content) == ["fw.ino"]

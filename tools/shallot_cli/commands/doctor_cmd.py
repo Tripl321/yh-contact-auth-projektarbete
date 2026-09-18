@@ -51,31 +51,37 @@ def _has_fail_closed_opt_in(text: str) -> bool:
 
     Kräver `#ifndef EDGE_ALLOW_DEV_KEY` (eller `#if !defined(...)`) med
     `#error` före matchande `#endif`, på djup 0 och före ev. `#else` —
-    dvs. utan flaggan stoppas bygget ovillkorligt. En förekomst i
-    kommentar/sträng räcker inte (direktiv måste stå vid radstart), och
-    en egen `#define` av flaggan underkänner (opt-in måste komma från
-    byggflaggan -D, annars är guardet teater).
+    dvs. utan flaggan stoppas bygget ovillkorligt. Guardet måste stå på
+    toppnivå: ett guard nästlat i ett annat villkor utvärderas kanske
+    aldrig och godkänns inte. En förekomst i kommentar/sträng räcker
+    inte (direktiv måste stå vid radstart), och en egen `#define` av
+    flaggan underkänner (opt-in måste komma från byggflaggan -D,
+    annars är guardet teater).
     """
     lines = _BLOCK_COMMENT.sub("", text).splitlines()
     if any(_DEFINE.match(l) for l in lines):
         return False
+    outer = 0  # global häckningsnivå — openern måste stå på toppnivå
     for i, line in enumerate(lines):
-        if not _OPEN.match(line):
-            continue
-        depth = 0
-        else_seen = False
-        for later in lines[i + 1:]:
-            if _IF.match(later):
-                depth += 1
-            elif _ENDIF.match(later):
-                if depth == 0:
-                    break  # guardet stängt utan #error
-                depth -= 1
-            elif depth == 0 and _ELSE.match(later):
-                else_seen = True
-            elif _ERROR.match(later):
-                if depth == 0 and not else_seen:
-                    return True
+        if _OPEN.match(line) and outer == 0:
+            depth = 0
+            else_seen = False
+            for later in lines[i + 1:]:
+                if _IF.match(later):
+                    depth += 1
+                elif _ENDIF.match(later):
+                    if depth == 0:
+                        break  # guardet stängt utan #error
+                    depth -= 1
+                elif depth == 0 and _ELSE.match(later):
+                    else_seen = True
+                elif _ERROR.match(later):
+                    if depth == 0 and not else_seen:
+                        return True
+        if _IF.match(line):
+            outer += 1
+        elif _ENDIF.match(line):
+            outer = max(0, outer - 1)
     return False
 
 
