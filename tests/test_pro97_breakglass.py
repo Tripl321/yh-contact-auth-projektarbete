@@ -109,9 +109,18 @@ class _BG:
                 self._relock("ENDED", now)
                 return "ABORTED"
             return "IGNORED"
-        if self.state in (self.ARMED, self.GRANTED):
+        if line == "BG STATUS":
+            if self.state in (self.ARMED, self.GRANTED):
+                self.audit.append(("STATUS", now))
+                return "STATUS"
+            return "IGNORED"
+        if self.state == self.ARMED:
             self._relock("DENIED", now)
             return "DENIED"
+        if self.state == self.GRANTED:
+            # Defined-actions-only: deny + audit, stay in bounding window.
+            self.audit.append(("DENIED", now))
+            return "CMD-DENIED"
         return "IGNORED"
 
     def poll(self, now):
@@ -198,3 +207,33 @@ def test_pro97_malformed_input_relocks():
     b.input("BG ARM", 0)
     assert b.input("BG CONFIRM SHORT", 1000) == "DENIED"
     assert b.state == _BG.DENIED
+
+
+def test_pro97_granted_allows_defined_status():
+    b = _BG(["A1B2C3D4"])
+    b.input("BG ARM", 0)
+    b.input("BG CONFIRM A1B2C3D4", 1000)
+    assert b.input("BG STATUS", 2000) == "STATUS"
+    assert b.state == _BG.GRANTED  # read-only: window unaffected
+    assert ("STATUS", 2000) in b.audit  # every use traceable
+
+
+def test_pro97_granted_denies_unknown_command_but_stays():
+    b = _BG(["A1B2C3D4"])
+    b.input("BG ARM", 0)
+    b.input("BG CONFIRM A1B2C3D4", 1000)
+    assert b.input("BG REBOOT", 2000) == "CMD-DENIED"
+    assert b.state == _BG.GRANTED  # window still bounds everything
+    assert ("DENIED", 2000) in b.audit
+    assert b.poll(1000 + GRANT_WINDOW) == "ENDED"  # window still relocks
+
+
+def test_pro97_status_outside_service_ignored():
+    assert _BG(["A1B2C3D4"]).input("BG STATUS", 0) == "IGNORED"
+
+
+def test_pro97_scope_banner_and_allow_list():
+    assert "Defined actions only: BG STATUS, BG ABORT" in DEN
+    assert "NOT an emergency stop" in DEN
+    assert "BG_EV_STATUS" in DEN
+    assert "static void bg_status(void)" in DEN

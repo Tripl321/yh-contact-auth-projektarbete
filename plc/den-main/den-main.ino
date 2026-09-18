@@ -574,6 +574,13 @@ typedef enum {
 //      denies, audit-logs and relocks to DENIED. "BG ABORT" relocks
 //      early from ARMED or GRANTED.
 //
+// Scoped service mode (not general unlock): inside GRANTED only the
+// defined actions run — "BG STATUS" (read-only flags + audit dump,
+// every invocation audit-logged) and "BG ABORT". Any other line is
+// denied and audit-logged without effect. Break-glass is NOT process
+// access and NEVER a substitute for emergency stop or other physical
+// process safety; it only supervises DEN-local recovery.
+//
 // Fail-closed exits (all audit-logged, all to DENIED): arm/grant
 // windows expire, malformed input, confirm without arm, arm outside
 // idle, restart (SRAM-only state). Input bytes are never echoed —
@@ -596,6 +603,7 @@ typedef enum {
 #define BG_EV_DENIED   3
 #define BG_EV_EXPIRED  4
 #define BG_EV_ENDED    5
+#define BG_EV_STATUS   6  // PRO-97: defined-action read (STATUS), granted mode
 #define BG_AUDIT_N     16  // SRAM ring; oldest overwritten, console captures
 
 typedef struct { uint32_t seq; uint32_t t; uint8_t ev; } bg_audit_t;
@@ -700,16 +708,44 @@ static void bg_confirm(const char *hex, uint32_t now) {
   denStateAt = millis();
   bg_audit(BG_EV_GRANTED);
   Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-  Serial.print("!!! BREAKGLASS GRANTED — SERVICE ACCESS (code ");
+  Serial.print("!!! BREAKGLASS GRANTED — SERVICE MODE (code ");
   Serial.print(DEN_REASON_BG_GRANTED);
   Serial.println(") !!!");
-  Serial.println("!!! Supervised temporary access — alarm active !!!");
+  Serial.println("!!! Defined actions only: BG STATUS, BG ABORT.");
+  Serial.println("!!! NOT process access, NOT an emergency stop.  !!!");
   Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
 }
 
-// Strict line protocol: "BG ARM" | "BG CONFIRM <8hex>" | "BG ABORT".
-// Runs before provisioning poll; engages only on leading 'B' while no
-// ceremony is in flight, so binary PRO-46/PRO-98 bytes pass through.
+// PRO-97 defined action: read-only service status. Flags only, never
+// secrets. Every invocation is audit-logged so all use stays traceable.
+static void bg_status(void) {
+  bg_audit(BG_EV_STATUS);
+  Serial.print("[BG] STATUS key_provisioned=");
+  Serial.print(key_provisioned);
+  Serial.print(" blocklist_valid=");
+  Serial.print(blocklist_valid);
+  Serial.print(" state=");
+  Serial.print(denState == DEN_ST_BG_GRANTED ? "GRANTED" : "ARMED");
+  Serial.print(" audit_seq=");
+  Serial.println(bgAuditSeq);
+  Serial.println("[BG] AUDIT-DUMP (seq t ev, oldest first):");
+  for (uint8_t k = 0; k < BG_AUDIT_N; k++) {
+    uint8_t idx = (bgAuditNext + k) % BG_AUDIT_N;
+    if (bgAudit[idx].seq == 0) continue;
+    Serial.print("  ");
+    Serial.print(bgAudit[idx].seq);
+    Serial.print(" ");
+    Serial.print(bgAudit[idx].t);
+    Serial.print(" ");
+    Serial.println(bgAudit[idx].ev);
+  }
+}
+
+// Strict line protocol: "BG ARM" | "BG CONFIRM <8hex>" | "BG ABORT"
+// | "BG STATUS". Runs before provisioning poll; engages only on leading
+// 'B' while no ceremony is in flight, so binary PRO-46/PRO-98 bytes
+// pass through. In GRANTED only the defined actions run — anything else
+// is denied and audit-logged without effect (the window bounds all).
 static void bg_poll_console(uint32_t now) {
   if (provPhase != PROV_PH_HANDSHAKE) { bgLineLen = 0; return; }
   if (bgLineLen == 0) {
@@ -750,8 +786,17 @@ process:
     if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
       bg_relock(BG_EV_ENDED, DEN_REASON_BG_DENIED, "[BG] ABORTED by operator");
     }
-  } else if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+  } else if (strcmp(bgLine, "BG STATUS") == 0) {
+    if (denState == DEN_ST_BG_ARMED || denState == DEN_ST_BG_GRANTED) {
+      bg_status();  // defined action: read-only, always audit-logged
+    }
+  } else if (denState == DEN_ST_BG_ARMED) {
     bg_relock(BG_EV_DENIED, DEN_REASON_BG_DENIED, "[BG] DENIED: malformed input");
+  } else if (denState == DEN_ST_BG_GRANTED) {
+    // Defined-actions-only: deny + audit, stay inside the bounding window.
+    bg_audit(BG_EV_DENIED);
+    Serial.print("[BG] DENIED: unknown command");
+    Serial.print(" (code "); Serial.print(DEN_REASON_BG_DENIED); Serial.println(")");
   }
   // Idle DENIED + unknown line: ignored (provisioning framing untouched).
 }
