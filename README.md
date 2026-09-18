@@ -88,6 +88,13 @@ shallot protocol decode --frame aa08000100010203040506071cf3b72b
 # hårdvarufri, ändrar inga verkliga flöden. Exakt kommando:
 shallot demo incident
 
+# Lokala förklaringar (offline, ingen extern tjänst). Med --ai utvecklar en
+# lokal Ollama-modell ämnet (endast localhost; prompten innehåller bara
+# texten ovan, aldrig hemligheter). Kräver `ollama serve` + modell.
+shallot explain --list
+shallot explain fail-closed
+shallot explain break-glass --ai --model llama3.2
+
 # Skrivfri miljökontroll (verktyg, kataloger, portar, osäkra byggen)
 shallot doctor
 
