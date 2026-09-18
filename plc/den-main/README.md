@@ -14,8 +14,9 @@ DEN-side session master for the PAW↔DEN docked UART link
   `AUTHENTICATED (code 0)` / `FAILED (code N)` log.
   ACK is informational; the access decision is made before ACK
   and never depends on it.
-- **USB serial reason codes** (non-secret, integers 0–7) make the
-  DEN decision observable without exposing secrets.
+- **USB serial reason codes** (non-secret, integers 0–11) make the
+  DEN decision observable without exposing secrets. Codes 9–11 belong
+  to the break-glass flow (PRO-97, se nedan).
 - PAW display/UI and other peripherals do not alter the DEN
   decision or deadline.
 - No hardcoded keys: PRO-93 removed the bring-up dev key; DEN starts
@@ -47,6 +48,36 @@ arduino-cli compile \
    ```bash
    arduino-cli monitor -p /dev/ttyACM0 -c baudrate=115200
    ```
+
+## Break-glass service access (PRO-97)
+
+Separat, tidsbegränsat serviceflöde för övervakad återställning när
+ordinarie challenge-response är otillgänglig. Skapar aldrig permanent
+bypass: ingen flash, inga persistenta flaggor, ordinarie auth-väg orörd.
+
+Ceremoni (USB-konsol, fysisk närvaro krävs):
+1. `BG ARM` (endast från vilande DENIED, ingen provisionering pågår) —
+   DEN drar färsk 4-byte ticket ur TRNG, visar den, beväpnar i 60 s.
+2. `BG CONFIRM <8 hex>` inom fönstret — korrekt ticket ger beviljad
+   serviceåtkomst i 120 s med larm (snabb LED-blink + BREAKGLASS-banner
+   + kod 10). Allt annat nekar, loggar och återlåser till DENIED.
+3. `BG ABORT` återlåser i förtid. Fönsterutgång, felaktig inmatning och
+   omstart återlåser alltid (SRAM-tillstånd dör med strömmen).
+
+Audit: SRAM-ring (16 poster, sekvensnr + tid + händelse) + läsbara
+`[AUDIT]`-rader över USB — konsolsidan måste fånga dem (flyktiga).
+
+Säkerhetsantaganden: två operatörer enligt procedur (firmwaren tvingar
+ticket-överlämning — inget förskrivet kommando kan bevilja); USB-konsol
+= fysisk närvaro (fjärrangripare utan lokal USB når inte ceremonin);
+inmatning ekas aldrig (tråden bär även nyckelmaterial).
+
+Restrisker: en ensam operatör vid konsolen kan utföra båda stegen
+(procedur + audit täcker, firmware hindrar inte); audit ringen skriver
+över äldst vid >16 händelser och försvinner vid omstart; delad tråd med
+PRO-46/PRO-98 — konsolen parsar endast strikta ASCII-rader i viloläge;
+ingen tvångskod (duress); 120 s-fönstret är en medveten avvägning
+mellan servicebarhet och exponering.
 
 ## Bench checks (no PAW needed)
 
