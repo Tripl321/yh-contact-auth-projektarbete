@@ -71,9 +71,9 @@ Ceremoni (USB-konsol, fysisk närvaro krävs):
 
 Tvåpersonsmodell (fysisk, operativ procedur för prototypen): operatör A
 vid DEN-konsolen beväpnar och läser ticketen; operatör B bekräftar med
-ticketen via fysisk överlämning. Firmwaren tvingar överlämningen —
-inget förskrivet kommando kan bevilja utan färsk ticket — men kan inte
-skilja personer åt; proceduren + auditloggen bär den garantin.
+ticketen via fysisk överlämning. Firmwaren kräver en färsk ticket men
+kan inte skilja personer åt eller bevisa en överlämning; proceduren och
+auditloggen bär den garantin.
 
 Synlighet: varje användning är synlig och spårbar — larmbanner vid
 beviljande, LED-blink under fönstret, `[AUDIT]`-rader (seq/tid/händelse)
@@ -83,10 +83,11 @@ poster, äldst skrivs över) — konsolsidan måste fånga den.
 Audit: SRAM-ring (16 poster, sekvensnr + tid + händelse) + läsbara
 `[AUDIT]`-rader över USB — konsolsidan måste fånga dem (flyktiga).
 
-Säkerhetsantaganden: två operatörer enligt procedur (firmwaren tvingar
-ticket-överlämning — inget förskrivet kommando kan bevilja); USB-konsol
-= fysisk närvaro (fjärrangripare utan lokal USB når inte ceremonin);
-inmatning ekas aldrig (tråden bär även nyckelmaterial).
+Säkerhetsantaganden: två operatörer enligt procedur (firmwaren kräver
+en färsk ticket men kan inte tekniskt upprätthålla eller bevisa två
+skilda operatörer); USB-konsol = fysisk närvaro (fjärrangripare utan
+lokal USB når inte ceremonin); inmatning ekas aldrig (tråden bär även
+nyckelmaterial).
 
 Restrisker: en ensam operatör vid konsolen kan utföra båda stegen
 (procedur + audit täcker, firmware hindrar inte); audit ringen skriver
