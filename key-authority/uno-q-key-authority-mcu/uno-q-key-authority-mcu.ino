@@ -100,83 +100,22 @@ static inline void printHex(const uint8_t* data, size_t len) {
 }
 
 // =============================================================
-// TRNG — STM32U585 Hardware True Random Number Generator
+// TRNG — UNO Q (STM32U585) Random Number Generator
 // =============================================================
 //
-// STM32U585 RNG registers (RM0453):
-//   RNG_CR  base+0x00 — Control (bit 0 = RNGEN)
-//   RNG_SR  base+0x04 — Status (bit 0 = DRDY, bit 1 = CECS, bit 2 = SECS)
-//   RNG_DR  base+0x08 — Data Register (32-bit random output)
-//   Base: 0x50060800
-
-#define STM32_RNG_BASE 0x50060800UL
-#define STM32_RNG_CR   (*((volatile uint32_t*)(STM32_RNG_BASE + 0x00)))
-#define STM32_RNG_SR   (*((volatile uint32_t*)(STM32_RNG_BASE + 0x04)))
-#define STM32_RNG_DR   (*((volatile uint32_t*)(STM32_RNG_BASE + 0x08)))
-
-#define RNG_CR_RNGEN (1UL << 0)
-#define RNG_SR_DRDY  (1UL << 0)
-#define RNG_SR_CECS  (1UL << 1)
-#define RNG_SR_SECS  (1UL << 2)
+// The RNG peripheral (0x420c0800) is GTZC-secured by the prebuilt Zephyr
+// runtime; direct register access from this sketch (Non-Secure) is filtered
+// and reads return 0.  Use sys_csrand_get() which is resolved by the
+// linker's syms-dynamic.ld PROVIDE into the runtime's entropy path.
+// The runtime also owns the RNG clock and NIST config (devicetree has
+// nist_config, health_test_config, noise_source_control).
 
 #if __has_include(<zephyr/random/random.h>)
   #include <zephyr/random/random.h>
-  #define HAS_ZEPHYR_CSRAND 1
 #endif
 
-#if defined(CONFIG_HARDWARE_DEVICE_CS_GENERATOR) && !defined(CONFIG_TEST_RANDOM_GENERATOR)
-  #define USE_ZEPHYR_CSRAND 1
-#else
-  #define USE_ZEPHYR_CSRAND 0
-#endif
-
-// Generates 32-bit words from RNG_DR and packs them into the output buffer.
-// PRO-45: Fixed RNG error handling - proper disable/enable cycle with FIFO drain.
 static bool generateSecureRandomBytes(uint8_t* buffer, size_t length) {
-#if USE_ZEPHYR_CSRAND
   return (sys_csrand_get(buffer, length) == 0);
-#else
-  // Enable RNG
-  STM32_RNG_CR |= RNG_CR_RNGEN;
-
-  size_t bytesGenerated = 0;
-  while (bytesGenerated < length) {
-    uint32_t timeout = 0xFFFF;
-    while (__builtin_expect(!(STM32_RNG_SR & RNG_SR_DRDY), 1)) {
-      uint32_t sr = STM32_RNG_SR;
-      if (sr & (RNG_SR_CECS | RNG_SR_SECS)) {
-        // PRO-45: Proper RNG error recovery - full disable/enable cycle
-        // with FIFO drain to prevent stale corrupted data.
-        STM32_RNG_CR &= ~RNG_CR_RNGEN;
-        // Wait for RNG to be disabled
-        timeout = 0xFFFF;
-        while (STM32_RNG_CR & RNG_CR_RNGEN && --timeout > 0) {}
-        // Re-enable RNG
-        STM32_RNG_CR |= RNG_CR_RNGEN;
-        // Wait for DRDY and discard stale data
-        timeout = 0xFFFF;
-        while (!(STM32_RNG_SR & RNG_SR_DRDY) && --timeout > 0) {}
-        if (timeout == 0) return false;
-        // Drain stale data from FIFO (up to 4 words)
-        for (int i = 0; i < 4; i++) {
-          if (STM32_RNG_SR & RNG_SR_DRDY) {
-            volatile uint32_t dummy = STM32_RNG_DR;
-            (void)dummy;
-          }
-        }
-        return false;
-      }
-      if (__builtin_expect(--timeout == 0, 0)) return false;
-    }
-
-    uint32_t randomWord = STM32_RNG_DR;
-    size_t remaining = length - bytesGenerated;
-    size_t bytesToCopy = (remaining < 4) ? remaining : 4;
-    memcpy(buffer + bytesGenerated, &randomWord, bytesToCopy);
-    bytesGenerated += bytesToCopy;
-  }
-  return true;
-#endif
 }
 
 // Single-pass health check: tests for all-zero, all-0xFF, and all-same-byte
