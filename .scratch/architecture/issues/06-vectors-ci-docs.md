@@ -6,8 +6,8 @@ workflows med delad setup-action, (c) docs/05-grind mot kod.
 
 **Blocked by:** None — can start immediately (b blockas av inget, c av a).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Vektorer konsumerade på båda sidor, hand-synk borttagen
-- [ ] Workflows delade; triggers matchar pytest-mål
-- [ ] docs/05 påståenden grindade eller markerade framtida
+- [x] Vektorer konsumerade på båda sidor, hand-synk borttagen
+- [x] Workflows delade; triggers matchar pytest-mål
+- [x] docs/05 påståenden grindade (echo-binding: Ej implementerad → Implementerad)
