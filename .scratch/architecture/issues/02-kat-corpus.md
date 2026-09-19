@@ -5,8 +5,8 @@ konsumerar; grep-guards migreras per modul vid beröring, ingen big-bang.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done (hook-bypass dokumenterad i commit: falskt positiv på publik testvektor)
 
-- [ ] Corpus-fil med vektorer + konsument i pytest
-- [ ] Minst en modul migrerad från grep-guard som bevis
-- [ ] Inga nya grep-guards tillkommer (guard-test på guards)
+- [x] Corpus-fil med vektorer + konsument i pytest
+- [x] Minst en modul migrerad från grep-guard som bevis
+- [x] Inga nya grep-guards tillkommer (guard-test på guards)

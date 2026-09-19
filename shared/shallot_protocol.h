@@ -12,6 +12,12 @@
 // =====================================================================
 // SHALLOT Protocol — Shared header for Edge Enforcement and PAW
 //
+// FROZEN LoRa context (ticket 03): LoRa-P2P är ur aktivt scope.
+// Denna fil ägs av LoRa-kontexten (edge-responder + arkiv). Lägg INGA
+// nya beroenden hit — dock-UART-sidan ägs av libraries/DenUartProtocol
+// och libraries/ShallotCrypto. Arkivering av denna fil beslutas ihop
+// med edge-kodsbeslutet, inte här.
+//
 // Packet format (PRO-81):
 //   [Version+MsgType  1B]  bits 7-4 = version, bits 3-0 = msg type
 //   [SenderID         8B]
