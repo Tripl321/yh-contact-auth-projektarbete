@@ -22,8 +22,8 @@ def test_pro50_paw_hmac_uses_k_mac():
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Verify hmac_sha256 is called with kMac
-    assert 'hmac_sha256(kMac' in src
+    # Verify shalot_hmac_sha256 is called with kMac (shared module)
+    assert 'shalot_hmac_sha256(kMac' in src
     # Verify master key is never passed directly to hmac_sha256
     assert 'hmac_sha256(aesKey' not in src
     assert 'hmac_sha256(DEN_DEV_KEY' not in src
@@ -81,16 +81,18 @@ def test_pro50_fail_closed_no_key():
     state_end = src.index('break;', state_start) + 5
     state_body = src[state_start:state_end]
     assert 'if (key_is_valid())' in state_body
-    assert 'hmac_sha256' in state_body
+    assert 'shalot_hmac_sha256' in state_body
 
 
 def test_pro50_hmac_implementation_exists():
-    """Source guard: hmac_sha256 function exists in PAW firmware."""
+    """Source guard: HMAC comes from ShallotCrypto, no local copy in PAW."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'void hmac_sha256(' in src
-    assert 'HMAC_SHA256' in src or 'hmac_sha256' in src
+    assert '#include <ShallotCrypto.h>' in src
+    assert 'void hmac_sha256(' not in src
+    assert 'void sha256(' not in src
+    assert 'sha256_k' not in src
 
 
 def test_pro50_constant_time_comment():

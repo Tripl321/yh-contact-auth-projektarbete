@@ -187,14 +187,16 @@ def test_pro94_den_challenge_response_buffers_cleared():
     assert "memset(denTx, 0, sizeof(denTx))" in src
     # expect buffer cleared after HMAC
     assert "memset(expect, 0, sizeof(expect))" in src
-    # inner/outer/ipad/opad cleared in HMAC
-    assert "memset(ipad, 0, sizeof(ipad))" in src
-    assert "memset(opad, 0, sizeof(opad))" in src
-    assert "memset(inner, 0, sizeof(inner))" in src
-    assert "memset(innerMsg, 0, sizeof(innerMsg))" in src
-    assert "memset(outerMsg, 0, sizeof(outerMsg))" in src
+    # inner/outer/ipad/opad cleared in HMAC — owned by ShallotCrypto now
+    # (module wipes via shalot_wipe, so callers cannot forget)
+    lib = get_src("libraries/ShallotCrypto/src/ShallotCrypto.h")
+    assert "shalot_wipe(ipad, sizeof(ipad))" in lib
+    assert "shalot_wipe(opad, sizeof(opad))" in lib
+    assert "shalot_wipe(inner, sizeof(inner))" in lib
+    assert "shalot_wipe(innerMsg, sizeof(innerMsg))" in lib
+    assert "shalot_wipe(outerMsg, sizeof(outerMsg))" in lib
     # block buffer cleared in SHA256
-    assert "memset(block, 0, sizeof(block))" in src
+    assert "shalot_wipe(block, sizeof(block))" in lib
 
 
 def test_pro94_den_fail_closed_no_key():

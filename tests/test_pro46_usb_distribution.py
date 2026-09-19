@@ -158,7 +158,7 @@ def test_pro46_den_sets_k_mac_after_provisioning():
     pp_start = src.index('static uint8_t pollProvisioning()')
     pp_end = src.index('void loop()')
     pp_body = src[pp_start:pp_end]
-    assert 'den_derive_k_mac' in pp_body
+    assert 'shalot_derive_k_mac' in pp_body
     assert 'kMac' in pp_body
 
 

@@ -280,7 +280,7 @@ def test_pro98_source_fingerprint_from_master_and_wiped():
     """Fingerprint beräknas från lagrad master och rensas efter bruk."""
     src = _den_src()
     body = src[src.index("static void den_on_response"):]
-    assert "den_sha256(denDevKey, AES_KEY_SIZE, kh)" in body
+    assert "shalot_sha256(denDevKey, AES_KEY_SIZE, kh)" in body
     assert "memset(kh, 0, sizeof(kh))" in body
     assert "memset(fp, 0, sizeof(fp))" in body
 
