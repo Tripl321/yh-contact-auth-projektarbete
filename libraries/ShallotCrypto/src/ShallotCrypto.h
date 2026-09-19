@@ -8,6 +8,9 @@
  * Constant-time compare is NOT duplicated here: use den_ct_compare
  * from DenUartProtocol (single owner, reused).
  *
+ * Out of scope (deliberate): paw-key-receiver, plc-key-receiver and the
+ * archived edge responder keep their local copies (ticket 04).
+ *
  * No Arduino dependency (only stddef/stdint/string) so the same file
  * compiles on host for KAT (tests/test_shallot_crypto_kat.py).
  *

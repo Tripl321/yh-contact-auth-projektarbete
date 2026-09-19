@@ -5,9 +5,10 @@ uteslutna; slutlig suite + sammansatt bänk bevisar avslutet.
 
 **Blocked by:** 01 — Biblioteksskelett + KAT (bänk körs efter 02 och 03).
 
-**Status:** ready-for-agent
+**Status:** code-done (bänkgrind ÖPPEN — kräver sammansatt bänk efter 02+03)
 
-- [ ] Inga lokala SHA/HMAC/KDF-kopior kvar i UNO-Q-mcu
-- [ ] Receivers + arkiv dokumenterat uteslutna (orörda)
-- [ ] Full suite grön, sammansatt bänk passerad
-- [ ] En kryptoimplementation i aktiv firmware verifierad via guards
+- [x] Inga lokala SHA/HMAC/KDF-kopior kvar i UNO-Q-mcu
+- [x] Receivers + arkiv dokumenterat uteslutna (orörda)
+- [x] Full suite grön (521 passed + 2 kända för-existerande fel)
+- [x] En kryptoimplementation i aktiv firmware verifierad via guards
+- [ ] Sammansatt bänk passerad (K1–K6-relevant: nyckellivscykel oförändrad)
