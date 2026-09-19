@@ -31,6 +31,7 @@ GREP_GUARD_ALLOWLIST = frozenset({
     "tests/test_pro84_paw.py",
     "tests/test_pro94_security_review.py",
     "tests/test_pro98_den_blocklist.py",
+    "tests/test_shallot_crypto_kat.py",  # C-KAT harness, ej ny grep-guard
 })
 
 
