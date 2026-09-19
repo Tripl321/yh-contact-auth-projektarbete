@@ -72,10 +72,12 @@ def test_pro49_k_mac_derived_in_den_source():
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'plc/den-main/den-main.ino').read_text()
-    assert 'den_derive_k_mac' in src
+    assert 'shalot_derive_k_mac' in src
     assert 'kMac' in src
-    assert 'den_hmac_sha256(kMac' in src
+    assert 'shalot_hmac_sha256(kMac' in src
     assert 'den_hmac_sha256(DEN_DEV_KEY' not in src  # never use master directly
+    assert 'static void den_hmac_sha256(' not in src  # no local copy
+    assert 'static void den_sha256(' not in src  # no local copy
 
 
 def test_pro49_k_mac_cleared_on_key_clear():

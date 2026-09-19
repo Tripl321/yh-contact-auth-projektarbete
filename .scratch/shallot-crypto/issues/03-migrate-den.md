@@ -5,9 +5,9 @@ fail-closed-beteende på bänken som före, separat revertbart.
 
 **Blocked by:** 01 — Biblioteksskelett + KAT (bänk körs efter 02).
 
-**Status:** ready-for-agent
+**Status:** code-done (bänkgrind ÖPPEN — kräver flash + deny/agent-verifiering)
 
-- [ ] Inga lokala SHA/HMAC/KDF-kopior kvar i DEN
-- [ ] Guards och mirrors uppdaterade, suite grön
+- [x] Inga lokala SHA/HMAC/KDF-kopior kvar i DEN
+- [x] Guards och mirrors uppdaterade, suite grön
 - [ ] Bänkgrind passerad (deny/agent-vägar oförändrade)
-- [ ] Revertbar med en revert
+- [x] Revertbar med en revert
