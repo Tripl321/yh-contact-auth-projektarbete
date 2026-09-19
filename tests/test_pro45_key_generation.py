@@ -50,14 +50,17 @@ def test_pro45_generate_key_function_exists():
 
 
 def test_pro45_uses_stm32_rng():
-    """PRO-45: Firmware uses STM32U585 RNG registers directly."""
+    """PRO-45: Firmware uses the STM32U585 hardware RNG through the
+    decided design — Zephyr sys_csrand_get (GTZC blocks direct register
+    access from the Non-Secure sketch; the runtime owns clock + NIST
+    config). Direct register constants are deliberately absent."""
     src = get_uno_q_src()
-    assert "STM32_RNG_BASE" in src
-    assert "STM32_RNG_CR" in src
-    assert "STM32_RNG_SR" in src
-    assert "STM32_RNG_DR" in src
-    assert "RNG_CR_RNGEN" in src
-    assert "RNG_SR_DRDY" in src
+    assert "sys_csrand_get" in src
+    assert "generateSecureRandomBytes" in src
+    # Decided design: no direct register access
+    for reg in ("STM32_RNG_BASE", "STM32_RNG_CR", "STM32_RNG_SR",
+                "STM32_RNG_DR", "RNG_CR_RNGEN", "RNG_SR_DRDY"):
+        assert reg not in src, reg
 
 
 def test_pro45_no_time_based_seed():
@@ -197,12 +200,13 @@ def test_pro45_mentioned_in_header():
 
 
 def test_pro45_rng_registers_documented():
-    """PRO-45: RNG registers are documented with reference to STM32U585."""
+    """PRO-45: RNG provenance is documented with reference to STM32U585
+    (GTZC-secured peripheral, Zephyr entropy path)."""
     src = get_uno_q_src()
     assert "STM32U585" in src or "RM0453" in src  # Reference manual
-    assert "RNG_CR" in src
-    assert "RNG_SR" in src
-    assert "RNG_DR" in src
+    assert "GTZC" in src
+    assert "sys_csrand_get" in src
+    assert "RNG_CR" not in src and "RNG_SR" not in src and "RNG_DR" not in src
 
 
 def test_pro45_no_key_exposure_in_logs():

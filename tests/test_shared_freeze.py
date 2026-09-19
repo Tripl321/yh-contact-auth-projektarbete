@@ -27,8 +27,9 @@ def test_shared_no_new_consumers():
     found = set()
     for path in list(ROOT.rglob("*.ino")) + list(ROOT.rglob("*.h")) + \
             list(ROOT.rglob("*.py")):
-        if ".git/" in path.as_posix():
-            continue
+        posix = path.as_posix()
+        if ".git/" in posix or "/.kilo/" in posix or "/worktrees/" in posix:
+            continue  # andra worktrees scannas inte — endast denna rot
         try:
             text = path.read_text(errors="replace")
         except OSError:
