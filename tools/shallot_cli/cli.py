@@ -15,11 +15,12 @@ from __future__ import annotations
 import argparse
 import sys
 
-from shallot_cli.commands import build_cmd, device_cmd, demo_cmd, doctor_cmd, explain_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, simulate_cmd, test_cmd
+from shallot_cli.commands import build_cmd, device_cmd, demo_cmd, explain_cmd, fido2_cmd, mamabear_cmd, monitor_cmd, protocol_cmd, test_cmd
 from shallot_cli.fido2 import SCENARIOS as FIDO2_SCENARIOS
 from shallot_cli.fido2 import UV_POLICIES
 from shallot_cli.explain import TOPICS as EXPLAIN_TOPICS
 from shallot_cli.sim import SCENARIOS
+from shallot_cli import registry
 from shallot_cli import tui
 
 
@@ -36,11 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="testsvit (default: all)")
     t.add_argument("--json", action="store_true", help="maskinläsbar output")
 
-    s = sub.add_parser("simulate", help="deterministisk simulering (TEST-ONLY)")
-    ssub = s.add_subparsers(dest="what", required=True)
-    a = ssub.add_parser("auth", help="simulera DEN–PAW challenge-response")
-    a.add_argument("--scenario", required=True, choices=list(SCENARIOS),
-                   help="felscenario att simulera")
+    for _cmd in registry.COMMANDS.values():
+        _p = sub.add_parser(_cmd.name, help=_cmd.help_text)
+        _cmd.add_arguments(_p)
 
     dm = sub.add_parser("demo", help="simulerad incident för presentation (SIMULERING)")
     dmsub = dm.add_subparsers(dest="what", required=True)
@@ -64,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     d = prsub.add_parser("decode", help="avkoda och validera ramhex")
     d.add_argument("--frame", required=True, help="komplett ram som hex")
 
-    sub.add_parser("doctor", help="skrivfri miljökontroll")
+    # doctor byggs via registry (se ovan).
 
     b = sub.add_parser("build", help="visa (aldrig köra) byggkommandon")
     b.add_argument("target", choices=sorted(build_cmd.TARGETS), help="firmware-mål")
@@ -147,10 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         return tui.run()
     args = build_parser().parse_args(argv)
+    if args.command in registry.COMMANDS:
+        return registry.COMMANDS[args.command].run(args)
     if args.command == "test":
         return test_cmd.run_suite(args.suite, as_json=args.json)
-    if args.command == "simulate":
-        return simulate_cmd.run(args.scenario)
     if args.command == "demo":
         return demo_cmd.run()
     if args.command == "explain":
@@ -161,8 +160,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.what == "encode":
             return protocol_cmd.run_encode(args.type, args.payload)
         return protocol_cmd.run_decode(args.frame)
-    if args.command == "doctor":
-        return doctor_cmd.run()
     if args.command == "build":
         return build_cmd.run(args.target, dry_run=args.dry_run)
     if args.command == "device":

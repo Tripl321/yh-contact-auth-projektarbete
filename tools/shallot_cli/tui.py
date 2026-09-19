@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import sys
 
-from shallot_cli import fido2, serial_adapters, sim, uart
+from shallot_cli import fido2, registry, serial_adapters, sim, uart
 from shallot_cli.commands import (
     build_cmd,
     device_cmd,
-    doctor_cmd,
     fido2_cmd,
     mamabear_cmd,
     monitor_cmd,
@@ -237,18 +236,16 @@ def _flow_monitor() -> None:
 
 def handle_choice(choice: str) -> bool:
     """Utför ett menyval. Returnerar True om TUI:t ska avslutas."""
+    if registry.dispatch_tui(choice):
+        return False
     if choice == "1":
         _flow_test_all()
     elif choice == "2":
         _flow_test_suite()
-    elif choice == "3":
-        _flow_simulate()
     elif choice == "4":
         _flow_encode()
     elif choice == "5":
         _flow_decode()
-    elif choice == "6":
-        report(doctor_cmd.run())
     elif choice == "7":
         _flow_build()
     elif choice == "8":

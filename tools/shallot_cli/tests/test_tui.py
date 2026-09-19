@@ -132,7 +132,8 @@ def test_encode_decode_doctor_device_delegate(monkeypatch):
                         lambda t, p: calls.append(("enc", t, p)) or 0)
     monkeypatch.setattr(tui.protocol_cmd, "run_decode",
                         lambda f: calls.append(("dec", f)) or 0)
-    monkeypatch.setattr(tui.doctor_cmd, "run", lambda: calls.append("doctor") or 0)
+    monkeypatch.setattr("shallot_cli.commands.doctor_cmd.run",
+                        lambda: calls.append("doctor") or 0)
     monkeypatch.setattr(tui.device_cmd, "run_list",
                         lambda: calls.append("devices") or 0)
     _inputs(monkeypatch, ["4", "challenge", "0001020304050607",

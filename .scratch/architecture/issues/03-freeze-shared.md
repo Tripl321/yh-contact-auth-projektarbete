@@ -5,8 +5,8 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Ägarlapp i shared/ (vilande LoRa-kontext, pekar på beslutspunkt)
-- [ ] Inga nya beroenden in i shared/
-- [ ] Inget arkiverat eller raderat i denna biljett
+- [x] Ägarlapp i shared/ (vilande LoRa-kontext, pekar på beslutspunkt)
+- [x] Inga nya beroenden in i shared/ (consumer-guard testlåst)
+- [x] Inget arkiverat eller raderat i denna biljett
