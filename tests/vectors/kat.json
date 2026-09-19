@@ -1,0 +1,11 @@
+{"vectors": [
+{"id": "sha_empty", "kind": "sha256", "msg": "", "expect": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+{"id": "sha_abc", "kind": "sha256", "msg": "abc", "expect": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+{"id": "sha_56", "kind": "sha256", "msg": "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "expect": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"},
+{"id": "hmac_rfc1", "kind": "hmac-sha256", "key": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b", "msg_hex": "4869205468657265", "expect": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"},
+{"id": "hmac_rfc2", "kind": "hmac-sha256", "key": "4a656665", "msg_hex": "7768617420646f2079612077616e7420666f72206e6f7468696e673f", "expect": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"},
+{"id": "hmac_rfc3", "kind": "hmac-sha256", "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "msg_hex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "expect": "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"},
+{"id": "dev_kmac", "kind": "kdf", "master": "000102030405060708090a0b0c0d0e0f", "label": "MAC", "expect": "99c7117275f487623752e6d5d0eb438f"},
+{"id": "dev_kenc", "kind": "kdf", "master": "000102030405060708090a0b0c0d0e0f", "label": "ENC", "expect": "44e56190df1a5c200422b26a47cb4be5"},
+{"id": "dev_hmac", "kind": "hmac-sha256", "key": "99c7117275f487623752e6d5d0eb438f", "msg_hex": "1011121314151617", "expect": "782b6a817980c559128e9804f6434d4a08ca0dacb2107658e7f777b1ecb57bda"}
+]}
