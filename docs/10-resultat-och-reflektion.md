@@ -54,3 +54,15 @@ stånd (e-paper, larm) behöver samma livscykelgranskning som
 kryptotillstånd — stillastående bilder ljuger tyst. Nästa steg med störst
 riskreduktion per krona: sammansatt bänk (K1–K6 + PRO-63) före all
 hårdvarulåsning, därefter oberoende kryptoaudit, därefter secure element.
+
+## Kända testbegränsningar (accepterade 2026-09-19)
+
+- **Ordningsberoende flake:** `test_fido2_cmd` har gett två spontana
+  felslag i full suite (endast vid kombinerad körning; passerar alltid
+  isolerat, i fil och vid omkörning). 0/65+ reproduktionsförsök med
+  stresslast, halvor och fångstloop — grundorsaken obevisad. Accepterat:
+  hermetisk autouse-fixture (`SHALLOT_FIDO2_STORE` → tmp) sitter som
+  defense-in-depth, och suiten har visat 542/0 vid flera tillfällen.
+  Återkommer felen med full traceback utlöser ny granskning.
+- **test_pro45-driften** (STM32-register vs Zephyr-design) — löst:
+  testerna låser beslutad design (wayfinder-biljett 03, PR #45).
