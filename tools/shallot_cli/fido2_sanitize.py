@@ -1,10 +1,13 @@
-"""Sanering för FIDO2-spåret. All output saneras före visning, loggning
-och eventuell Ollama-analys.
+"""Sanering för FIDO2-spåret — enda ägaren av maskningsregler.
+
+All output saneras före visning, loggning och eventuell Ollama-analys.
+Även mamabear.py konsumerar denna modul (ingen egen REDACTIONS-lista).
 
 Maskerar: långa/identifierande credential-ID:n, tokens, nycklar, råa
-CBOR/CTAP-payloads (hex/base64url-blobbar), privata IP-adresser
-(inkl. Tailscale 100.64/10) och personuppgifter (e-post).
-Korta interna ID:n (t.ex. ``admin-01``) och statusord lämnas intakta.
+CBOR/CTAP-payloads (hex/base64url-blobbar), fingeravtryck, MAC-adresser,
+privata IP-adresser (inkl. Tailscale 100.64/10) och personuppgifter
+(e-post). Korta interna ID:n (t.ex. ``admin-01``) och statusord lämnas
+intakta.
 """
 
 from __future__ import annotations
@@ -19,12 +22,18 @@ REDACTIONS = [
      lambda m: "%s=[REDACTED]" % m.group(1)),
     (re.compile(r"\bbearer\s+\S+", re.IGNORECASE), "bearer [REDACTED]"),
     (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), "-----BEGIN REDACTED PRIVATE KEY-----"),
+    # Fingeravtryck och MAC (från mamabear-spåret, nu enda ägaren här).
+    (re.compile(r"\bfingerprint\s*[:=]?\s*[0-9A-Fa-f:]{8,}"), "fingerprint=[REDACTED-FINGERPRINT]"),
+    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b"), "[REDACTED-MAC]"),
+    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){7,}[0-9A-Fa-f]{2}\b"), "[REDACTED-FINGERPRINT]"),
     # Rå CBOR/CTAP-hex: h'deadbeef' eller långa hex-runs.
     (re.compile(r"\bh'[0-9A-Fa-f]+'"), "h'[REDACTED-HEX]'"),
     (re.compile(r"\b(?:[0-9A-Fa-f]{2}[ :]?){16,}"), "[REDACTED-HEX]"),
     (re.compile(r"\b[0-9A-Fa-f]{32,}\b"), "[REDACTED-HEX]"),
     # Credential-ID och andra base64url-blobbar (≥32 tecken).
     (re.compile(r"\b[A-Za-z0-9_-]{32,}={0,2}\b"), "[REDACTED-CRED]"),
+    # Token-blobbar med ~+/ (från mamabear-spåret).
+    (re.compile(r"\b[A-Za-z0-9_~+/-]{32,}={0,2}\b"), "[REDACTED-TOKEN]"),
     # Privata adresser inkl. Tailscale CGNAT, loopback, link-local.
     (re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
                 r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"

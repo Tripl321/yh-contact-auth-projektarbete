@@ -7,8 +7,11 @@ till ett verifier med mock/HW-capability.
 
 **Blocked by:** None — can start immediately (steg 2 blockas av steg 1).
 
-**Status:** ready-for-agent
+**Status:** done (steg 1; steg 2 formulerat nedan)
 
-- [ ] En redaction-ägare; båda konsumenterna migrerade
-- [ ] Maskningstester gröna, output identisk
-- [ ] Steg 2 formulerat som uppföljningsbiljett vid avslut
+- [x] En redaction-ägare; båda konsumenterna migrerade
+- [x] Maskningstester gröna, output identisk
+- [x] Steg 2 formulerat som uppföljningsbiljett vid avslut
+
+Uppföljning (steg 2, ny biljett vid behov): kollapsa Ceremony+backend
+till ett verifier med mock/HW-capability.

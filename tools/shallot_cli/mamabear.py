@@ -12,8 +12,9 @@ ssh-alias (``~/.ssh/config``). Denna modul äger allt fjärrrelaterat:
   eller IP-adresser hanteras någonsin; endast aliaset skickas vidare.
   Host keys verifieras enligt användarens egen konfiguration och
   accepteras aldrig automatiskt.
-- All fjärr-output saneras med :func:`sanitize` innan den visas, sparas
-  eller används vidare (t.ex. om den skickas till Ollama).
+- All fjärr-output saneras med :func:`fido2_sanitize.sanitize` (enda
+  ägaren av maskningsregler) innan den visas, sparas eller används
+  vidare (t.ex. om den skickas till Ollama).
 - Tidsstämplade lokala JSON-resultat med kommando, tidpunkt, exit-kod,
   teststatus och sanerad output.
 """
@@ -25,6 +26,8 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+from shallot_cli.fido2_sanitize import sanitize
 
 CONNECT_TIMEOUT_S = 10
 CMD_TIMEOUT_S = 30
@@ -69,35 +72,8 @@ SSH_ERROR_HINTS = (
 SCOPE_NOTE = ("Fysisk status-/självtestverifiering av MamaBear-noden. "
               "Inte bevis för hela DEN–PAW-autentiseringskedjan.")
 
-# (mönster, ersättning) — ordningen är avsiktlig: specifikt före generellt.
-REDACTIONS = [
-    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), "-----BEGIN REDACTED PRIVATE KEY-----"),
-    (re.compile(r"\b(api[_-]?key|private[_-]?key|secret|password|passwd|pwd|token)\b"
-                r"\s*[\"']?\s*[:=]\s*[\"']?[^\s\"']+[\"']?", re.IGNORECASE),
-     lambda m: "%s=[REDACTED]" % m.group(1)),
-    (re.compile(r"\bbearer\s+\S+", re.IGNORECASE), "bearer [REDACTED]"),
-    (re.compile(r"\bfingerprint\s*[:=]?\s*[0-9A-Fa-f:]{8,}"), "fingerprint=[REDACTED-FINGERPRINT]"),
-    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b"), "[REDACTED-MAC]"),
-    (re.compile(r"\b(?:[0-9A-Fa-f]{2}:){7,}[0-9A-Fa-f]{2}\b"), "[REDACTED-FINGERPRINT]"),
-    (re.compile(r"\b[0-9A-Fa-f]{32,}\b"), "[REDACTED-HEX]"),
-    (re.compile(r"\b[A-Za-z0-9_~+/-]{32,}={0,2}\b"), "[REDACTED-TOKEN]"),
-    (re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-                r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
-                r"|192\.168\.\d{1,3}\.\d{1,3}"
-                r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
-                r"|127\.\d{1,3}\.\d{1,3}\.\d{1,3})\b"), "[REDACTED-IP]"),
-    (re.compile(r"\bfe80:[0-9A-Fa-f:]*[0-9A-Fa-f]\b"), "[REDACTED-IP]"),
-    (re.compile(r"(?<![0-9A-Fa-f:])::1(?![0-9A-Fa-f:])"), "[REDACTED-IP]"),
-]
-
-
-def sanitize(text: str) -> str:
-    """Maskera hemligheter: nycklar, token, fingerprint, payload-hex,
-    privata IP-adresser (inkl. Tailscale 100.64/10) och MAC-adresser."""
-    out = text or ""
-    for pattern, repl in REDACTIONS:
-        out = pattern.sub(repl, out)
-    return out
+# Maskningsregler ägs av fido2_sanitize (enda ägaren) — denna modul
+# återanvänder sanitize utan egen REDACTIONS-lista.
 
 
 def validate_alias(host: str) -> str:
