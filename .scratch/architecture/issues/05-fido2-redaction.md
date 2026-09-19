@@ -13,5 +13,8 @@ till ett verifier med mock/HW-capability.
 - [x] Maskningstester gröna, output identisk
 - [x] Steg 2 formulerat som uppföljningsbiljett vid avslut
 
-Uppföljning (steg 2, ny biljett vid behov): kollapsa Ceremony+backend
-till ett verifier med mock/HW-capability.
+Uppföljning (steg 2, klart): HwBackend-stubben borttagen (ingen
+anropade den — fabriken returnerade redan CtapHidBackend); ABC:t
+behålls medvetet (MockBackend + CtapHidBackend är två verkliga
+implementationer, ingen hypotetisk söm); server-side-vägran testlåst
+mot CtapHidBackend; exakt-två-implementationer testlåst.

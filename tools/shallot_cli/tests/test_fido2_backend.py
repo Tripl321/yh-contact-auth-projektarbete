@@ -58,11 +58,17 @@ def test_mock_uses_constant_time_compare():
 
 
 def test_hw_stub_refuses_server_side_signing():
-    b = be.HwBackend()
-    with pytest.raises(be.BackendUnavailable):
+    assert not hasattr(be, "HwBackend")  # död stub borttagen (steg 2)
+    b = be.CtapHidBackend()
+    with pytest.raises(be.DeviceError):
         b.sign(credential_id=b"c", signed_data=b"d")
-    with pytest.raises(be.BackendUnavailable):
+    with pytest.raises(be.DeviceError):
         b.verify(credential_id=b"c", signed_data=b"d", signature=b"s")
+
+
+def test_backend_implementations_are_exactly_two():
+    subs = be.AuthenticatorBackend.__subclasses__()
+    assert {c.__name__ for c in subs} == {"MockBackend", "CtapHidBackend"}
 
 
 def test_factory_defaults_to_mock_and_rejects_unknown():

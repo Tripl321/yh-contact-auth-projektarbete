@@ -33,7 +33,9 @@ class DeviceError(Exception):
 
 
 class AuthenticatorBackend:
-    """Gränssnitt som varje backend måste uppfylla."""
+    """Gränssnitt som varje backend måste uppfulla. Behålls medvetet:
+    två verkliga implementationer finns (MockBackend, CtapHidBackend),
+    så detta är en äkta söm, inte ett hypotetiskt lager."""
 
     name = "base"
 
@@ -64,24 +66,6 @@ class MockBackend(AuthenticatorBackend):
             return False
         expected = hmac.new(_mock_key(credential_id), bytes(signed_data), hashlib.sha256).digest()
         return hmac.compare_digest(expected, bytes(signature))
-
-
-class HwBackend(AuthenticatorBackend):
-    """Bakåtkompatibel stub: fysisk authenticator kräver nu explicit bruk.
-
-    Använd :class:`CtapHidBackend` med ``--hardware``. Stubben finns kvar
-    så att gammal kod misslyckas tydligt i stället för tyst.
-    """
-
-    name = "hardware"
-
-    def sign(self, *, credential_id: bytes, signed_data: bytes) -> bytes:
-        raise BackendUnavailable(
-            "använd CtapHidBackend med --hardware för fysisk authenticator")
-
-    def verify(self, *, credential_id: bytes, signed_data: bytes, signature: bytes) -> bool:
-        raise BackendUnavailable(
-            "använd CtapHidBackend med --hardware för fysisk authenticator")
 
 
 def _require_fido2():
