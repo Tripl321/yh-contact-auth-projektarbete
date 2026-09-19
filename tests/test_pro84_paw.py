@@ -233,8 +233,9 @@ def test_pro84_source_guards():
     assert '#warning' not in src, "PRO-93: #warning must be removed"
     assert 'DEVELOPMENT-ONLY' not in src, "PRO-93: dev key stub must be removed"
     assert 'DEN_DEV_KEY' not in src, "PRO-93: DEN_DEV_KEY must be removed"
-    assert 'hmac_sha256(kMac' in src  # PRO-49: HMAC uses K_mac, not master key
-    assert 'derive_k_mac' in src  # PRO-49: K_mac derivation present
+    assert 'shalot_hmac_sha256(kMac' in src  # PRO-49: HMAC uses K_mac, not master key
+    assert 'shalot_derive_k_mac' in src  # PRO-49: K_mac derivation present
+    assert 'void sha256(' not in src  # no local copy (ShallotCrypto)
     assert 'epd.showStatus(EPD_STATUS_AUTHENTICATING)' in src  # e-paper kept
     assert '#include <RadioLib.h>' in src and 'radio.transmit' in src  # LoRa kept
     assert 'handleDockAuth();' in src

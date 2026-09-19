@@ -5,9 +5,9 @@ bänken som före, bevisat med bänkverifiering, separat revertbart.
 
 **Blocked by:** 01 — Biblioteksskelett + KAT.
 
-**Status:** ready-for-agent
+**Status:** code-done (bänkgrind ÖPPEN — kräver flash + challenge-response mot DEN)
 
-- [ ] Inga lokala SHA/HMAC/KDF-kopior kvar i PAW
-- [ ] Guards och mirrors uppdaterade, suite grön
+- [x] Inga lokala SHA/HMAC/KDF-kopior kvar i PAW
+- [x] Guards och mirrors uppdaterade, suite grön
 - [ ] Bänkgrind passerad (challenge-response mot DEN)
-- [ ] Revertbar med en revert
+- [x] Revertbar med en revert

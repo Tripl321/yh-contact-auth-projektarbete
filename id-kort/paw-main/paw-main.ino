@@ -31,6 +31,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <DenUartProtocol.h>  // PRO-84/87: dock framing from shared module
+#include <ShallotCrypto.h>  // PRO-49: SHA/HMAC/KDF/wipe from shared module
 
 // =============================================================
 // Configuration
@@ -190,20 +191,8 @@ static bool key_is_valid() {
     return false;
 }
 
-// PRO-49: Derive K_mac from master key using SHA-256(master || "MAC")[:16].
-// RP2350 SHA-256 accelerator is used where available; falls back to software.
-static void derive_k_mac(const uint8_t* master, uint8_t* k_mac_out) {
-    // RP2350 hardware SHA-256 accelerator: use pico-sdk sha256_hw if available
-    // For now, use software implementation (same as rest of firmware)
-    uint8_t full_hash[32];
-    uint8_t msg[16 + 3];  // master(16) || "MAC"(3)
-    memcpy(msg, master, AES_KEY_SIZE);
-    memcpy(msg + AES_KEY_SIZE, "MAC", 3);
-    sha256(msg, sizeof(msg), full_hash);
-    memcpy(k_mac_out, full_hash, AES_KEY_SIZE);
-    memset(full_hash, 0, sizeof(full_hash));
-    memset(msg, 0, sizeof(msg));
-}
+// PRO-49: K_mac derivation lives in <ShallotCrypto.h>
+// (shalot_derive_k_mac) — single shared implementation.
 static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
@@ -644,91 +633,11 @@ void ShallotEPD::poll() {
     }
 }
 
-// =============================================================
-// SHA-256 Implementation
-// =============================================================
-
-static const uint32_t sha256_k[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
-
-#define SHA256_ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-#define SHA256_CH(x, y, z)  (((x) & (y)) ^ (~(x) & (z)))
-#define SHA256_MAJ(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
-#define SHA256_EP0(x)  (SHA256_ROTR(x, 2) ^ SHA256_ROTR(x, 13) ^ SHA256_ROTR(x, 22))
-#define SHA256_EP1(x)  (SHA256_ROTR(x, 6) ^ SHA256_ROTR(x, 11) ^ SHA256_ROTR(x, 25))
-#define SHA256_SIG0(x) (SHA256_ROTR(x, 7) ^ SHA256_ROTR(x, 18) ^ ((x) >> 3))
-#define SHA256_SIG1(x) (SHA256_ROTR(x, 17) ^ SHA256_ROTR(x, 19) ^ ((x) >> 10))
-
-void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
-    uint32_t h[8] = {
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-    };
-
-    size_t paddedLen = ((len + 9 + 63) / 64) * 64;
-    uint8_t* msg = (uint8_t*)calloc(paddedLen, 1);
-    if (!msg) return;
-    memcpy(msg, data, len);
-    msg[len] = 0x80;
-    uint64_t bitLen = (uint64_t)len * 8;
-    for (int i = 0; i < 8; i++) {
-        msg[paddedLen - 1 - i] = (bitLen >> (i * 8)) & 0xFF;
-    }
-
-    for (size_t blk = 0; blk < paddedLen; blk += 64) {
-        uint32_t w[64];
-        for (int i = 0; i < 16; i++) {
-            w[i] = ((uint32_t)msg[blk + i * 4] << 24)
-                 | ((uint32_t)msg[blk + i * 4 + 1] << 16)
-                 | ((uint32_t)msg[blk + i * 4 + 2] << 8)
-                 | ((uint32_t)msg[blk + i * 4 + 3]);
-        }
-        for (int i = 16; i < 64; i++) {
-            w[i] = SHA256_SIG1(w[i - 2]) + w[i - 7] + SHA256_SIG0(w[i - 15]) + w[i - 16];
-        }
-
-        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
-
-        for (int i = 0; i < 64; i++) {
-            uint32_t t1 = hh + SHA256_EP1(e) + SHA256_CH(e, f, g) + sha256_k[i] + w[i];
-            uint32_t t2 = SHA256_EP0(a) + SHA256_MAJ(a, b, c);
-            hh = g; g = f; f = e; e = d + t1;
-            d = c; c = b; b = a; a = t1 + t2;
-        }
-
-        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
-    }
-
-    for (int i = 0; i < 8; i++) {
-        hash[i * 4]     = (h[i] >> 24) & 0xFF;
-        hash[i * 4 + 1] = (h[i] >> 16) & 0xFF;
-        hash[i * 4 + 2] = (h[i] >> 8) & 0xFF;
-        hash[i * 4 + 3] = h[i] & 0xFF;
-    }
-
-    free(msg);
-}
+// SHA-256, HMAC-SHA256 and KDF live in <ShallotCrypto.h> (single shared
+// implementation, KAT-verified). Local copies removed (ticket 02).
 
 // =============================================================
-// CRC32 Implementation
+// CRC32 Implementation (framing-adjacent; not part of ShallotCrypto)
 // =============================================================
 
 uint32_t crc32(const uint8_t* data, size_t len) {
@@ -743,54 +652,8 @@ uint32_t crc32(const uint8_t* data, size_t len) {
     return crc ^ 0xFFFFFFFF;
 }
 
-// =============================================================
-// HMAC-SHA256 Implementation (PRO-50)
-// =============================================================
-
-#define HMAC_BLOCK_SIZE 64
-
-void hmac_sha256(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t msgLen, uint8_t* mac) {
-    uint8_t k_ipad[HMAC_BLOCK_SIZE];
-    uint8_t k_opad[HMAC_BLOCK_SIZE];
-    uint8_t innerHash[32];
-    uint8_t outerHash[32];
-
-    // Prepare inner and outer padding
-    memset(k_ipad, 0x36, HMAC_BLOCK_SIZE);
-    memset(k_opad, 0x5C, HMAC_BLOCK_SIZE);
-
-    // XOR key with ipad and opad
-    for (size_t i = 0; i < keyLen; i++) {
-        if (i < HMAC_BLOCK_SIZE) {
-            k_ipad[i] ^= key[i];
-            k_opad[i] ^= key[i];
-        }
-    }
-
-    // Inner hash: SHA256(k_ipad || msg)
-    uint8_t* innerMsg = (uint8_t*)calloc(HMAC_BLOCK_SIZE + msgLen, 1);
-    if (!innerMsg) { memset(mac, 0, 32); return; }
-    memcpy(innerMsg, k_ipad, HMAC_BLOCK_SIZE);
-    memcpy(innerMsg + HMAC_BLOCK_SIZE, msg, msgLen);
-    sha256(innerMsg, HMAC_BLOCK_SIZE + msgLen, innerHash);
-
-    // Outer hash: SHA256(k_opad || innerHash)
-    uint8_t outerMsg[HMAC_BLOCK_SIZE + 32];
-    memcpy(outerMsg, k_opad, HMAC_BLOCK_SIZE);
-    memcpy(outerMsg + HMAC_BLOCK_SIZE, innerHash, 32);
-    sha256(outerMsg, sizeof(outerMsg), outerHash);
-
-    memcpy(mac, outerHash, 32);
-
-    // Clear sensitive data
-    memset(k_ipad, 0, HMAC_BLOCK_SIZE);
-    memset(k_opad, 0, HMAC_BLOCK_SIZE);
-    memset(innerHash, 0, 32);
-    memset(outerHash, 0, 32);
-    memset(innerMsg, 0, HMAC_BLOCK_SIZE + msgLen);
-    free(innerMsg);
-    memset(outerMsg, 0, sizeof(outerMsg));
-}
+// HMAC-SHA256 lives in <ShallotCrypto.h> (shalot_hmac_sha256).
+// Local copy removed (ticket 02).
 
 // =============================================================
 // Key Reception from Mama Bear over USB Serial (PRO-48, PRO-11 poll)
@@ -920,11 +783,11 @@ static uint8_t pollProvisioning() {
         keyStored = true;
 
         // PRO-49: Derive K_mac from master key (SRAM-only, never exposed)
-        derive_k_mac(aesKey, kMac);
+        shalot_derive_k_mac(aesKey, kMac);
 
         // Send confirmation with hash (fingerprint only, never key bytes)
         uint8_t fullHash[32];
-        sha256(aesKey, AES_KEY_SIZE, fullHash);
+        shalot_sha256(aesKey, AES_KEY_SIZE, fullHash);
         uint8_t keyHash[KEY_HASH_SIZE];
         memcpy(keyHash, fullHash, KEY_HASH_SIZE);
         memset(fullHash, 0, 32);
@@ -1047,7 +910,7 @@ static void handleDockAuth() {
                  epd.showStatus(EPD_STATUS_AUTHENTICATING);
                  // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
                  uint8_t mac[DEN_HMAC_LEN];
-                 hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
+                 shalot_hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
              uint8_t resp[DEN_MAX_FRAME];
              size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
              memset(mac, 0, sizeof(mac));
@@ -1288,7 +1151,7 @@ void loop() {
 
         case STATE_COMPUTING_RESPONSE:
             if (key_is_valid()) {
-                hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
+                shalot_hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
 #if SECURE_DEBUG
                 Serial.print("[PRO-50] HMAC Response computed: ");
                 for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);

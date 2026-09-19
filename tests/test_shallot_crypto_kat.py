@@ -46,12 +46,16 @@ def _run_kat():
         return out
 
 
-def test_shallot_crypto_library_exists_unused():
+def test_shallot_crypto_adoption_state():
+    """PAW migrated (ticket 02); DEN + UNO-Q pending (tickets 03/04)."""
     assert HDR.exists()
     assert (ROOT / "libraries/ShallotCrypto/library.properties").exists()
-    for ino in ("id-kort/paw-main/paw-main.ino", "plc/den-main/den-main.ino",
+    paw = (ROOT / "id-kort/paw-main/paw-main.ino").read_text()
+    assert "#include <ShallotCrypto.h>" in paw
+    assert "void sha256(" not in paw and "void hmac_sha256(" not in paw
+    for ino in ("plc/den-main/den-main.ino",
                 "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"):
-        assert "ShallotCrypto" not in (ROOT / ino).read_text()  # ticket 01: unused
+        assert "ShallotCrypto" not in (ROOT / ino).read_text()
 
 
 def test_shallot_crypto_kat_vectors():
