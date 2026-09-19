@@ -23,7 +23,7 @@
 | 07 | Säkerhetsdesign | Ej påbörjad | PRO-54 | 2026-09-19 |
 | 08 | Hotmodellering | Utkast (manuell, se docs/08-hotmodellering.md) | PRO-55 | 2026-09-19 |
 | 09 | Integrationsbeskrivning | Utkast (se docs/09-integrationsbeskrivning.md) | PRO-67 | 2026-09-22 |
-| 10 | Resultat och reflektion | Ej påbörjad | PRO-68 | 2026-09-23 |
+| 10 | Resultat och reflektion | Utkast (se docs/10-resultat-och-reflektion.md) | PRO-68 | 2026-09-23 |
 | 11 | Dockat UART-protokoll PAW↔DEN | v1.0 — Utkast | PRO-87 | 2026-09-12 |
 
 ---
