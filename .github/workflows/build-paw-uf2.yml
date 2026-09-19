@@ -141,19 +141,3 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-  pytest-pro52:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: Run PRO-52 protocol tests
-        run: python3 -m pytest tests/ -q

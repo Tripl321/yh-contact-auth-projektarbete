@@ -46,3 +46,23 @@ def test_benign_ceremony_output_preserved():
     benign = ("ALLOW användare admin-01 credential kort-id "
               "user_presence=True rp_id=shallot.local")
     assert san.sanitize(benign) == benign
+
+
+def test_masks_mamabear_fingerprint_and_mac():
+    assert "fingerprint=[REDACTED-FINGERPRINT]" in \
+        san.sanitize("fingerprint=deadbeef1234")
+    assert san.sanitize("mac AA:BB:CC:DD:EE:FF up") == "mac [REDACTED-MAC] up"
+
+
+def test_mamabear_delegates_to_single_owner():
+    import shallot_cli.mamabear as mamabear
+    assert not hasattr(mamabear, "REDACTIONS")
+    samples = [
+        "fingerprint=deadbeef1234",
+        "mac AA:BB:CC:DD:EE:FF up",
+        "token=supersecretvalue12345678901234567890",
+        "nås via 100.64.9.9",
+        "MAMABEAR_SELFTEST_OK",
+    ]
+    for sample in samples:
+        assert mamabear.sanitize(sample) == san.sanitize(sample), sample

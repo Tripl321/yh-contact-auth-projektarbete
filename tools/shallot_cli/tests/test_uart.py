@@ -1,17 +1,16 @@
-"""Tester för shallot_cli.uart — hårdkodade ramvektorer (ingen import av repoets tester)."""
+"""Tester för shallot_cli.uart — vektorer från gemensamt corpus (ingen import av repoets tester)."""
+
+import json
+import pathlib
 
 import pytest
 
 from shallot_cli import uart
 
 VECTORS = {
-    "aa000003a8884866": (uart.T_HEARTBEAT, ""),
-    "aa0100ff019d75db7d": (uart.T_ACK, "01"),
-    "aa01000402511c9a13": (uart.T_ALARM, "02"),
-    "aa08000100010203040506071cf3b72b": (uart.T_CHALLENGE, "0001020304050607"),
-    "aa200002202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f09ad4514": (
-        uart.T_RESPONSE,
-        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"),
+    v["frame"]: (v["type"], v["payload"])
+    for v in json.loads((pathlib.Path(__file__).resolve().parent.parent.parent.parent
+                         / "tests/vectors/uart.json").read_text())["frames"]
 }
 
 

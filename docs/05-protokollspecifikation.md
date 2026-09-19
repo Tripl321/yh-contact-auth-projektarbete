@@ -167,7 +167,7 @@ Payload-storlek: 8 byte. Total paketstorlek: 21 + 8 + 8 = 37 byte.
 
 PAW kopierar challenge-nonce från CHALLENGE-paketets header Nonce-fält in i RESPONSE-paketets krypterade payload. Payloaden krypteras med K_enc. HMAC beräknas över hela paketet inklusive krypterad payload.
 
-Implementation-notering: I nuvarande implementation verifierar edge-noden RESPONSE-paketets HMAC men dekrypterar inte och verifierar nonce-ekot. Autentisering baseras enbart på giltig HMAC (vilket bevisar att PAW besitter K_mac). Verifiering av dekrypterat nonce-ekot vore en förstärkning som binder svaret till specifik challenge (planerad för framtida revision).
+Implementation-notering: edge-noden verifierar nonce-ekot via `verify_echo_binding` (dekrypterar payload med K_enc och jämför mot outstanding challenge-nonce) utöver HMAC — svaret binds därmed till specifik challenge. Se `plc/edge-challenge-response/edge-challenge-response.ino` och `tests/test_pro52_protocol.py` (PRO-52 review fixes).
 
 ### 4.3 SUCCESS (0x03) — Edge till PAW
 
@@ -458,7 +458,7 @@ Jämfört med bool[10] (10 byte) sparas 3 byte per sändare.
 | Fail-closed | Watchdog vid timeout, ogiltig HMAC, okänd sändare | Implementerad |
 | Operatörsavsikt | Tvåhandsgrepp: knapp på DEN + knapp på PAW | Krav |
 | LoRa-inaktivitet utanför aktivering | LoRa inaktiv i IDLE, endast aktiv i AUTHENTICATING | Krav |
-| Nonce-ekoverifiering | Edge dekrypterar och verifierar nonce-ekot | Ej implementerad (planerad) |
+| Nonce-ekoverifiering | Edge dekrypterar och verifierar nonce-ekot | Implementerad (`verify_echo_binding`) |
 
 ---
 
@@ -478,7 +478,11 @@ AES-CTR utan autentiserad kryptering (AEAD) saknar integritetsskydd på krypteri
 
 ### 9.4 Nonce-ekoverifiering
 
-I nuvarande implementation verifierar edge-noden endast HMAC på RESPONSE-paketet. Den dekrypterar inte payloaden för att verifiera att nonce-ekot matchar challenge-nonce. Autentisering baseras därmed enbart på giltig HMAC, vilket bevisar att PAW besitter K_mac men inte bevisar att PAW mottog just denna specifika challenge. Förstärkning planerad i framtida revision.
+Edge-noden verifierar HMAC på RESPONSE-paketet och dekrypterar
+payloaden för att verifiera att nonce-ekot matchar outstanding
+challenge-nonce (`verify_echo_binding`). Autentisering bevisar därmed
+både K_mac-innehav och mottagande av just denna specifika challenge;
+en inspelad respons med giltig HMAC men gammalt nonce faller här.
 
 ### 9.5 Stub-nyckel (Phase 1)
 
@@ -539,7 +543,6 @@ Notera: GPIO12 är giltig SPI1 MISO på Pico 2 (40-pins header) men INTE på Fea
 
 | Post | Beskrivning | Beroende |
 |---|---|---|
-| Nonce-ekoverifiering | Edge dekrypterar och verifierar challenge-nonce i RESPONSE | Inget |
 | Flash-persistens av sekvensnummer | Överlev omstart utan replay-fönster | Inget |
 | E-Paper-integration | Ersätt display_status() platshållare med riktig SPI0-drivrutin | PRO-57 |
 | Riktig nyckeldistribution | Ersätt stub-nyckel med UNO Q-nyckel via USB | PRO-45, PRO-46 |

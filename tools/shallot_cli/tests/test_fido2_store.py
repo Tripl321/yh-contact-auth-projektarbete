@@ -102,3 +102,9 @@ def test_stored_file_contains_no_secrets(tmp_path):
     blob = (tmp_path / store.CREDENTIALS_FILE).read_text(encoding="utf-8")
     assert "private" not in blob.lower() and "secret" not in blob.lower()
     assert json.loads(blob)["cred-1"]["user_id"] == "admin-01"
+
+
+def test_suite_store_is_hermetic(tmp_path):
+    import os
+    assert os.environ.get(store.STORE_ENV) == str(tmp_path / "fido2-store")
+    assert store.store_root() == tmp_path / "fido2-store"

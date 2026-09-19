@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import sys
 
-from shallot_cli import fido2, serial_adapters, sim, uart
+from shallot_cli import explain, fido2, registry, serial_adapters, sim, uart
 from shallot_cli.commands import (
     build_cmd,
+    demo_cmd,
     device_cmd,
     doctor_cmd,
+    explain_cmd,
     fido2_cmd,
     mamabear_cmd,
     monitor_cmd,
@@ -33,27 +35,15 @@ HEADER = r"""
  ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝    ╚═╝
 """.strip("\n")
 
-MENU = """\
-1  Kör tester (alla sviter)
-2  Kör en testsvit (välj)
-3  Simulera autentisering (SIMULATED / TEST-ONLY)
-4  Protokoll: encode (payload -> ram)
-5  Protokoll: decode (ram -> payload)
-6  Diagnostik (doctor)
-7  Build dry-run (visar endast, bygger aldrig)
-8  Lista enheter (skrivfritt)
-9  Monitorera port (skrivskyddad läsning)
-10 MamaBear fjärrläge (läsande, bekräftas)
-11 FIDO2: registrera (bekräftas, SIMULATED / TEST-ONLY)
-12 FIDO2: autentisera (ALLOW/DENY)
-13 FIDO2: lista credentials
-14 FIDO2: spärra credential (bekräftas)
-15 FIDO2: simulera scenario
-16 FIDO2: visa audit
-17 FIDO2: lista anslutna enheter (skrivfritt)
-18 FIDO2: exportera credential för MamaBear-godkännande
-19 FIDO2: ändra UV-policy (bekräftas)
-0  Avsluta"""
+def _menu_max() -> int:
+    """Högsta menynummer — genereras från registryt."""
+    return max(n for n, _label in registry.menu_entries())
+
+
+def _menu_text() -> str:
+    lines = [" %d  %s" % (n, label) for n, label in registry.menu_entries()]
+    lines.append(" 0  Avsluta")
+    return "\n".join(lines)
 
 
 def confirm(prompt: str) -> bool:
@@ -110,6 +100,23 @@ def _flow_encode() -> None:
 def _flow_decode() -> None:
     frame_hex = input("Ram som hex: ").strip()
     report(protocol_cmd.run_decode(frame_hex))
+
+
+def _flow_doctor() -> None:
+    report(doctor_cmd.run())
+
+
+def _flow_demo() -> None:
+    print("Simulerad incident — SIMULERING.")
+    report(demo_cmd.run())
+
+
+def _flow_explain() -> None:
+    topic = _pick("Ämnen:", explain.topic_names())
+    if topic is None:
+        return
+    use_ai = confirm("Utveckla med lokal Ollama-modell")
+    report(explain_cmd.run(topic, ai=use_ai))
 
 
 def _flow_build() -> None:
@@ -237,49 +244,12 @@ def _flow_monitor() -> None:
 
 def handle_choice(choice: str) -> bool:
     """Utför ett menyval. Returnerar True om TUI:t ska avslutas."""
-    if choice == "1":
-        _flow_test_all()
-    elif choice == "2":
-        _flow_test_suite()
-    elif choice == "3":
-        _flow_simulate()
-    elif choice == "4":
-        _flow_encode()
-    elif choice == "5":
-        _flow_decode()
-    elif choice == "6":
-        report(doctor_cmd.run())
-    elif choice == "7":
-        _flow_build()
-    elif choice == "8":
-        report(device_cmd.run_list())
-    elif choice == "9":
-        _flow_monitor()
-    elif choice == "10":
-        _flow_mamabear()
-    elif choice == "11":
-        _flow_fido2_register()
-    elif choice == "12":
-        _flow_fido2_authenticate()
-    elif choice == "13":
-        report(fido2_cmd.run_credential_list())
-    elif choice == "14":
-        _flow_fido2_revoke()
-    elif choice == "15":
-        _flow_fido2_simulate()
-    elif choice == "16":
-        report(fido2_cmd.run_audit())
-    elif choice == "17":
-        report(fido2_cmd.run_device_list())
-    elif choice == "18":
-        _flow_fido2_export()
-    elif choice == "19":
-        _flow_fido2_set_policy()
-    elif choice == "0":
+    if choice == "0":
         print("Avslutar.")
         return True
-    else:
-        print("Ogiltigt val: %r. Välj 0–19." % choice)
+    if registry.dispatch_tui(choice):
+        return False
+    print("Ogiltigt val: %r. Välj 0–%d." % (choice, _menu_max()))
     return False
 
 
@@ -289,9 +259,9 @@ def run() -> int:
     print("Interaktivt läge. Styr eller verifierar ingen fysisk hårdvara.")
     while True:
         print()
-        print(MENU)
+        print(_menu_text())
         try:
-            choice = input("Välj [0-19]: ").strip()
+            choice = input("Välj [0-%d]: " % _menu_max()).strip()
         except KeyboardInterrupt:
             print("\nAvslutar.")
             return 0
