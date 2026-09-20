@@ -79,21 +79,9 @@ static uint8_t den_key_valid() {
 #define DEN_UART_BAUD      115200
 #define DEN_SESSION_GAP_MS 1000  // pacing between sessions
 #define KEY_HASH_SIZE      4
+// CRC32 lives in <ShallotCrypto.h> (shalot_crc32) — single
+// shared implementation. Local copy removed (arch batch 2).
 
-// =============================================================
-// CRC32 (IEEE 802.3)
-// =============================================================
-
-static uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int j = 0; j < 8; j++) {
-      crc = (crc & 1) ? (0xEDB88320 ^ (crc >> 1)) : (crc >> 1);
-    }
-  }
-  return crc ^ 0xFFFFFFFF;
-}
 
 // =============================================================
 // USB Provisioning (PRO-46 + PRO-48)
@@ -255,7 +243,7 @@ static uint8_t pollProvisioning() {
                              | ((uint32_t)provBuf[19] << 16)
                              | ((uint32_t)provBuf[20] << 8)
                              | ((uint32_t)provBuf[21]);
-        uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
+        uint32_t computedCrc = shalot_crc32(provBuf + 2, AES_KEY_SIZE);
         if (computedCrc != receivedCrc) {
 #if SECURE_DEBUG
             Serial.printf("[PRO-46] CRC mismatch! Expected: %08X Got: %08X\n",

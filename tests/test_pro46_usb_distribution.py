@@ -203,9 +203,11 @@ def test_pro46_den_paw_use_same_key_format():
     # Both use AES_KEY_SIZE = 16
     assert 'AES_KEY_SIZE' in paw_src
     assert 'AES_KEY_SIZE' in den_src
-    # Both use CRC32 for key integrity
-    assert 'crc32' in paw_src
-    assert 'crc32' in den_src
+    # Both use CRC32 for key integrity — single owner (ShallotCrypto)
+    assert 'shalot_crc32' in paw_src
+    assert 'shalot_crc32' in den_src
+    assert 'uint32_t crc32(' not in paw_src
+    assert 'uint32_t crc32(' not in den_src
 
 
 def test_pro46_den_paw_derive_k_mac_consistently():
@@ -249,7 +251,7 @@ def test_pro46_uno_q_key_packet_format():
     assert 'keyPacket[0] = MSG_KEY_DATA' in src
     assert 'keyPacket[1] = (uint8_t)AES_KEY_SIZE' in src
     assert 'memcpy(&keyPacket[2], aesKey' in src
-    assert 'crc32(aesKey, AES_KEY_SIZE)' in src
+    assert 'shalot_crc32(aesKey, AES_KEY_SIZE)' in src
 
 
 def test_pro46_uno_q_no_key_exposure():

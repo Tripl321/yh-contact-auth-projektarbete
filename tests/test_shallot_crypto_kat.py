@@ -15,6 +15,7 @@ HDR = ROOT / "libraries/ShallotCrypto/src/ShallotCrypto.h"
 HARNESS = ROOT / "tests/shallot_crypto_kat.c"
 
 EXPECTED = {
+    "crc_ref": "cbf43926",
     "sha_empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "sha_abc": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     "sha_56": "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",

@@ -632,25 +632,9 @@ void ShallotEPD::poll() {
         Serial.println("[EPD] BUSY timeout - degraded display mode, dock auth continues");
     }
 }
+// CRC32 lives in <ShallotCrypto.h> (shalot_crc32) — single
+// shared implementation. Local copy removed (arch batch 2).
 
-// SHA-256, HMAC-SHA256 and KDF live in <ShallotCrypto.h> (single shared
-// implementation, KAT-verified). Local copies removed (ticket 02).
-
-// =============================================================
-// CRC32 Implementation (framing-adjacent; not part of ShallotCrypto)
-// =============================================================
-
-uint32_t crc32(const uint8_t* data, size_t len) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) {
-            if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320;
-            else crc >>= 1;
-        }
-    }
-    return crc ^ 0xFFFFFFFF;
-}
 
 // HMAC-SHA256 lives in <ShallotCrypto.h> (shalot_hmac_sha256).
 // Local copy removed (ticket 02).
@@ -749,7 +733,7 @@ static uint8_t pollProvisioning() {
                              | ((uint32_t)provBuf[19] << 16)
                              | ((uint32_t)provBuf[20] << 8)
                              | ((uint32_t)provBuf[21]);
-        uint32_t computedCrc = crc32(provBuf + 2, AES_KEY_SIZE);
+        uint32_t computedCrc = shalot_crc32(provBuf + 2, AES_KEY_SIZE);
         if (computedCrc != receivedCrc) {
 #if SECURE_DEBUG
             Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",

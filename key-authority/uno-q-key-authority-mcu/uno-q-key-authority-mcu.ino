@@ -155,32 +155,9 @@ static inline void computeKeyHash(const uint8_t* key, uint8_t* hashOut) {
 }
 
 
-// =============================================================
-// CRC32 — lookup table for 8x faster bit-by-bit computation
-// =============================================================
+// CRC32 lives in <ShallotCrypto.h> (shalot_crc32) — single
+// shared implementation. Local table-driven copy removed (arch batch 2).
 
-static uint32_t crc32_table[256];
-static bool crc32_table_ready = false;
-
-static void crc32_init() {
-  if (crc32_table_ready) return;
-  for (uint32_t i = 0; i < 256; i++) {
-    uint32_t c = i;
-    for (int j = 0; j < 8; j++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
-    }
-    crc32_table[i] = c;
-  }
-  crc32_table_ready = true;
-}
-
-static inline uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc = crc32_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-  }
-  return crc ^ 0xFFFFFFFF;
-}
 
 // =============================================================
 // Key Generation (PRO-45)
@@ -314,7 +291,7 @@ static bool distributeKey(uint8_t targetId) {
   keyPacket[0] = MSG_KEY_DATA;
   keyPacket[1] = (uint8_t)AES_KEY_SIZE;
   memcpy(&keyPacket[2], aesKey, AES_KEY_SIZE);
-  uint32_t crc = crc32(aesKey, AES_KEY_SIZE);
+  uint32_t crc = shalot_crc32(aesKey, AES_KEY_SIZE);
   keyPacket[18] = (uint8_t)(crc >> 24);
   keyPacket[19] = (uint8_t)(crc >> 16);
   keyPacket[20] = (uint8_t)(crc >> 8);
@@ -576,7 +553,6 @@ void setup() {
   pinMode(CONFIRM_BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED_PIN, OUTPUT);
 
-  crc32_init();
   setupBridgeRPC();
 
   delay(2000);

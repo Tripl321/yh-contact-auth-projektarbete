@@ -168,4 +168,20 @@ static inline void shalot_derive_k_enc(const uint8_t master[SHALOT_KEY_LEN],
     shalot_derive_key(master, "ENC", k_enc);
 }
 
+// =============================================================
+// CRC32 (IEEE 802.3, reflected, poly 0xEDB88320). Single owner —
+// previously copied into every sketch (two variants had drifted).
+// Canonical form: bit-by-bit, no table, stack-only.
+// =============================================================
+static inline uint32_t shalot_crc32(const uint8_t *data, size_t len) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & 1) ? (0xEDB88320 ^ (crc >> 1)) : (crc >> 1);
+        }
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
 #endif  // SHALLOT_CRYPTO_H

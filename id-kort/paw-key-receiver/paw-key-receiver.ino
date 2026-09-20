@@ -29,6 +29,7 @@
  */
 
 #include <Arduino.h>
+#include <ShallotCrypto.h>  // PRO-49: CRC32 from shared module
 
 // --- Constants ---
 #define AES_KEY_SIZE 16
@@ -138,22 +139,9 @@ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
 
   free(msg);
 }
+// CRC32 lives in <ShallotCrypto.h> (shalot_crc32) — single
+// shared implementation. Local copy removed (arch batch 2).
 
-// =============================================================
-// CRC32 (must match UNO Q firmware)
-// =============================================================
-
-uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int j = 0; j < 8; j++) {
-      if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320;
-      else crc >>= 1;
-    }
-  }
-  return crc ^ 0xFFFFFFFF;
-}
 
 // =============================================================
 // Key Reception Protocol (PRO-48)
@@ -241,7 +229,7 @@ bool receiveKey() {
                        | ((uint32_t)Serial1.read());
 
   // Verify CRC32
-  uint32_t computedCrc = crc32(receivedKey, AES_KEY_SIZE);
+  uint32_t computedCrc = shalot_crc32(receivedKey, AES_KEY_SIZE);
   if (computedCrc != receivedCrc) {
 #if SECURE_DEBUG
     Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",

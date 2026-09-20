@@ -13,6 +13,9 @@ static void print_hex(const char *name, const uint8_t *b, size_t n) {
 int main(void) {
     uint8_t out[32], mac[32], k[16];
 
+    /* CRC32 reference: "123456789" -> 0xCBF43926 */
+    printf("crc_ref %x\n", (unsigned)shalot_crc32((const uint8_t *)"123456789", 9));
+
     shalot_sha256((const uint8_t *)"", 0, out);
     print_hex("sha_empty", out, 32);
     shalot_sha256((const uint8_t *)"abc", 3, out);
