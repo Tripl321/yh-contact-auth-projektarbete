@@ -208,13 +208,18 @@ def _paw_dock_handler_body():
 
 
 def test_pro84_dock_checks_key_stored():
-    """PRO-94: handleDockAuth gates CHALLENGE on key_is_valid (fail-closed);
-    RESPONSE is encoded at exactly one site."""
+    """PRO-94: handleDockAuth gates CHALLENGE on the library key-is-valid check
+    (fail-closed); RESPONSE is encoded at exactly one site."""
     body = _paw_dock_handler_body()
-    assert 'if (!key_is_valid())' in body
+    assert 'paw_session_accept_challenge(' in body   # accepts challenge only if key valid
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent /
            'id-kort/paw-main/paw-main.ino').read_text()
+    lib = (pathlib.Path(__file__).resolve().parent.parent /
+           'libraries/PawSession/src/PawSession.h').read_text()
+    # Library denies challenge when key not valid -> fail-closed.
+    assert 'if (!paw_session_key_is_valid(session))' in lib
+    assert 'PAW_SESSION_EVENT_NO_KEY' in lib
     assert src.count('den_encode(DEN_TYPE_RESPONSE') == 1
 
 
@@ -233,8 +238,10 @@ def test_pro84_source_guards():
     assert '#warning' not in src, "PRO-93: #warning must be removed"
     assert 'DEVELOPMENT-ONLY' not in src, "PRO-93: dev key stub must be removed"
     assert 'DEN_DEV_KEY' not in src, "PRO-93: DEN_DEV_KEY must be removed"
-    assert 'shalot_hmac_sha256(kMac' in src  # PRO-49: HMAC uses K_mac, not master key
-    assert 'shalot_derive_k_mac' in src  # PRO-49: K_mac derivation present
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'shalot_hmac_sha256(' in src                      # PRO-49: HMAC present
+    assert 'paw_session_k_mac(&pawSession)' in src          # PRO-49: from K_mac, not master
+    assert 'shalot_derive_k_mac' in lib    # PRO-49: K_mac derivation present
     assert 'void sha256(' not in src  # no local copy (ShallotCrypto)
     assert 'epd.showStatus(EPD_STATUS_AUTHENTICATING)' in src  # e-paper kept
     assert '#include <RadioLib.h>' in src and 'radio.transmit' in src  # LoRa kept
@@ -528,19 +535,22 @@ def test_pro59b_source_grant_sites_are_exactly_two():
 
 
 def test_pro59b_source_lora_result_gated_on_pending():
-    """LoRa RESULT branch ignores unsolicited results before touching
-    the display (mirrors the dock paw_ack_pending gate)."""
+    """RESULT with no pending WAITING_FOR_RESULT session is ignored (fail-closed),
+    before any display change — mirrors the dock paw_ack_pending gate."""
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent /
-           'id-kort/paw-main/paw-main.ino').read_text()
-    start = src.index('Handle MSG_RESULT')
-    end = src.index('Resume listening', start)
-    branch = src[start:end]
-    assert 'currentState != STATE_WAITING_FOR_RESULT' in branch
-    assert 'RESULT ignored (no pending response)' in branch
-    assert branch.count('showStatus(EPD_STATUS_AUTHENTICATED)') == 1
-    assert branch.index('currentState != STATE_WAITING_FOR_RESULT') < \
-        branch.index('showStatus(EPD_STATUS_AUTHENTICATED)')
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    # Library: on_result only applies when state == WAITING_FOR_RESULT.
+    assert 'session->auth_state != PAW_AUTH_WAITING_FOR_RESULT' in lib
+    # Sketch: the LoRa MSG_RESULT branch feeds the library (which gate-keeps),
+    # and only lights AUTHENTICATED when the library returns success.
+    assert 'msgType == MSG_RESULT' in src
+    assert 'paw_session_on_result(' in src
+    assert 'PAW_SESSION_EVENT_AUTH_SUCCESS' in src
+    result_idx = src.index('paw_session_on_result(')
+    auth_idx = src.index('PAW_SESSION_EVENT_AUTH_SUCCESS')
+    assert result_idx < auth_idx  # result check precedes AUTHENTICATED status
 
 
 def test_pro59b_source_grant_text_gated_on_status():

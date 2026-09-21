@@ -80,12 +80,16 @@ def test_pro51_unique_nonces_in_simulation():
 
 
 def test_pro51_paw_expects_8_byte_nonce():
-    """PRO-51: PAW firmware expects 8-byte nonce in CHALLENGE."""
+    """PRO-51: PAW accepts exactly 8-byte nonces (PAW_SESSION_CHALLENGE_LEN)."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'CHALLENGE_SIZE    8' in src
-    assert 'DEN_NONCE_LEN (8)' in src
+    # PAW reads the nonce via the DEN CHALLENGE handler; the library enforces
+    # the 8-byte length on the challenge path.
+    assert 'paw_session_accept_challenge(' in src
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert '#define PAW_SESSION_CHALLENGE_LEN 8' in lib
+    assert 'challenge_len != PAW_SESSION_CHALLENGE_LEN' in lib
 
 
 def test_pro51_no_reuse_within_key_context():

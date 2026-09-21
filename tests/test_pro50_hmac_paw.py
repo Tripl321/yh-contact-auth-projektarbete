@@ -18,15 +18,18 @@ from tests.test_pro84_paw import paw_hmac, MockPawResponder, encode, T_CHALLENGE
 
 
 def test_pro50_paw_hmac_uses_k_mac():
-    """PAW computes HMAC with K_mac, not master key directly."""
+    """PAW computes HMAC with K_mac (from PawSession), not master key directly."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Verify shalot_hmac_sha256 is called with kMac (shared module)
-    assert 'shalot_hmac_sha256(kMac' in src
-    # Verify master key is never passed directly to hmac_sha256
-    assert 'hmac_sha256(aesKey' not in src
-    assert 'hmac_sha256(DEN_DEV_KEY' not in src
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    # PAW reads K_mac via the session API and feeds it to shalot_hmac_sha256.
+    assert 'paw_session_k_mac(&pawSession)' in src
+    assert 'shalot_hmac_sha256(' in src
+    # Master key is never passed directly to hmac_sha256.
+    assert 'shalot_hmac_sha256(aes_key' not in lib
+    assert 'shalot_hmac_sha256(aesKey' not in src
+    assert 'shalot_hmac_sha256(DEN_DEV_KEY' not in src
 
 
 def test_pro50_hmac_output_length():
@@ -69,19 +72,18 @@ def test_pro50_k_mac_differs_from_master():
 
 
 def test_pro50_fail_closed_no_key():
-    """PAW does not answer challenge when key is not stored."""
-    paw = MockPawResponder()
-    # MockPawResponder doesn't check keyStored, but the real firmware does
-    # Verify source guard: hmac_sha256 is only called when key_is_valid()
+    """PAW does not answer a dock challenge when the key is not stored."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    # Accept-challenge returns NO_KEY (and resets auth) when key not valid.
+    assert 'if (!paw_session_key_is_valid(session))' in lib
+    assert 'PAW_SESSION_EVENT_NO_KEY' in lib
+    # The sketch gates the dock challenge on the same check; the response path
+    # (sha256/HMAC) only runs when key_is_valid() returned true.
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Find STATE_COMPUTING_RESPONSE and verify validated-retrieval check
-    state_start = src.index('case STATE_COMPUTING_RESPONSE:')
-    state_end = src.index('break;', state_start) + 5
-    state_body = src[state_start:state_end]
-    assert 'if (key_is_valid())' in state_body
-    assert 'shalot_hmac_sha256' in state_body
+    assert 'if (!paw_session_accept_challenge' in src
+    assert 'shalot_hmac_sha256(' in src
 
 
 def test_pro50_hmac_implementation_exists():
@@ -114,5 +116,8 @@ def test_pro50_no_key_exposure_in_hmac():
     assert 'Serial.printf("%02X", kMac' not in src
     assert 'Serial.print(kMac' not in src
     assert 'Serial.write(kMac' not in src
-    # Only the HMAC result (response) is printed/transmitted
-    assert 'Serial.printf("%02X", response[i])' in src
+    # Only the HMAC result (response) is transmitted over radio/Serial1, never
+    # the key material itself.
+    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
+    assert 'paw_session_response_sent(' in src  # response marked sent exactly once
+    assert 'radio.transmit(txPacket' in src       # only the framed HMAC is transmitted

@@ -73,6 +73,33 @@ def test_unknown_challenge_is_replay_deny():
     assert (allow, reason) == (False, "replay")
 
 
+def test_expected_backend_mismatch_does_not_consume_challenge():
+    cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
+    cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE,
+            "policy": {"backend": "hardware"}}
+    ch = cer.begin()
+    sig = cer.backend.sign(credential_id=b"abc",
+                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True))
+    assert cer.verify_assertion(
+        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
+        user_presence=True, signature=sig, expected_backend="mock") == (False, "wrong-backend")
+    assert cer.verify_assertion(
+        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
+        user_presence=True, signature=sig, expected_backend="hardware") == (True, "ok")
+
+
+def test_expected_backend_requires_credential_policy():
+    cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
+    cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE}
+    ch = cer.begin()
+    sig = cer.backend.sign(credential_id=b"abc",
+                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True))
+    allow, reason = cer.verify_assertion(
+        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
+        user_presence=True, signature=sig, expected_backend="mock")
+    assert (allow, reason) == (False, "wrong-backend")
+
+
 def test_register_stores_metadata_only(tmp_path):
     meta = fido2.register_user("admin-01", rng=lambda n: b"\x09" * n, root=tmp_path)
     assert meta["user_id"] == "admin-01" and meta["status"] == "active"

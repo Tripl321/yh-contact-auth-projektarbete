@@ -56,15 +56,16 @@ def test_pro49_constant_time_compare_used():
 
 
 def test_pro49_k_mac_derived_in_paw_source():
-    """Source guard: PAW firmware derives K_mac and uses it for HMAC."""
+    """Source guard: PAW firmware derives K_mac (library) and uses it for HMAC."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'shalot_derive_k_mac' in src
-    assert 'kMac' in src
-    assert 'shalot_hmac_sha256(kMac' in src
-    assert 'hmac_sha256(aesKey' not in src  # never use master key directly
-    assert 'void hmac_sha256(' not in src  # no local copy (ShallotCrypto)
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'shalot_derive_k_mac' in lib                  # derivation in library
+    assert 'paw_session_k_mac(&pawSession)' in src      # PAW reads K_mac via API
+    assert 'shalot_hmac_sha256(' in src                 # HMAC uses K_mac
+    assert 'shalot_hmac_sha256(aes_key' not in lib      # never master key directly
+    assert 'void sha256(' not in src                     # no local copy (ShallotCrypto)
 
 
 def test_pro49_k_mac_derived_in_den_source():
@@ -81,27 +82,28 @@ def test_pro49_k_mac_derived_in_den_source():
 
 
 def test_pro49_k_mac_cleared_on_key_clear():
-    """PRO-47 integration: secure_clear_key also clears K_mac."""
+    """PRO-47 integration: paw_session_wipe_key also clears K_mac."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    secure_clear_start = src.index('static void secure_clear_key()')
-    secure_clear_end = src.index('}', secure_clear_start + 1)
-    secure_clear_body = src[secure_clear_start:secure_clear_end + 1]
-    assert 'kMac' in secure_clear_body
-    assert 'volatile uint8_t*' in secure_clear_body
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'secure_clear_key' in src
+    assert 'paw_session_wipe_key(&pawSession)' in src
+    assert 'shalot_wipe(session->k_mac' in lib   # K_mac zeroized by wipe
+    assert 'shalot_wipe(session->k_enc' in lib   # K_enc zeroized by wipe
+    assert 'session->key_stored = false' in lib  # flag cleared
 
 
 def test_pro49_k_mac_separate_from_k_enc():
-    """K_mac and K_enc are separate buffers in SRAM."""
+    """K_mac and K_enc are separate buffers in the PawSession struct."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
-    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'static uint8_t kMac[AES_KEY_SIZE]' in src
-    assert 'static uint8_t kEnc[AES_KEY_SIZE]' in src
-    # They are separate arrays, not aliases
-    assert 'kMac =' not in src or 'kMac[k' in src  # not an alias assignment
-    assert 'kEnc =' not in src or 'kEnc[k' in src
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'uint8_t k_mac[SHALOT_KEY_LEN]' in lib
+    assert 'uint8_t k_enc[SHALOT_KEY_LEN]' in lib
+    # Separate array declarations, not aliases.
+    assert lib.count('uint8_t k_mac[SHALOT_KEY_LEN]') == 1
+    assert lib.count('uint8_t k_enc[SHALOT_KEY_LEN]') == 1
 
 
 def test_pro49_hardware_sha256_comment():

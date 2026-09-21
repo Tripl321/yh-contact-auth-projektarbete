@@ -102,16 +102,6 @@ def run_authenticate(user: str, credential: str | None = None,
         fido2_store.audit("authenticate", {"user_id": user_id, "result": "DENY",
                                            "reason": "unknown-credential"})
         return 1
-    if hardware and cred.get("policy", {}).get("backend") != "hardware":
-        _say("DENY (wrong-backend) användare %s — credential är mock, kräver mock-läge" % user_id)
-        fido2_store.audit("authenticate", {"user_id": user_id, "result": "DENY",
-                                           "reason": "wrong-backend"})
-        return 1
-    if not hardware and cred.get("policy", {}).get("backend") == "hardware":
-        _say("DENY (wrong-backend) användare %s — credential är HW, kräver --hardware" % user_id)
-        fido2_store.audit("authenticate", {"user_id": user_id, "result": "DENY",
-                                           "reason": "wrong-backend"})
-        return 1
     short = fido2_sanitize.short_credential(cred["credential_id"])
     uv_policy = _uv_policy(require_uv, cred)
     if hardware:
@@ -123,7 +113,8 @@ def run_authenticate(user: str, credential: str | None = None,
     allow, reason = cer.verify_assertion(
         credential=cred, challenge=challenge, origin=fido2.ORIGIN,
         rp_id=fido2.RP_ID, user_presence=True, signature=sig,
-        user_verified=True, require_uv=(uv_policy == "required"))
+        user_verified=True, require_uv=(uv_policy == "required"),
+        expected_backend="mock")
     fido2_store.audit("authenticate", {"user_id": user_id, "credential": short,
                                        "result": "ALLOW" if allow else "DENY",
                                        "reason": reason})
@@ -135,11 +126,18 @@ def run_authenticate(user: str, credential: str | None = None,
 
 
 def _run_authenticate_hw(user_id: str, cred: dict, short: str,
-                           uv_policy: str = "preferred") -> int:
+                         uv_policy: str = "preferred") -> int:
     """HW-assertion mot fysisk authenticator. Aldrig mock-fallback."""
+    cer = fido2.Ceremony()
+    reason = cer.check_backend(cred, "hardware")
+    if reason is not None:
+        fido2_store.audit("authenticate", {"user_id": user_id, "credential": short,
+                                           "result": "DENY", "reason": reason,
+                                           "backend": "hardware"})
+        _say("DENY (%s) användare %s credential %s" % (reason, user_id, short))
+        return 1
     print(HARDWARE_MARKER)
     ctap = fido2_backend.CtapHidBackend()
-    cer = fido2.Ceremony()
     challenge = cer.begin()
     try:
         raw = ctap.authenticate(origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
@@ -159,7 +157,8 @@ def _run_authenticate_hw(user_id: str, cred: dict, short: str,
         credential=cred, challenge=challenge, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
         authenticator_data=raw["authenticator_data"],
         client_data_json=raw["client_data_json"], signature=raw["signature"],
-        ceremony=cer, require_uv=(uv_policy == "required"))
+        ceremony=cer, require_uv=(uv_policy == "required"),
+        expected_backend="hardware")
     if allow:
         fido2_store.update_sign_count(cred["credential_id"], new_count)
     fido2_store.audit("authenticate", {"user_id": user_id, "credential": short,

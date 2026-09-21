@@ -91,13 +91,31 @@ class Ceremony:
         self._challenges[challenge.hex()] = {"created": self.now_fn(), "used": False}
         return challenge
 
+    def check_backend(self, credential: dict,
+                      expected_backend: str | None) -> str | None:
+        """Kontrollera backend-policy utan att konsumera challenge."""
+        if expected_backend is None:
+            return None
+        if credential.get("policy", {}).get("backend") != expected_backend:
+            return "wrong-backend"
+        return None
+
     def precheck(self, *, credential: dict | None, challenge: bytes,
-                   origin: str, rp_id: str, user_presence: bool) -> str | None:
-        """Delade billiga kontroller. Returnerar reason eller None vid OK."""
+                   origin: str, rp_id: str, user_presence: bool,
+                   expected_backend: str | None = None) -> str | None:
+        """Delade billiga kontroller. Returnerar reason eller None vid OK.
+
+        expected_backend: när satt krävs credentialns policy-backend att
+        matcha (mock-credential i HW-läge eller tvärtom nekas —
+        wrong-backend). reason-kontraktet ägs här, inte i command-lagret.
+        """
         if credential is None:
             return "unknown-credential"
         if credential.get("status") != fido2_store.STATUS_ACTIVE:
             return "revoked-credential"
+        reason = self.check_backend(credential, expected_backend)
+        if reason is not None:
+            return reason
         slot = self._challenges.get(bytes(challenge).hex())
         if slot is None or slot["used"]:
             return "replay"
@@ -116,10 +134,13 @@ class Ceremony:
                          origin: str, rp_id: str, user_presence: bool,
                          signature: bytes,
                          user_verified: bool = True,
-                         require_uv: bool = False) -> tuple[bool, str]:
+                         require_uv: bool = False,
+                         expected_backend: str | None = None) -> tuple[bool, str]:
         """Returnerar (allow, reason-kod). Aldrig undantag för deny-fall."""
         reason = self.precheck(credential=credential, challenge=challenge,
-                               origin=origin, rp_id=rp_id, user_presence=user_presence)
+                               origin=origin, rp_id=rp_id,
+                               user_presence=user_presence,
+                               expected_backend=expected_backend)
         if reason is not None:
             return False, reason
         if require_uv and not user_verified:
@@ -239,7 +260,8 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes, origin: str = ORI
                         rp_id: str = RP_ID, authenticator_data: bytes,
                         client_data_json: bytes, signature: bytes,
                         ceremony: Ceremony,
-                        require_uv: bool = False) -> tuple:
+                        require_uv: bool = False,
+                        expected_backend: str | None = None) -> tuple:
     """Verifiera HW-assertion. Returnerar (allow, reason, new_sign_count|None).
 
     Samma prechecks som mock (replay/timeout/origin/…) plus ECDSA mot
@@ -248,7 +270,8 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes, origin: str = ORI
     räcker närvaro.
     """
     reason = ceremony.precheck(credential=credential, challenge=challenge,
-                               origin=origin, rp_id=rp_id, user_presence=True)
+                               origin=origin, rp_id=rp_id, user_presence=True,
+                               expected_backend=expected_backend)
     if reason is not None:
         return False, reason, None
     if not credential.get("public_key"):

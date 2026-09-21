@@ -16,22 +16,26 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PAW = (ROOT / "id-kort/paw-main/paw-main.ino").read_text(errors="replace")
 DEN = (ROOT / "plc/den-main/den-main.ino").read_text(errors="replace")
+LIB = (ROOT / "libraries/PawSession/src/PawSession.h").read_text(errors="replace")
 
-WINDOW = int(re.search(r"#define AUTH_GRANTED_DISPLAY_MS\s+(\d+)", PAW).group(1))
+WINDOW = int(re.search(r"#define PAW_SESSION_GRANT_DISPLAY_MS\s+(\d+)", LIB).group(1))
 
 
 def test_pro95_window_is_defined_and_short_lived():
     assert 0 < WINDOW <= 60000
 
 
-def test_pro95_grant_arms_display_window_on_both_paths():
-    assert PAW.count("authDisplayed = true") == 2  # dock-ACK + LoRa-RESULT
-    assert PAW.count("authGrantedAt = millis()") == 2
+def test_pro95_grant_arms_display_window_on_success():
+    """A successful auth result arms the grant window once in PawSession."""
+    assert LIB.count("session->grant_displayed = true") == 1
+    assert LIB.count("session->grant_at_ms = now_ms") == 1
 
 
 def test_pro95_expiry_reverts_to_locked():
-    assert "authDisplayed = false" in PAW
-    assert "epd.showStatus(EPD_STATUS_AUTHENTICATING)" in PAW
+    assert "paw_session_clear_grant(session)" in LIB      # expiry clears grant
+    assert "paw_session_grant_expired(" in LIB            # expiry checker
+    assert "EPD_STATUS_AUTHENTICATING" in PAW            # reverts to locked display
+    assert "EPD_STATUS_AUTHENTICATED" in PAW             # and to authenticated
 
 
 def test_pro95_expiry_runs_regardless_of_protocol_state():
@@ -39,12 +43,13 @@ def test_pro95_expiry_runs_regardless_of_protocol_state():
     WAITING_FOR_RESULT har ingen timeout (väntar på LoRa-RESULT), så ett
     beviljande visat mitt i en session skulle annars aldrig förfalla."""
     loop = PAW[PAW.find("void loop()"):]
-    case_at = loop.find("case STATE_WAITING_FOR_RESULT:")
-    exp_at = loop.find("if (authDisplayed")
-    hb_at = loop.find("// 4. Heartbeat")
-    assert 0 <= case_at < exp_at < hb_at
-    between = loop[case_at:exp_at]
-    assert any(l.strip() == "}" for l in between.splitlines())  # switchen stängd
+    poll_at = loop.find("pollProvisioning()")           # step 4
+    adv_at = loop.find("// 5. Advance shared session")  # step 5 header
+    chal_at = loop.find("paw_session_challenge_timeout")  # challenge timeout
+    grant_at = loop.find("paw_session_grant_expired(")     # grant expiry
+    hb_at = loop.find("// 7. Heartbeat")                 # step 7
+    # Grant expiry is polled independently of the auth state machine (no switch).
+    assert adv_at < chal_at < grant_at < hb_at
 
 
 def test_pro95_boot_is_locked():

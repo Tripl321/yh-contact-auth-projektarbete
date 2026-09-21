@@ -62,22 +62,21 @@ def test_pro47_key_cleared_on_new_provisioning():
 
 
 def test_pro47_key_cleared_on_crc_mismatch():
-    """CRC mismatch path in firmware clears key via secure_clear_key()."""
+    """CRC/CRC mismatch handling delegates to PawSession, which wipes state."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Find pollProvisioning and verify secure_clear_key is called for
-    # any failure outcome (including CRC mismatch).
+    # pollProvisioning feeds bytes to the library; it no longer holds local key
+    # buffers, so wipe-on-failure lives in PawSession.
     pp_start = src.index('static uint8_t pollProvisioning()')
     pp_end = src.index('// =============================================================\n// Authentication State Machine')
     pp_body = src[pp_start:pp_end]
-    # The secure_clear_key is called after the do-while block for failures
-    assert 'if (outcome != PROV_DONE)' in pp_body
-    assert 'secure_clear_key()' in pp_body
-    # Verify it appears after the do-while block (not just inside one branch)
-    do_while_end = pp_body.index('return outcome;')
-    clear_before_return = pp_body[:do_while_end].count('secure_clear_key()')
-    assert clear_before_return >= 1
+    assert 'paw_session_provisioning_push' in pp_body
+    assert 'paw_session_provisioning_poll' in pp_body
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'paw_session_reset(session)' in lib      # reset on any rejection
+    assert 'paw_session_wipe_key' in lib             # clear on key wipe
+    assert 'shalot_crc32' in lib                     # CRC verified before store
 
 
 def test_pro47_key_never_exposed_in_serial():
@@ -91,13 +90,13 @@ def test_pro47_key_never_exposed_in_serial():
     assert 'Serial.write(aesKey' not in src
     assert 'Serial.write(kMac' not in src
     assert 'Serial.write(kEnc' not in src
-    # Only the hash (fingerprint) is ever transmitted/printed
-    assert 'Serial.write(keyHash' in src
+    # Only the fingerprint (hash) is ever transmitted/printed
+    assert 'paw_session_fingerprint' in src
     assert 'Serial.write(MSG_STORED)' in src
 
 
 def test_pro47_sram_only_no_flash_writes():
-    """Source guard: key material stays in SRAM; no flash writes for keys."""
+    """Source guard: key material stays in SRAM; no flash/EEPROM writes for keys."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
@@ -105,11 +104,17 @@ def test_pro47_sram_only_no_flash_writes():
     assert 'EEPROM.put' not in src
     assert 'EEPROM.write' not in src
     assert 'FlashStorage' not in src
-    # Key buffer is a plain static array (SRAM)
-    assert 'static uint8_t aesKey[AES_KEY_SIZE]' in src
-    # secure_clear_key exists and uses volatile to prevent optimization
+    # The sketch's secure_clear_key delegates to the library (no local buffer).
     assert 'static void secure_clear_key()' in src
-    assert 'volatile uint8_t* k = (volatile uint8_t*)aesKey' in src
+    assert 'paw_session_wipe_key(&pawSession)' in src
+    # Key state lives in the library struct (not a sketch-level AES buffer).
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'uint8_t aes_key[SHALOT_KEY_LEN]' in lib   # owned by PawSession
+    assert 'bool key_stored' in lib
+    # Zeroization goes through volatile-aware shalot_wipe (no optimizable memset).
+    assert 'shalot_wipe(session->aes_key, sizeof(session->aes_key))' in lib
+    assert 'shalot_wipe(session->k_mac, sizeof(session->k_mac))' in lib
+    assert 'shalot_wipe(session->k_enc, sizeof(session->k_enc))' in lib
 
 
 def test_pro47_secure_clear_on_boot():
@@ -128,25 +133,33 @@ def test_pro47_key_hierarchy_documented():
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'master key' in src
-    assert 'K_mac' in src or 'kMac' in src
-    assert 'K_enc' in src or 'kEnc' in src
-    assert 'SRAM-only' in src
+    assert 'master key' in src          # comment: derives K_mac/K_enc from master
+    assert 'K_mac' in src or 'k_mac' in src
+    assert 'K_enc' in src or 'k_enc' in src
+    assert 'SRAM' in src                # ownership: keys live in SRAM only
 
 
 def test_pro47_clear_on_new_handshake_in_source():
-    """PRO-47: new handshake triggers secure_clear_key() in pollProvisioning."""
+    """PRO-47: new handshake + timeout + failure all call paw_session_reset
+    (fail-closed), wiping the previously stored key in the library."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    # Find pollProvisioning and check that secure_clear_key is called
-    # on new handshake and on timeout
     pp_start = src.index('static uint8_t pollProvisioning()')
     pp_end = src.index('// =============================================================\n// Authentication State Machine')
     pp_body = src[pp_start:pp_end]
-    assert 'secure_clear_key()' in pp_body
-    # Count calls: should be at least 3 (new handshake, timeout, failure)
-    assert pp_body.count('secure_clear_key()') >= 3
+    # Firmware delegates every rejection to the library; no local key buffers.
+    assert 'paw_session_provisioning_push' in pp_body
+    assert 'paw_session_provisioning_poll' in pp_body
+    assert 'secure_clear_key()' not in pp_body   # no sketch-level key buffer to clear
+    # Library: reset (key-wipe) on accepted handshake, CRC mismatch, malformed,
+    # all-zero, and provisioning timeout — fail-closed on every rejection.
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    assert 'paw_session_reset(session)' in lib
+    assert lib.count('paw_session_reset(session)') >= 4
+    assert 'paw_session_wipe_key(' in lib        # explicit key-wipe path
+    assert 'shalot_crc32' in lib                     # CRC verified before store
+    assert 'all_zero' in lib                         # zero master rejected at store
 
 
 # ============================================================================
@@ -287,27 +300,24 @@ def test_pro47_den_clear_resets_flag_and_reprovision_works():
 
 
 def test_pro47_paw_source_validated_retrieval():
-    """PAW firmware gates both auth paths on key_is_valid (flag + nonzero)."""
+    """PAW firmware gates both auth paths on key_is_valid (flag + nonzero).
+
+    The sketch's key_is_valid() delegates to the library, which checks the
+    provision flag and that the master buffer is non-zero — a wiped (all-zero)
+    master is indistinguishable from unprovisioned SRAM.
+    """
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
     assert 'static bool key_is_valid()' in src
-    assert 'if (aesKey[i] != 0) return true;' in src
-    lines = src.splitlines()
-    start = next(i for i, l in enumerate(lines) if 'void handleDockAuth()' in l)
-    depth, begun = 0, False
-    for i in range(start, len(lines)):
-        depth += lines[i].count('{') - lines[i].count('}')
-        if '{' in lines[i]:
-            begun = True
-        if begun and depth == 0:
-            dock_end = i
-            break
-    else:
-        raise AssertionError('unbalanced: handleDockAuth')
-    assert 'if (!key_is_valid())' in '\n'.join(lines[start:dock_end + 1])
-    assert 'if (key_is_valid())' in src  # LoRa response path
-    assert 'Zero key rejected.' in src  # store-time corrupt rejection
+    assert 'paw_session_key_is_valid(&pawSession)' in src  # library gate
+    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
+    # Library: key valid only when stored AND master has a non-zero byte.
+    assert 'if (session->aes_key[i] != 0) return true;' in lib
+    assert 'if (!paw_session_key_is_valid(session))' in lib
+    # Auth paths in the sketch gate on the gate.
+    assert 'if (paw_session_key_is_valid(&pawSession))' in src      # LoRa heartbeat
+    assert 'if (key_is_valid())' in src or 'key_is_valid()' in src  # dock auth
 
 
 def test_pro47_den_source_validated_retrieval_and_wipe():

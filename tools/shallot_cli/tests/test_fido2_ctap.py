@@ -457,6 +457,20 @@ def test_wrong_backend_denies_both_directions(hw_isolated, capsys, monkeypatch):
     reasons = [e["details"].get("reason") for e in store.read_audit(root=hw_isolated)
                if e["action"] == "authenticate"]
     assert reasons.count("wrong-backend") == 2
+    assert not any(call[0] == "authenticate" for call in fake.calls)
+
+
+def test_wrong_backend_denies_before_ctap_access(hw_isolated, capsys, monkeypatch):
+    fido2_cmd.run_register("mock-05", yes=True, hardware=False)
+    capsys.readouterr()
+
+    class ForbiddenCtap:
+        def __init__(self):
+            raise AssertionError("CTAP must not be opened for a mock credential")
+
+    monkeypatch.setattr(fido2_backend, "CtapHidBackend", ForbiddenCtap)
+    assert fido2_cmd.run_authenticate("mock-05", hardware=True) == 1
+    assert "wrong-backend" in capsys.readouterr().out
 
 
 def test_cli_hardware_flag_wiring(hw_isolated, capsys, monkeypatch):

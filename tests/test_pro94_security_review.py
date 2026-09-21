@@ -23,95 +23,102 @@ def get_src(path):
 
 
 def test_pro94_paw_sram_only_no_flash_writes():
-    """PAW firmware: all key material in SRAM, no flash/EEPROM writes."""
+    """PAW firmware: all key material in SRAM (owned by PawSession), no flash/EEPROM writes."""
     src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
-    # Key buffers are static (SRAM), not in .data/.bss with PROGMEM
-    assert "static uint8_t aesKey" in src
-    assert "static uint8_t kMac" in src
-    assert "static uint8_t kEnc" in src
-    assert "static bool keyStored" in src
-
-    # No EEPROM, Flash, or PROGMEM usage for key material
-    forbidden = ["EEPROM", "Flash", "PROGMEM", "preferences", "LittleFS", "SPIFFS"]
+    # No EEPROM/Flash/PROGMEM/LittleFS/SPIFFS usage for key material
+    forbidden = ["EEPROM", "PROGMEM", "preferences", "LittleFS", "SPIFFS"]
     for f in forbidden:
-        assert f not in src or f in ["Flash", "LittleFS"]  # Flash appears in comments
+        assert f not in src, f
+
+    # Key material is owned by the library struct, which is SRAM-only.
+    assert "uint8_t aes_key[SHALOT_KEY_LEN]" in lib
+    assert "uint8_t k_mac[SHALOT_KEY_LEN]" in lib
+    assert "uint8_t k_enc[SHALOT_KEY_LEN]" in lib
+    assert "bool key_stored" in lib
+    assert "PawSession pawSession" in src
 
 
 def test_pro94_paw_secure_clear_key_wipes_all_buffers():
-    """PAW secure_clear_key wipes aesKey, kMac, kEnc and clears keyStored."""
+    """PAW secure_clear_key delegates to the library, which wipes
+    aes_key/k_mac/k_enc, clears key_stored, and uses shalot_wipe (volatile-safe)."""
     src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
     assert "secure_clear_key" in src
-    assert "volatile uint8_t*" in src  # volatile store to prevent optimization
-    assert "aesKey" in src and "k[i] = 0" in src  # wipes aesKey
-    assert "kMac" in src and "m[i] = 0" in src  # wipes kMac
-    assert "kEnc" in src and "e[i] = 0" in src  # wipes kEnc
-    assert "keyStored = false" in src  # clears flag
+    assert "paw_session_wipe_key(&pawSession)" in src
+    # Library wipes each sensitive buffer.
+    assert "shalot_wipe(session->aes_key" in lib
+    assert "shalot_wipe(session->k_mac" in lib
+    assert "shalot_wipe(session->k_enc" in lib
+    assert "shalot_wipe(session->fingerprint" in lib
+    # key_stored flag cleared.
+    assert "session->key_stored = false" in lib
+    # shalot_wipe uses a volatile sink (no optimizer elision).
+    assert "volatile" in get_src("libraries/ShallotCrypto/src/ShallotCrypto.h")
 
 
 def test_pro94_paw_buffers_cleared_on_provisioning_events():
     """PAW provisioning buffers cleared on timeout, CRC error, new session."""
-    src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
-    # provBuf cleared on timeout
-    assert "memset(provBuf, 0, sizeof(provBuf))" in src
-    # provBuf cleared on CRC mismatch
-    assert src.count("memset(provBuf, 0") >= 2
-    # secure_clear_key called on provisioning failure
-    assert "secure_clear_key()" in src
+    # Each rejection path calls paw_session_reset (wipes prov_buf + key_stored).
+    assert lib.count("paw_session_reset(session)") >= 4
+    assert "memset(session, 0, sizeof(*session))" in lib   # reset zeroes struct
+    assert "shalot_crc32" in lib                            # CRC verified before store
+    assert "shalot_wipe(session->prov_buf" in lib           # staged bytes wiped on store
 
 
 def test_pro94_paw_challenge_response_buffers_cleared():
-    """PAW challenge/response buffers cleared after use."""
+    """PAW challenge/response/transient buffers cleared after use."""
     src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
-    # challenge cleared after response computed
-    assert "memset(challenge, 0, CHALLENGE_SIZE)" in src
-    # response cleared after transmit
-    assert "memset(resp, 0, sizeof(resp))" in src or "memset(response, 0" in src
-    # mac cleared after use
-    assert "memset(mac, 0, sizeof(mac))" in src
+    # Library clears the accepted challenge after it is consumed or on abort/timeout.
+    assert "paw_session_clear_challenge(session)" in lib
+    assert "shalot_wipe(session->challenge" in lib
+    # Sketch wipes the transient response/transmit buffers after send.
+    assert "shalot_wipe(response, sizeof(response))" in src     # HMAC digest
+    assert "shalot_wipe(txPacket, sizeof(txPacket))" in src     # framed tx
+    assert "shalot_wipe(mac, sizeof(mac))" in src               # dock mac buffer
 
 
 def test_pro94_paw_fail_closed_no_key():
-    """PAW fails closed if no key provisioned."""
+    """PAW fails closed if no key provisioned: challenges ignored, no response."""
     src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
-    # Dock auth checks keyStored (continues only if keyStored is true)
-    assert "if (keyStored)" in src
-    # Dock responder gates CHALLENGE on keyStored inside handleDockAuth
-    lines = src.splitlines()
-    start = next(i for i, l in enumerate(lines) if "void handleDockAuth()" in l)
-    depth, begun = 0, False
-    for i in range(start, len(lines)):
-        depth += lines[i].count("{") - lines[i].count("}")
-        if "{" in lines[i]:
-            begun = True
-        if begun and depth == 0:
-            dock_end = i
-            break
-    else:
-        raise AssertionError("unbalanced: handleDockAuth")
-    dock_body = "\n".join(lines[start:dock_end + 1])
-    assert "if (!key_is_valid())" in dock_body
-    # Validated retrieval rejects a corrupt (all-zero) master even with flag set
+    # Validated retrieval: key valid only when stored AND master non-zero.
     assert "static bool key_is_valid()" in src
-    assert "aesKey[i] != 0" in src
-    # Error path when no key
-    assert "ERROR: No key stored" in src
-    # State goes to WAITING_FOR_KEY on error
-    assert "STATE_WAITING_FOR_KEY" in src
+    assert "paw_session_key_is_valid(&pawSession)" in src
+    assert "if (session->aes_key[i] != 0) return true;" in lib
+    # Library denies any challenge when the key is missing.
+    assert "if (!paw_session_key_is_valid(session))" in lib
+    assert "PAW_SESSION_EVENT_NO_KEY" in lib
+    # No key -> no response path: sketch only calls shalot_hmac_sha256 inside
+    # the branch where paw_session_accept_challenge succeeded (i.e. key valid).
+    hmac_idx = src.find("shalot_hmac_sha256(")
+    accept_idx = src.find("paw_session_accept_challenge(")
+    assert hmac_idx > accept_idx
+    # No-key error path present.
+    assert "CHALLENGE ignored, no key stored" in src
 
 
 def test_pro94_paw_no_state_reuse_after_error():
-    """PAW doesn't reuse old state after errors."""
+    """PAW doesn't reuse old state after errors: a new provisioning handshake
+    resets the whole session (fail-closed), wiping the prior key."""
     src = get_src("id-kort/paw-main/paw-main.ino")
+    lib = get_src("libraries/PawSession/src/PawSession.h")
 
-    # New provisioning session clears old key
+    # Sketch delegates wipes to the library.
     assert "secure_clear_key()" in src
-    # provPhase reset to HANDSHAKE on error
-    assert "provPhase = PROV_PH_HANDSHAKE" in src
+    # Library: accepted handshake calls paw_session_reset, which zeroes the
+    # struct (key_stored cleared) before starting a fresh provisioning phase.
+    assert "paw_session_reset(session);" in lib
+    assert "memset(session, 0, sizeof(*session))" in lib
+    # Provisioning phase machine lives entirely in the library now.
+    assert "session->prov_phase" in lib
 
 
 def test_pro94_paw_secure_debug_guards():

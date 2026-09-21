@@ -32,6 +32,7 @@
 #include <RadioLib.h>
 #include <DenUartProtocol.h>  // PRO-84/87: dock framing from shared module
 #include <ShallotCrypto.h>  // PRO-49: SHA/HMAC/KDF/wipe from shared module
+#include <PawSession.h>  // PRO-47/50/95: transport-free PAW session state
 
 // =============================================================
 // Configuration
@@ -149,51 +150,23 @@ static void setLoRaFlag(void) {
 // Key Storage (PRO-47 + PRO-49)
 // =============================================================
 //
-// Key hierarchy (SRAM-only, never flash/serial):
-//   aesKey   : master key (128-bit, received from UNO Q via USB provisioning)
-//   kMac     : HMAC-SHA256 key (derived: SHA-256(master || "MAC")[:16])
-//   kEnc     : encryption key (derived: SHA-256(master || "ENC")[:16], reserved)
-//
-// All three roles are kept in separate SRAM buffers. Boundaries are
-// enforced by naming convention: never mix key material across roles
-// without explicit derivation. Key material is NEVER written to flash,
-// logs, or serial output. Only the 4-byte SHA-256 fingerprint is transmitted.
-//
-// PRO-49: K_mac is derived on key receipt via hardware-accelerated SHA-256
-// where available (RP2350 SHA accelerator), falling back to software.
-// HMAC always uses K_mac, never the master key directly.
+// PawSession owns the master key, derived K_mac/K_enc, fingerprint and
+// authentication state in SRAM. The sketch only supplies USB bytes and
+// transports completed challenges/results through the session API.
 // =============================================================
 
-static uint8_t aesKey[AES_KEY_SIZE];
-static uint8_t kMac[AES_KEY_SIZE];   // derived HMAC key (PRO-49)
-static uint8_t kEnc[AES_KEY_SIZE];   // derived encryption key (reserved)
-static bool keyStored = false;
+static const uint8_t deviceId[PROV_DEVICE_ID_LEN] = {
+    0x50, 0x41, 0x57, 0x01
+}; // "PAW\x01"
+static PawSession pawSession;
 
 static void secure_clear_key() {
-    volatile uint8_t* k = (volatile uint8_t*)aesKey;
-    for (int i = 0; i < AES_KEY_SIZE; i++) k[i] = 0;
-    volatile uint8_t* m = (volatile uint8_t*)kMac;
-    for (int i = 0; i < AES_KEY_SIZE; i++) m[i] = 0;
-    volatile uint8_t* e = (volatile uint8_t*)kEnc;
-    for (int i = 0; i < AES_KEY_SIZE; i++) e[i] = 0;
-    keyStored = false;
+    paw_session_wipe_key(&pawSession);
 }
 
-// Validated retrieval: a stored key is usable only when the flag is set
-// AND the master buffer is non-zero. An all-zero master is
-// indistinguishable from unprovisioned/wiped SRAM, so it must never
-// authenticate (fail closed on corrupt key).
 static bool key_is_valid() {
-    if (!keyStored) return false;
-    for (int i = 0; i < AES_KEY_SIZE; i++) {
-        if (aesKey[i] != 0) return true;
-    }
-    return false;
+    return paw_session_key_is_valid(&pawSession);
 }
-
-// PRO-49: K_mac derivation lives in <ShallotCrypto.h>
-// (shalot_derive_k_mac) — single shared implementation.
-static const uint8_t deviceId[4] = { 0x50, 0x41, 0x57, 0x01 }; // "PAW\x01"
 
 // =============================================================
 // Waveform LUT for e-Paper
@@ -644,183 +617,80 @@ void ShallotEPD::poll() {
 // =============================================================
 //
 // Non-blocking poll: each call consumes only already-available USB
-// bytes and returns immediately, so the Serial1 dock parser is never
-// delayed. Partial state lives in static storage and is wiped on every
-// failure/timeout (fail-closed: nothing staged, nothing stored).
-// Wire behavior identical to the old blocking version: handshake pair
-// scan -> READY -> exactly 22 key-data bytes -> strict tag/len/CRC
-// checks -> store + fingerprint + STORED.
+// bytes and delegates parsing, validation, derivation and state ownership
+// to PawSession. Wire behavior remains handshake -> READY -> 22-byte
+// KEY_DATA -> STORED/Error, with fail-closed wipes on every rejection.
 
- // Poll result codes (uint8_t to keep the Arduino preprocessor happy).
-#define PROV_PENDING 0  // no complete attempt yet this pass; call again
-#define PROV_DONE    1  // key validated, stored, STORED sent
-#define PROV_FAILED  2  // attempt concluded negatively; state reset, retry next pass
-
-#define PROV_PH_HANDSHAKE 0
-#define PROV_PH_KEYDATA   1
-#define PROV_KEYDATA_LEN  22  // type(1) + len(1) + key(16) + crc(4)
-
-static uint8_t provPhase = PROV_PH_HANDSHAKE;
-static uint32_t provT0 = 0;
-static uint8_t provBuf[PROV_KEYDATA_LEN];
-static uint8_t provGot = 0;
+#define PROV_PENDING 0
+#define PROV_DONE    1
+#define PROV_FAILED  2
 
 static uint8_t pollProvisioning() {
-    if (provPhase == PROV_PH_HANDSHAKE) {
-        // Scan pairs exactly like the original step 1 (non-matching pairs
-        // are skipped, same as before).
-        while (Serial.available() >= 2) {
-            uint8_t msgType = Serial.read();
-            uint8_t targetId = Serial.read();
-            if (msgType == MSG_HANDSHAKE && targetId == TARGET_PAW) {
-#if SECURE_DEBUG
-                Serial.println("[PRO-48] Handshake received.");
-                Serial.print("[PRO-48] Sending READY with device ID: ");
-                for (int i = 0; i < 4; i++) Serial.printf("%02X", deviceId[i]);
-                Serial.println();
-#endif
-                Serial.write(MSG_READY);
-                Serial.write(deviceId, 4);
-                Serial.flush();
-                provPhase = PROV_PH_KEYDATA;
-                provT0 = millis();
-                provGot = 0;
-                memset(provBuf, 0, sizeof(provBuf));
-                // PRO-47: new provisioning session starts - clear any
-                // previously stored key (SRAM hygiene, fail-closed).
-                secure_clear_key();
-                return PROV_PENDING;
-            }
-        }
-        return PROV_PENDING;
-    }
+    uint32_t now = millis();
 
-    // PROV_PH_KEYDATA: accumulate exactly 22 bytes, bounded by the same
-    // 10 s window the old blocking wait used.
-    while (provGot < PROV_KEYDATA_LEN && Serial.available()) {
-        provBuf[provGot++] = (uint8_t)Serial.read();
-    }
-    if (provGot < PROV_KEYDATA_LEN) {
-        if (millis() - provT0 > KEY_DISTRIBUTION_TIMEOUT) {
+    while (Serial.available()) {
+        paw_session_event_t event;
+        paw_provision_result_t result = paw_session_provisioning_push(
+            &pawSession, (uint8_t)Serial.read(), now, &event);
+
+        if (event == PAW_SESSION_EVENT_READY) {
 #if SECURE_DEBUG
-            Serial.println("[PRO-48] Timeout waiting for key data.");
+            Serial.println("[PRO-48] Handshake received.");
+            Serial.print("[PRO-48] Sending READY with device ID: ");
+            for (size_t i = 0; i < PROV_DEVICE_ID_LEN; i++) {
+                Serial.printf("%02X", paw_session_device_id(&pawSession)[i]);
+            }
+            Serial.println();
 #endif
-            provPhase = PROV_PH_HANDSHAKE;
-            provGot = 0;
-            memset(provBuf, 0, sizeof(provBuf));
-            // PRO-47: timeout -> clear stored key (fail-closed).
-            secure_clear_key();
+            Serial.write(MSG_READY);
+            Serial.write(paw_session_device_id(&pawSession), PROV_DEVICE_ID_LEN);
+            Serial.flush();
+            return PROV_PENDING;
+        }
+        if (event == PAW_SESSION_EVENT_STORED) {
+            Serial.write(MSG_STORED);
+            Serial.write(paw_session_fingerprint(&pawSession),
+                         PAW_SESSION_FINGERPRINT_LEN);
+            Serial.flush();
+#if SECURE_DEBUG
+            Serial.print("[PRO-48] Key stored. Hash sent: ");
+            for (size_t i = 0; i < PAW_SESSION_FINGERPRINT_LEN; i++) {
+                Serial.printf("%02X", paw_session_fingerprint(&pawSession)[i]);
+            }
+            Serial.println();
+#endif
+            return PROV_DONE;
+        }
+        if (event == PAW_SESSION_EVENT_ERROR) {
+            Serial.write(MSG_ERROR);
+            Serial.flush();
             return PROV_FAILED;
         }
-        return PROV_PENDING;
+        if (result == PROV_FAILED) {
+            return PROV_FAILED;
+        }
     }
 
-    uint8_t outcome = PROV_FAILED;
-    do {
-        if (provBuf[0] != MSG_KEY_DATA) {
+    paw_session_event_t event;
+    paw_provision_result_t result = paw_session_provisioning_poll(
+        &pawSession, now, &event);
+    if (result == PROV_FAILED) {
 #if SECURE_DEBUG
-            Serial.printf("[PRO-48] Expected KEY_DATA, got 0x%02X\n", provBuf[0]);
+        Serial.println("[PRO-48] Timeout waiting for key data.");
 #endif
-            break;
-        }
-        if (provBuf[1] != AES_KEY_SIZE) {
-#if SECURE_DEBUG
-            Serial.printf("[PRO-48] Unexpected key length: %d\n", provBuf[1]);
-#endif
-            break;
-        }
-        uint32_t receivedCrc = ((uint32_t)provBuf[18] << 24)
-                             | ((uint32_t)provBuf[19] << 16)
-                             | ((uint32_t)provBuf[20] << 8)
-                             | ((uint32_t)provBuf[21]);
-        uint32_t computedCrc = shalot_crc32(provBuf + 2, AES_KEY_SIZE);
-        if (computedCrc != receivedCrc) {
-#if SECURE_DEBUG
-            Serial.printf("[PRO-48] CRC mismatch! Expected: %08X Got: %08X\n",
-                          computedCrc, receivedCrc);
-#endif
-            Serial.write(MSG_ERROR);
-            break;
-        }
-#if SECURE_DEBUG
-        Serial.println("[PRO-48] CRC verified OK.");
-#endif
-
-        // Fail-closed: an all-zero master is indistinguishable from
-        // unprovisioned/wiped SRAM — reject it as corrupt (never store).
-        {
-            bool allZero = true;
-            for (int i = 0; i < AES_KEY_SIZE; i++) {
-                if (provBuf[2 + i] != 0) { allZero = false; break; }
-            }
-            if (allZero) {
-#if SECURE_DEBUG
-                Serial.println("[PRO-48] Zero key rejected.");
-#endif
-                Serial.write(MSG_ERROR);
-                break;
-            }
-        }
-
-        // Store key securely
-        memcpy(aesKey, provBuf + 2, AES_KEY_SIZE);
-        keyStored = true;
-
-        // PRO-49: Derive K_mac from master key (SRAM-only, never exposed)
-        shalot_derive_k_mac(aesKey, kMac);
-
-        // Send confirmation with hash (fingerprint only, never key bytes)
-        uint8_t fullHash[32];
-        shalot_sha256(aesKey, AES_KEY_SIZE, fullHash);
-        uint8_t keyHash[KEY_HASH_SIZE];
-        memcpy(keyHash, fullHash, KEY_HASH_SIZE);
-        memset(fullHash, 0, 32);
-
-        Serial.write(MSG_STORED);
-        Serial.write(keyHash, KEY_HASH_SIZE);
-        Serial.flush();
-#if SECURE_DEBUG
-        Serial.print("[PRO-48] Key stored. Hash sent: ");
-        for (int i = 0; i < KEY_HASH_SIZE; i++) Serial.printf("%02X", keyHash[i]);
-        Serial.println();
-#endif
-        outcome = PROV_DONE;
-    } while (0);
-
-    memset(provBuf, 0, sizeof(provBuf));
-    provGot = 0;
-    provPhase = PROV_PH_HANDSHAKE;
-    // PRO-47: on any failure, ensure no stale key remains in SRAM.
-    if (outcome != PROV_DONE) {
-        secure_clear_key();
+        return PROV_FAILED;
     }
-    return outcome;
+    return PROV_PENDING;
 }
 
 // =============================================================
 // Authentication State Machine
 // =============================================================
+//
+// PawSession is the sole owner of provisioning, key, challenge, result and
+// grant state. The sketch maps session events to UART/LoRa/display actions.
 
-enum AuthState {
-    STATE_WAITING_FOR_KEY,
-    STATE_WAITING_FOR_CHALLENGE,
-    STATE_COMPUTING_RESPONSE,
-    STATE_WAITING_FOR_RESULT
-};
-
-static AuthState currentState = STATE_WAITING_FOR_KEY;
 static bool loraInitialized = false;
-
-// PRO-95: bounded grant indication. The AUTHENTICATED e-paper image is a
-// stale-access risk if shown indefinitely (e-paper is bistable and keeps
-// the image without power). A grant is therefore only *displayed* for
-// AUTH_GRANTED_DISPLAY_MS; afterwards the display reverts to the locked
-// AUTHENTICATING indication. Protocol state already returns to
-// STATE_WAITING_FOR_CHALLENGE at grant time, so this only bounds the
-// human-readable indication — DEN re-locks after DEN_SESSION_GAP_MS.
-#define AUTH_GRANTED_DISPLAY_MS 30000  // ms, same scale as CHALLENGE_TIMEOUT
-static uint32_t authGrantedAt = 0;
-static bool authDisplayed = false;
 
 // =============================================================
 // Docked UART responder (PRO-84, DEN link over Serial1)
@@ -860,12 +730,10 @@ static bool paw_ack_pending = false;
 static void handleDockAuth() {
     uint32_t now = millis();
 
-    // PAW-side ACK watchdog: if we sent a RESPONSE and got no ACK
-    // within 2.5 s, show FAILED. This is display-only; DEN is
-    // authoritative for auth and its 2 s deadline is unaffected.
     if (paw_ack_pending && now - paw_last_resp_sent_at > 2500) {
-        epd.showStatus(EPD_STATUS_FAILED);
+        paw_session_abort(&pawSession);
         paw_ack_pending = false;
+        epd.showStatus(EPD_STATUS_FAILED);
         Serial.println("[PRO-60] PAW ACK timeout -> FAILED on e-paper");
     }
 
@@ -878,72 +746,86 @@ static void handleDockAuth() {
             Serial.print("[PRO-84] Dock frame rejected, code ");
             Serial.println((int)st);
 #endif
-            continue;  // fail-closed: keep seeking SYNC, change nothing
+            continue;
         }
+
         if (f.type == DEN_TYPE_CHALLENGE) {
-                 // PRO-94: fail-closed without a valid provisioned key. Never
-                 // answer (and never touch display state) when missing or
-                 // corrupt (all-zero): an HMAC under a wiped/zero key is not
-                 // a credential.
-                 if (!key_is_valid()) {
+            paw_session_event_t event;
+            if (!paw_session_accept_challenge(&pawSession,
+                                               PAW_AUTH_TRANSPORT_DOCK,
+                                               f.payload, f.payloadLen,
+                                               now, &event)) {
+                if (event == PAW_SESSION_EVENT_NO_KEY) {
+                    Serial.println("[PRO-84] CHALLENGE ignored, no key stored");
+                } else {
+                    Serial.println("[PRO-84] CHALLENGE ignored, session busy");
+                }
+                continue;
+            }
+
+            epd.showStatus(EPD_STATUS_AUTHENTICATING);
+            uint8_t mac[DEN_HMAC_LEN];
+            shalot_hmac_sha256(paw_session_k_mac(&pawSession),
+                               PAW_SESSION_KEY_LEN,
+                               f.payload, f.payloadLen, mac);
+            uint8_t resp[DEN_MAX_FRAME];
+            size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN,
+                                  resp, sizeof(resp));
+            shalot_wipe(mac, sizeof(mac));
+            if (!n || Serial1.write(resp, n) != n) {
+                shalot_wipe(resp, sizeof(resp));
+                paw_session_abort(&pawSession);
 #if SECURE_DEBUG
-                     Serial.println("[PRO-84] CHALLENGE ignored, no key stored");
+                Serial.println("[PRO-84] Response encode or write failed");
 #endif
-                     continue;
-                 }
-                 epd.showStatus(EPD_STATUS_AUTHENTICATING);
-                 // den_decode guarantees payloadLen == DEN_NONCE_LEN (8) here.
-                 uint8_t mac[DEN_HMAC_LEN];
-                 shalot_hmac_sha256(kMac, AES_KEY_SIZE, f.payload, f.payloadLen, mac);
-             uint8_t resp[DEN_MAX_FRAME];
-             size_t n = den_encode(DEN_TYPE_RESPONSE, mac, DEN_HMAC_LEN, resp, sizeof(resp));
-             memset(mac, 0, sizeof(mac));
-             if (!n) {
-#if SECURE_DEBUG
-                 Serial.println("[PRO-84] Response encode failed");
-#endif
-                 continue;
-             }
-            Serial1.write(resp, n);
-             Serial1.flush();
-             paw_last_resp_sent_at = now;
-             paw_ack_pending = true;
-             memset(resp, 0, sizeof(resp));
+                continue;
+            }
+            Serial1.flush();
+            if (!paw_session_response_sent(&pawSession,
+                                           PAW_AUTH_TRANSPORT_DOCK)) {
+                shalot_wipe(resp, sizeof(resp));
+                paw_session_abort(&pawSession);
+                paw_ack_pending = false;
+                continue;
+            }
+            shalot_wipe(resp, sizeof(resp));
+            paw_last_resp_sent_at = now;
+            paw_ack_pending = true;
 #if SECURE_DEBUG
             Serial.println("[PRO-84] CHALLENGE answered over dock UART");
 #endif
         } else if (f.type == DEN_TYPE_ACK) {
             if (!paw_ack_pending) {
-                // Late ACK after PAW timeout: ignore to avoid
-                // overwriting FAILED for a session that already
-                // timed out from PAW's perspective.
 #if SECURE_DEBUG
                 Serial.println("[PRO-84] ACK ignored (no pending response)");
 #endif
                 continue;
             }
+            bool success = f.payloadLen == 1 && f.payload[0] == 0x01;
+            paw_session_event_t event;
+            if (!paw_session_on_result(&pawSession,
+                                       PAW_AUTH_TRANSPORT_DOCK,
+                                       success, now, &event)) {
+                paw_ack_pending = false;
+                continue;
+            }
             paw_ack_pending = false;
-            if (f.payloadLen == 1 && f.payload[0] == 0x01) {
-                 epd.showStatus(EPD_STATUS_AUTHENTICATED);
-                 authGrantedAt = millis();  // PRO-95: arm the display window
-                 authDisplayed = true;
+            if (event == PAW_SESSION_EVENT_AUTH_SUCCESS) {
+                epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                Serial.println("[PRO-84] DEN acknowledged success");
+            } else {
+                epd.showStatus(EPD_STATUS_FAILED);
+                Serial.println("[PRO-84] DEN denied (ACK 0x00)");
+            }
+        } else {
 #if SECURE_DEBUG
-                 Serial.println("[PRO-84] DEN acknowledged success");
-#endif
-             } else {
-                 epd.showStatus(EPD_STATUS_FAILED);
-#if SECURE_DEBUG
-                 Serial.println("[PRO-84] DEN denied (ACK 0x00)");
-#endif
-             }
-         } else {
-#if SECURE_DEBUG
-             Serial.print("[PRO-84] Dock frame ignored, type 0x");
-             Serial.println(f.type, HEX);
+            Serial.print("[PRO-84] Dock frame ignored, type 0x");
+            Serial.println(f.type, HEX);
 #endif
         }
     }
 }
+
 
 // =============================================================
 // Global e-Paper Instance
@@ -959,6 +841,7 @@ void setup() {
     Serial.begin(115200);
     Serial1.begin(115200);  // DEN dock only (TX=GPIO0, RX=GPIO1)
     den_scanner_init(&denScanner);
+    paw_session_init(&pawSession, deviceId);
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);
@@ -1006,7 +889,6 @@ void setup() {
     // Key reception runs via pollProvisioning() in loop() (non-blocking);
     // boot never waits for a key, so dock auth starts immediately.
     Serial.println("[PRO-48] Key reception via loop poll (non-blocking)...");
-    currentState = STATE_WAITING_FOR_KEY;
     epd.showStatus(EPD_STATUS_AUTHENTICATING);
 }
 
@@ -1015,10 +897,8 @@ void setup() {
 // =============================================================
 
 void loop() {
-    static uint32_t lastChallengeTime = 0;
-    static uint8_t challenge[CHALLENGE_SIZE];
-    static uint8_t response[HMAC_SIZE];
     static uint8_t rxBuffer[64];
+    uint32_t now = millis();
 
     // 1. Docked UART (DEN) responder poll FIRST: keeps challenge->answer
     // latency minimal so a slow LoRa pass cannot push it past the 2 s
@@ -1028,7 +908,7 @@ void loop() {
     // 2. e-Paper background completion (microseconds when idle; never waits).
     epd.poll();
 
-    // 3. Check for incoming LoRa packet via interrupt flag
+    // 3. Check for incoming LoRa packet via interrupt flag.
     if (loraInitialized && loraPacketReceived) {
         loraPacketReceived = false;
 
@@ -1043,166 +923,116 @@ void loop() {
                           msgType, (unsigned)rxLen, radio.getRSSI(), radio.getSNR());
 #endif
 
-            // Handle MSG_CHALLENGE (0xB1)
             if (msgType == MSG_CHALLENGE && rxLen >= (1 + CHALLENGE_SIZE)) {
+                paw_session_event_t event;
+                if (paw_session_accept_challenge(&pawSession,
+                                                  PAW_AUTH_TRANSPORT_LORA,
+                                                  rxBuffer + 1, CHALLENGE_SIZE,
+                                                  now, &event)) {
+                    epd.showStatus(EPD_STATUS_AUTHENTICATING);
 #if SECURE_DEBUG
-                Serial.println("[PRO-50] Challenge received from PLC over LoRa");
-#endif
-                memcpy(challenge, rxBuffer + 1, CHALLENGE_SIZE);
-                lastChallengeTime = millis();
-                currentState = STATE_COMPUTING_RESPONSE;
-
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-#if SECURE_DEBUG
-                Serial.print("[PRO-50] Challenge nonce: ");
-                for (int i = 0; i < CHALLENGE_SIZE; i++) Serial.printf("%02X", challenge[i]);
-                Serial.println();
-#endif
-            }
-            // Handle MSG_RESULT (0xB3)
-            // Grant-gated like the dock ACK path (paw_ack_pending): an
-            // unsolicited RESULT must never drive the display. Only a
-            // RESULT for a response we actually sent (WAITING_FOR_RESULT)
-            // may show AUTHENTICATED; anything else leaves the display
-            // untouched (ongoing/denied never shows authenticated).
-            else if (msgType == MSG_RESULT && rxLen >= 2) {
-                if (currentState != STATE_WAITING_FOR_RESULT) {
-#if SECURE_DEBUG
-                    Serial.println("[PRO-50] RESULT ignored (no pending response)");
-#endif
-                } else {
-                uint8_t result = rxBuffer[1];
-                if (result == 0x01) {
-#if SECURE_DEBUG
-                    Serial.println("[PRO-50] Authentication SUCCESS (LoRa)");
-#endif
-                    currentState = STATE_WAITING_FOR_CHALLENGE;
-                    epd.showStatus(EPD_STATUS_AUTHENTICATED);
-                    authGrantedAt = millis();  // PRO-95: arm the display window
-                    authDisplayed = true;
-
-                    for (int i = 0; i < 5; i++) {
-                        digitalWrite(LED_BUILTIN, HIGH);
-                        delay(100);
-                        digitalWrite(LED_BUILTIN, LOW);
-                        delay(100);
+                    Serial.println("[PRO-50] Challenge accepted from PLC over LoRa");
+                    Serial.print("[PRO-50] Challenge nonce: ");
+                    for (size_t i = 0; i < CHALLENGE_SIZE; i++) {
+                        Serial.printf("%02X", rxBuffer[1 + i]);
                     }
-                } else {
-#if SECURE_DEBUG
-                    Serial.println("[PRO-50] Authentication FAILED (LoRa)");
+                    Serial.println();
 #endif
-                    currentState = STATE_WAITING_FOR_CHALLENGE;
-                    epd.showStatus(EPD_STATUS_FAILED);
-
-                    for (int i = 0; i < 10; i++) {
-                        digitalWrite(LED_BUILTIN, HIGH);
-                        delay(50);
-                        digitalWrite(LED_BUILTIN, LOW);
-                        delay(50);
+                } else {
+                    if (event == PAW_SESSION_EVENT_NO_KEY) {
+                        epd.showStatus(EPD_STATUS_FAILED);
+                        Serial.println("[PRO-50] Challenge ignored, no key stored");
+                    } else {
+                        Serial.println("[PRO-50] Challenge ignored, session busy");
                     }
                 }
+            } else if (msgType == MSG_RESULT && rxLen >= 2) {
+                paw_session_event_t event;
+                bool success = rxBuffer[1] == 0x01;
+                if (paw_session_on_result(&pawSession,
+                                           PAW_AUTH_TRANSPORT_LORA,
+                                           success, now, &event)) {
+                    if (event == PAW_SESSION_EVENT_AUTH_SUCCESS) {
+                        epd.showStatus(EPD_STATUS_AUTHENTICATED);
+                        digitalWrite(LED_BUILTIN, HIGH);
+                        Serial.println("[PRO-50] Authentication SUCCESS (LoRa)");
+                    } else {
+                        epd.showStatus(EPD_STATUS_FAILED);
+                        digitalWrite(LED_BUILTIN, LOW);
+                        Serial.println("[PRO-50] Authentication FAILED (LoRa)");
+                    }
+                } else {
+                    Serial.println("[PRO-50] RESULT ignored (no pending response)");
                 }
             }
         }
-        // Resume listening on LoRa
         radio.startReceive();
     }
 
-    // 4. Docked UART poll already ran first (see section 1).
-
-    // 5. Main State Machine Execution
-    switch (currentState) {
-        case STATE_WAITING_FOR_KEY: {
-            uint8_t pr = pollProvisioning();
-            if (pr == PROV_DONE) {
-                currentState = STATE_WAITING_FOR_CHALLENGE;
-                digitalWrite(LED_BUILTIN, HIGH);
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            }
-            // PROV_PENDING/PROV_FAILED: keep waiting, retry next pass.
-            break;
-        }
-
-        case STATE_WAITING_FOR_CHALLENGE:
-            if (lastChallengeTime > 0 && (millis() - lastChallengeTime > CHALLENGE_TIMEOUT)) {
-                lastChallengeTime = 0;
-#if SECURE_DEBUG
-                Serial.println("[PRO-50] Challenge timeout.");
-#endif
-                epd.showStatus(EPD_STATUS_AUTHENTICATING);
-            }
-            break;
-
-        case STATE_COMPUTING_RESPONSE:
-            if (key_is_valid()) {
-                shalot_hmac_sha256(kMac, AES_KEY_SIZE, challenge, CHALLENGE_SIZE, response);
-#if SECURE_DEBUG
-                Serial.print("[PRO-50] HMAC Response computed: ");
-                for (int i = 0; i < HMAC_SIZE; i++) Serial.printf("%02X", response[i]);
-                Serial.println();
-#endif
-
-                // Transmit LoRa packet: [MSG_RESPONSE, response(32)]
-                uint8_t txPacket[1 + HMAC_SIZE];
-                txPacket[0] = MSG_RESPONSE;
-                memcpy(txPacket + 1, response, HMAC_SIZE);
-
-                if (loraInitialized) {
-                    int txState = radio.transmit(txPacket, sizeof(txPacket));
-                    if (txState == RADIOLIB_ERR_NONE) {
-#if SECURE_DEBUG
-                        Serial.println("[PRO-50] Response sent over LoRa to PLC.");
-#endif
-                    } else {
-#if SECURE_DEBUG
-                        Serial.printf("[PRO-50] LoRa transmit error: %d\n", txState);
-#endif
-                    }
-                    radio.startReceive();
-                }
-
-                // PRO-93: HMAC response must not be sent over USB Serial
-                // in production. Guarded for debugging only.
-#if SECURE_DEBUG
-                // Also output over Serial for debugging/telemetry
-                Serial.write(MSG_RESPONSE);
-                Serial.write(response, HMAC_SIZE);
-                Serial.flush();
-#endif
-
-                currentState = STATE_WAITING_FOR_RESULT;
-                memset(challenge, 0, CHALLENGE_SIZE);
-            } else {
-#if SECURE_DEBUG
-                Serial.println("[PRO-50] ERROR: No key stored!");
-#endif
-                currentState = STATE_WAITING_FOR_KEY;
-                epd.showStatus(EPD_STATUS_FAILED);
-            }
-            break;
-
-        case STATE_WAITING_FOR_RESULT:
-            break;
-    }
-
-    // PRO-95: grant indication expires regardless of protocol state — revert
-    // a stale AUTHENTICATED image to the locked indication. Placed outside
-    // the switch on purpose: WAITING_FOR_RESULT has no timeout (it waits
-    // for LoRa RESULT), so a grant shown mid-session would otherwise never
-    // expire. Fires at most once per grant (flag cleared on fire).
-    if (authDisplayed && (millis() - authGrantedAt > AUTH_GRANTED_DISPLAY_MS)) {
-        authDisplayed = false;
+    // 4. Provisioning remains available after a key is stored so a new
+    // handshake can replace the current key and reset auth state.
+    uint8_t provisionResult = pollProvisioning();
+    if (provisionResult == PROV_DONE) {
+        digitalWrite(LED_BUILTIN, HIGH);
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
     }
 
-    // 4. Heartbeat LED Indicator
+    // 5. Advance shared session timeouts and grant expiry.
+    paw_session_event_t sessionEvent;
+    if (paw_session_challenge_timeout(&pawSession, now, &sessionEvent)) {
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
+        Serial.println("[PRO-50] Challenge timeout.");
+    }
+    if (paw_session_grant_expired(&pawSession, now, &sessionEvent)) {
+        epd.showStatus(EPD_STATUS_AUTHENTICATING);
+    }
+
+    // 6. Compute and send a response only while PawSession owns the
+    // outstanding challenge. The response is marked sent after a successful
+    // transport write, so unsolicited results cannot reach the display.
+    if (paw_session_auth_state(&pawSession) == PAW_AUTH_COMPUTING_RESPONSE &&
+        paw_session_auth_transport(&pawSession) == PAW_AUTH_TRANSPORT_LORA) {
+        uint8_t response[HMAC_SIZE];
+        shalot_hmac_sha256(paw_session_k_mac(&pawSession),
+                           PAW_SESSION_KEY_LEN,
+                           paw_session_challenge(&pawSession),
+                           PAW_SESSION_CHALLENGE_LEN,
+                           response);
+        uint8_t txPacket[1 + HMAC_SIZE];
+        txPacket[0] = MSG_RESPONSE;
+        memcpy(txPacket + 1, response, HMAC_SIZE);
+        shalot_wipe(response, sizeof(response));
+
+        bool sent = false;
+        if (loraInitialized) {
+            int txState = radio.transmit(txPacket, sizeof(txPacket));
+            sent = txState == RADIOLIB_ERR_NONE;
+            radio.startReceive();
+        }
+        shalot_wipe(txPacket, sizeof(txPacket));
+        if (sent) {
+            if (!paw_session_response_sent(&pawSession,
+                                           PAW_AUTH_TRANSPORT_LORA)) {
+                paw_session_abort(&pawSession);
+            }
+#if SECURE_DEBUG
+            Serial.println("[PRO-50] Response sent over LoRa to PLC.");
+#endif
+        } else {
+            paw_session_abort(&pawSession);
+            epd.showStatus(EPD_STATUS_FAILED);
+            Serial.println("[PRO-50] LoRa response not sent.");
+        }
+    }
+
+    // 7. Heartbeat LED indicator; no radio traffic is generated here.
     static uint32_t lastHeartbeat = 0;
-    if (millis() - lastHeartbeat > 1000) {
-        lastHeartbeat = millis();
-        if (keyStored) {
+    if (now - lastHeartbeat > 1000) {
+        lastHeartbeat = now;
+        if (paw_session_key_is_valid(&pawSession)) {
             digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
         } else {
-            digitalWrite(LED_BUILTIN, (millis() / 200) % 2);
+            digitalWrite(LED_BUILTIN, (now / 200) % 2);
         }
     }
 
