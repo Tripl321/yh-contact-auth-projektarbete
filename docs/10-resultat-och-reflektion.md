@@ -29,8 +29,8 @@ Trevägsmarkering genomgående: **[K]** kod/test-verifierat i suite,
 
 ## Fysisk bänkverifiering [B]
 
-Enligt `docs/12`/`docs/13-pro-53-fail-closed`: 2 s-deadline och happy
-path hårdvarubevisade på dock. Återstår på sammansatt bänk: K1–K6
+Enligt `docs/13-pro-53-fail-closed`: 2 s-deadline och happy path är
+acceptansbevisade på bänk (§3); återstår sammansatt E2E: K1–K6
 (SRAM-volatilitet, UF2-inspektion, assembler-wipe, nollnyckel-nekande,
 timeout-clear, trådanalys), break-glass-ceremoni på enhet, panelbeteende
 samt pen-testfallen i PRO-63-underlaget — all bänkevidens loggas per

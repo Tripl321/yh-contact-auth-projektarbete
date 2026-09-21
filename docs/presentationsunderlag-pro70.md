@@ -1,8 +1,27 @@
 # SHALLOT — presentationsunderlag (PRO-70, icke-tekniskt)
 
-**Status:** Utkast 2026-09-18 | Målgrupp utan teknikbakgrund. Sakligt:
+**Status:** Utkast 2026-09-21 | Målgrupp utan teknikbakgrund. Sakligt:
 beskriver vad som är byggt och testat i kod, vad som kräver fysisk bänk
 och vad som återstår. Inga produktions- eller compliancelöften.
+
+## Slide-outline (10 min)
+
+1. Titel / problem
+2. Lösning i en mening
+3. Hur autentiseringen fungerar (3 steg)
+4. Live: CLI-demo (3 min)
+5. Vad som är bevisat (551 tests)
+6. Begränsningar (säg högt)
+7. Nästa steg
+8. Frågor
+
+```mermaid
+flowchart LR
+    DEN[("DEN: skickar engångs-nonce")] -->|UART| PAW[("PAW: HMAC-svar")]
+    PAW -->|UART| DEN
+    DEN -->|ACK 0x01/0x00| PAW
+    style PAW fill:#f9f,stroke:#333,stroke-width:1px
+```
 
 ## 1. Problemet
 
@@ -39,6 +58,13 @@ shallot simulate auth --scenario wrong-key  # nekad: fail-closed i praktiken
 shallot demo incident                       # simulerat driftlarm + avslöjande
 ```
 
+**Repetitionsnoteringar:**
+- `simulate auth` lägger alltid åtminstone en `SIMULATED`/`TEST-ONLY`-markering;
+  den rör ingen fysisk enhet.
+- `demo incident` är deterministisk — samma kommando ger samma ut på
+  omvömningar. Börja inzoomad på larmet, zooma sedan ut för avslöjandet.
+- Kör först `shallot doctor` för att visa att ingen hårdvara krävs.
+
 Berätta under tiden: första kommandot visar hur det ser ut när allt
 stämmer; andra visar att fel nyckel ger ett tydligt, loggat nej; tredje
 visar hur ett övervakningssystem skulle se larmet (märkt simulering).
@@ -46,7 +72,7 @@ visar hur ett övervakningssystem skulle se larmet (märkt simulering).
 ## 5. Säkerhetsnytta (belagd, inte lovat)
 
 - Nekande är normalläget: fel, timeout och omstart låser — bevisat i
-  automatiska tester (500+), inte bara påstått.
+  automatiska tester (551, inte bara påstått).
 - Nycklar lämnar aldrig enheterna utom som okänsliga fingeravtryck och
   raderas efter bruk.
 - Serviceåtkomst (break-glass) kräver två personer, är tidsbegränsad till

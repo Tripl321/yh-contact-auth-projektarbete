@@ -1,16 +1,17 @@
 # 11 — Dockat UART-protokoll PAW↔DEN (PRO-87)
 
-**Status:** Utkast 2026-09-09 | **Scope:** protokolldefinition + delad modulskelett.
-Ingen radio, ingen autentiseringsfirmware (PRO-88 DEN TX / PRO-84 PAW RX kommer
-senare), inga hårdvaruändringar. Enda transporten här är dockad UART (Serial1)
-över pogo-pins/USB-C; LoRa används ej.
+**Status:** Aktiv 2026-09-21 | **Scope:** protokolldefinition + delad modul.
+Ingen radio, ingen LoRa. Enda transporten här är dockad UART (Serial1)
+över pogo-pins/USB-C. Implementering och teståtergivning finns i
+`plc/den-main/den-main.ino`, `id-kort/paw-main/paw-main.ino` och
+`tests/test_pro87_uart.py`.
 
 ## 1. Roller och session
 
 | Roll | Beteende |
 |---|---|
 | DEN (dockningsstation) | Initierar alltid. Skickar CHALLENGE, fattar fail-closed beslut, bekräftar med ACK |
-| PAW (ID-bricka) | Svarar endast — initierar aldrig trafik. Svarar på CHALLENGE med RESPONSE, kan skicka ALARM + svara HEARTBEAT |
+| PAW (ID-bricka) | Svarar endast — initierar aldrig trafik. Svarar på CHALLENGE med RESPONSE; ACK tolkas den endan. HEARTBEAT/ALARM är reserverade i ramformatet men har ingen aktiv dock-beteende i PAW (ignoreras) |
 
 Sessionsflöde: `DEN --CHALLENGE--> PAW --RESPONSE--> DEN --ACK--> PAW`.
 **Svarsdeadline 2 s** från challenge-sändning. Vid uteblivet/ogiltigt svar:
@@ -48,7 +49,8 @@ Avvikande payload-storlek för känd typ, okänd typ, LEN > 64, eller CRC-fel
 > firmwaresidorna + pytest-sviten implementerar och pinnar
 > `HMAC-SHA256(K_mac, nonce)` med härledd nyckel
 > `K_mac = SHA-256(master || "MAC")[:16]` och utan epoch — epoch finns
-> endast i provisioneringsprotokollet (`docs/12`, `docs/14`), där ingen
+> endast i provisioneringsprotokollet (`docs/12-envelope-protocol.md` och
+> `docs/14-provisioning-v2-design.md`), där ingen
 > epoch distribueras över dock-länken. Ändra inte ensidigt: det bryter
 > DEN↔PAW-interop.
 
@@ -71,8 +73,9 @@ Avvikande payload-storlek för känd typ, okänd typ, LEN > 64, eller CRC-fel
   eller delnycklar. Endast nonce, HMAC, larmkod och status (allt enligt §3).
 - **Konstanttidsjämförelse** av RESPONSE-HMAC på DEN-sidan (`den_ct_compare`,
   aldrig `memcmp`); tidig avbrytning får inte läcka matchningsposition.
-- HMAC binder svar till challenge (`epoch || nonce`); replay av gammal
-  RESPONSE mot ny nonce faller i jämförelsen.
+- HMAC binder svar till den **aktuella** challenge (samma nonce). Ett
+  RESPONSE med giltig HMAC men felaktig/gammnal nonce faller i
+  konstanttidsjämförelsen. Ny session kräver ny CHALLENGE med färsk nonce.
 - PAW initierar aldrig: oombedd trafik från PAW-sidan ignoreras av DEN.
 - Deadline-överskridning, CRC-fel eller sessionsavbrott = neka (fail closed).
 
@@ -84,7 +87,8 @@ Avvikande payload-storlek för känd typ, okänd typ, LEN > 64, eller CRC-fel
   `millis()`; ingen Serial-beroende, ingen allokering.
 - Transport (Serial1 TX/RX) implementeras i PRO-88 (DEN) / PRO-84 (PAW).
 - Testvektorer: `tests/test_pro87_uart.py` (ramkodning, CRC, ogiltiga ramar,
-  resynk, deadline-regel). KAT-digests är hårdkodade IEEE CRC32-värden.
+  resynk, deadline-regel, source guards mot `libraries/DenUartProtocol/src/DenUartProtocol.h`).
+  KAT-digests är hårdkodade IEEE CRC32-värden; levnadskretsen motsvarar firmwaren.
 
 ## Referenser
 

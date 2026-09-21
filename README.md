@@ -2,12 +2,13 @@
 
 ## Projektbeskrivning
 
-Challenge-response autentisering över LoRa P2P med AES-128 och HMAC-SHA256.
+Challenge-response autentisering över dockad UART (Serial1) med AES-128 och HMAC-SHA256.
 
 Ett IoT-säkerhetsprojekt som demonstrerar kryptografisk autentisering mellan
-två noder över LoRa-radio. En PLC (Raspberry Pi Pico 2) utmanar ett ID-kort
-(Adafruit Feather RP2350) med en nonce. ID-kortet svarar med
-HMAC-SHA256(AES-128-nyckel, nonce). Status visas på en e-Paper-display.
+två noder. En DEN (Raspberry Pi Pico 2) utmanar ett ID-kort
+(Adafruit Feather RP2350) med en nonce över kontaktbaserad UART-docka.
+ID-kortet svarar med HMAC-SHA256(AES-128-nyckel, nonce). Status visas på en
+e-Paper-display. LoRa är archiverat i detta repo (se `docs/architecture-pivot-2026-09-09.md`).
 
 ## Arkitektur
 
@@ -18,10 +19,10 @@ HMAC-SHA256(AES-128-nyckel, nonce). Status visas på en e-Paper-display.
 ## Kryptografiskt flode
 
 1. UNO Q genererar en AES-128-nyckel
-2. Nyckeln distribueras via USB till bada noder (PLC och ID-kort)
-3. PLC skickar en nonce (slumpmässigt tal) over LoRa till ID-kortet
+2. Nyckeln distribueras via USB till bada noder (DEN och PAW)
+3. DEN skickar en nonce (slumpmässigt tal) över dockad UART till ID-kortet
 4. ID-kortet beräknar HMAC-SHA256(nyckel, nonce) och returnerar resultatet
-5. PLC verifierar HMAC och uppdaterar status på e-Paper-display
+5. DEN verifierar HMAC och uppdaterar status på e-Paper-display
 
 ## Repositoriestruktur
 

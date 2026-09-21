@@ -58,10 +58,10 @@ Per session: `CHALLENGE(8B)` → `RESPONSE(32B HMAC)` inom 2000 ms →
 konstanttidsverifiering → `ACK(0x01/0x00)` + `AUTHENTICATED/FAILED`-logg.
 Ramformat, CRC32 och parser delas via `libraries/DenUartProtocol`
 (ingen duplicering). Logik och felvägar är mock- och KAT-testade
-(`test_pro87/88/84/61/62`); **2 s-deadline och happy path är enligt
-projektets bänkdokumentation hårdvarubevisade** (`docs/12`,
-`docs/13-pro-53-fail-closed`) **[B]** — suite bevisar logik, inte
-kiseltiming. E2E på sammansatt bänk återstår **[R]**.
+(`test_pro87/88/84/61/62`); per §3 i `docs/13-pro-53-fail-closed` är
+2 s-deadline och happy-path acceptans på bänk, men **suite bevisar logik, inte
+kiseltiming**. E2E på sammansatt DEN+PAW-bänk återstår **[R]** — se
+`docs/13-pro-53-fail-closed` H1–H7.
 
 ## 6. USB-provisionering (PRO-46) [I/B]
 
@@ -103,7 +103,7 @@ prototypprocedur** som firmwaren inte kan bevisa **[R]**.
 
 | Område | Implementerat [I] | Bänk krävs [B] | Restrisk [R] |
 |---|---|---|---|
-| Dock-auth + fail-closed | Logik + felvägar testlåsta | 2 s-timing, happy path (delvis gjord, se docs/12) | E2E sammansatt bänk |
+| Dock-auth + fail-closed | Logik + felvägar testlåsta (551 tests) | 2 s-timing, happy path per `docs/13` §3 | E2E sammansatt bänk |
 | Nyckelhantering SRAM/wipe | Källguards + 30 tester | K1–K6 (volatilitet, UF2-inspektion, trådanalys) | K7 bitfel, ingen ECC |
 | Beviljandevisning | 30 s-förfall testlåst | Panelbeteende på enhet | Bildfrys vid strömavbrott |
 | Break-glass | Ceremoni + relock + audit testlåst | Ceremoni på enhet | Single-operator, flyktig audit, ingen duress |

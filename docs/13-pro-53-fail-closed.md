@@ -1,8 +1,11 @@
 # 13 — PRO-53 Fail-Closed Watchdog (DEN UART Authentication)
 
-Status: spec v1.0 approved. Implementation and hardware acceptance
-complete. UART is the current and only in-scope transport for
+Status: spec v1.0 approved. Implementation and logic tests
+complete (pytest mirrors the DEN firmware state machine, UART framing and
+HMAC vectors). UART is the current and only in-scope transport for
 DEN↔PAW docked authentication. **LoRa is explicitly out of scope.**
+Physical bench acceptance record: see §3; combined DEN+PAW E2E on a
+live dock is the remaining hardware step (open items H1–H7).
 
 ## 1. State machine
 
@@ -122,16 +125,16 @@ python3 -m pytest tests/test_pro88_den.py tests/test_pro87_uart.py -v
 ```
 $ python3 -m pytest tests/test_pro88_den.py tests/test_pro87_uart.py -v
 ...
-17 passed (test_pro88_den.py)
+18 passed (test_pro88_den.py)
 24 passed (test_pro87_uart.py)
-41 passed total
+42 passed total
 ```
 
-Full suite: **225 tests passing**.
+Full suite: **551 tests passing**.
 
 ```
 $ python3 -m pytest tests/ -q
-225 passed in 2.84s
+551 passed in 6.05s
 ```
 
 ## 5. Transport scope

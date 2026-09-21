@@ -15,7 +15,7 @@ the DEN denies access even though the HMAC is valid.
 ┌─────────────┐     MSG_BLOCKLIST (0xA6)      ┌────────────────────────────────┐
 │             │  version, issuer, entries, sig │                                │
 │ UNO Q       │ ────────────────────────────► │ DEN (PLC dock)                 │
-│ (MamaBear)  │                                 │  - verifies HMAC-SHA256        │
+│ (MamaBear)  │                                 │  - verifies Ed25519 signature     │
 └─────────────┘                                  │  - checks version              │
                                                 │  - activates on valid sig     │
                                                 │  - keeps last valid on error  │

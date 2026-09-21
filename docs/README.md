@@ -75,7 +75,7 @@ Granskning av överensstämmelse mellan kravspecifikation (01) och arkitektur (0
 
 | Förutsättning | Status | Påverkan |
 |---------------|--------|---------|
-| Challenge-response implementerad | Ej påbörjad (PRO-49/50/51/52/53) | Blockerar PRO-53, PRO-61 |
+| Challenge-response implementerad | Aktiv (PRO-49/50/51/52/53/87/88/84) — UART dock, 551 tests | E2E bänk återstår |
 | Paketformat definierat | Ej påbörjad (PRO-37) | Blockerar PRO-38/39/40 |
 | Felhantering implementerad | Ej påbörjad (PRO-41) | Blockerar PRO-61 |
 | Säkerhetsdesign dokumenterad | Ej påbörjad (PRO-54) | Blockerar PRO-55, PRO-63 |
