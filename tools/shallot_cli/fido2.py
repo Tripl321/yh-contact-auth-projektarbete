@@ -23,12 +23,17 @@ import re
 import secrets
 import time
 
-from shallot_cli import fido2_backend, fido2_sanitize, fido2_store
+from shallot_cli import fido2_backend, fido2_sanitize, fido2_store, fido2_verify
 
 RP_ID = "shallot.local"
 ORIGIN = "https://shallot.local"
 CHALLENGE_BYTES = 32
-CHALLENGE_TIMEOUT_S = 120
+# Challenge-timeout + signeringshjälpare ägs av verifieraren (enda källan);
+# återexporteras här så befintliga anropare (cmd-lager, tester) är orörda.
+CHALLENGE_TIMEOUT_S = fido2_verify.CHALLENGE_TIMEOUT_S
+signed_data = fido2_verify.signed_data
+_b64unpad = fido2_verify._b64unpad
+_client_data_type = fido2_verify._client_data_type
 
 BANNER = "SIMULATED / TEST-ONLY — mock-authenticator, ingen fysisk FIDO2-enhet."
 
@@ -72,13 +77,67 @@ def approval_fingerprint(credential_id: str, public_key_b64: str | None) -> str:
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
-def signed_data(challenge: bytes, origin: str, rp_id: str, user_presence: bool) -> bytes:
-    return (bytes(challenge) + b"|" + origin.encode() + b"|"
-            + rp_id.encode() + b"|" + (b"UP" if user_presence else b"noUP"))
+class Credential:
+    """Lagringsbar credential-post (snitt 1: validering + builders).
+
+    Äger formen {credential_id, user_id, created, status, policy, ...} och
+    förbudet mot hemliga fält — store validerar via denna typ i stället för
+    egna kontroller (tunna wrappers). Fingerprint/export flyttas hit senare.
+    Förbudslistan själv ägs av store (lagringspolicy); upprätthållandet här.
+    """
+
+    REQUIRED = ("credential_id", "user_id", "created", "status", "policy")
+
+    def __init__(self, mapping: dict):
+        self._data = dict(mapping)
+
+    def to_dict(self) -> dict:
+        return dict(self._data)
+
+    @classmethod
+    def check_fields(cls, mapping: dict, where: str) -> None:
+        """Avvisa förbjudna fält rekursivt (dict + listor). Fail-closed."""
+        suffix = " (nycklar sparas aldrig)" if where != "auditpost" else ""
+        stack = [mapping]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in fido2_store.FORBIDDEN_FIELDS:
+                        raise ValueError(
+                            "förbjudet fält i %s: %s%s" % (where, key, suffix))
+                    stack.append(value)
+            elif isinstance(node, list):
+                stack.extend(node)
+
+    @classmethod
+    def check_record(cls, mapping: dict) -> None:
+        cls.check_fields(mapping, "metadata")
+        for req in cls.REQUIRED:
+            if req not in mapping:
+                raise ValueError("saknar obligatoriskt fält: %s" % req)
+
+    @classmethod
+    def create(cls, *, credential_id: str, user_id: str, policy: dict,
+               created: str | None = None, status: str | None = None,
+               extra: dict | None = None) -> "Credential":
+        data = {"credential_id": credential_id, "user_id": user_id,
+                "created": created or fido2_store.utcnow(),
+                "status": status or fido2_store.STATUS_ACTIVE,
+                "policy": dict(policy)}
+        if extra:
+            data.update(extra)
+        cls.check_record(data)
+        return cls(data)
 
 
 class Ceremony:
-    """Håller challenge-livscykel (singelbruk + timeout) för en session."""
+    """Håller challenge-livscykel (singelbruk + timeout) för en session.
+
+    Endast challenge-lagret bor här; hela ALLOW/DENY-beslutet ägs av
+    fido2_verify (metoderna nedan är tunna wrappers som binder SHALLOTs
+    RP-identitet).
+    """
 
     def __init__(self, backend=None, rng=None, now_fn=None):
         self.backend = backend or fido2_backend.get_backend("mock")
@@ -94,41 +153,17 @@ class Ceremony:
     def check_backend(self, credential: dict,
                       expected_backend: str | None) -> str | None:
         """Kontrollera backend-policy utan att konsumera challenge."""
-        if expected_backend is None:
-            return None
-        if credential.get("policy", {}).get("backend") != expected_backend:
-            return "wrong-backend"
-        return None
+        return fido2_verify.check_backend(credential, expected_backend)
 
     def precheck(self, *, credential: dict | None, challenge: bytes,
                    origin: str, rp_id: str, user_presence: bool,
                    expected_backend: str | None = None) -> str | None:
-        """Delade billiga kontroller. Returnerar reason eller None vid OK.
-
-        expected_backend: när satt krävs credentialns policy-backend att
-        matcha (mock-credential i HW-läge eller tvärtom nekas —
-        wrong-backend). reason-kontraktet ägs här, inte i command-lagret.
-        """
-        if credential is None:
-            return "unknown-credential"
-        if credential.get("status") != fido2_store.STATUS_ACTIVE:
-            return "revoked-credential"
-        reason = self.check_backend(credential, expected_backend)
-        if reason is not None:
-            return reason
-        slot = self._challenges.get(bytes(challenge).hex())
-        if slot is None or slot["used"]:
-            return "replay"
-        slot["used"] = True
-        if self.now_fn() - slot["created"] > CHALLENGE_TIMEOUT_S:
-            return "timeout"
-        if origin != ORIGIN:
-            return "wrong-origin"
-        if rp_id != RP_ID:
-            return "wrong-rp-id"
-        if not user_presence:
-            return "no-user-presence"
-        return None
+        """Delade billiga kontroller. Returnerar reason eller None vid OK."""
+        return fido2_verify.precheck(
+            self, credential=credential, challenge=challenge,
+            origin=origin, rp_id=rp_id, user_presence=user_presence,
+            expected_origin=ORIGIN, expected_rp_id=RP_ID,
+            expected_backend=expected_backend)
 
     def verify_assertion(self, *, credential: dict | None, challenge: bytes,
                          origin: str, rp_id: str, user_presence: bool,
@@ -137,22 +172,12 @@ class Ceremony:
                          require_uv: bool = False,
                          expected_backend: str | None = None) -> tuple[bool, str]:
         """Returnerar (allow, reason-kod). Aldrig undantag för deny-fall."""
-        reason = self.precheck(credential=credential, challenge=challenge,
-                               origin=origin, rp_id=rp_id,
-                               user_presence=user_presence,
-                               expected_backend=expected_backend)
-        if reason is not None:
-            return False, reason
-        if require_uv and not user_verified:
-            return False, "no-user-verification"
-        data = signed_data(challenge, origin, rp_id, user_presence)
-        try:
-            ok = self.backend.verify(
-                credential_id=credential["credential_id"].encode(),
-                signed_data=data, signature=bytes(signature))
-        except fido2_backend.BackendUnavailable:
-            return False, "backend-unavailable"
-        return (True, "ok") if ok else (False, "invalid-signature")
+        return fido2_verify.verify_assertion(
+            self, credential=credential, challenge=challenge,
+            origin=origin, rp_id=rp_id, user_presence=user_presence,
+            signature=signature, expected_origin=ORIGIN,
+            expected_rp_id=RP_ID, user_verified=user_verified,
+            require_uv=require_uv, expected_backend=expected_backend)
 
 
 def register_user(user_id: str, *, backend=None, rng=None,
@@ -173,11 +198,11 @@ def register_user(user_id: str, *, backend=None, rng=None,
         raise RuntimeError(str(e)) from None
     if not valid:
         raise RuntimeError("registrering underkänd: mock-attestation verifierades inte")
-    metadata = {"credential_id": credential_id, "user_id": user,
-                "created": fido2_store.utcnow(), "status": fido2_store.STATUS_ACTIVE,
-                "policy": {"user_presence": True, "rp_id": RP_ID,
-                           "origin": ORIGIN, "backend": be.name, "mode": "simulated-test",
-                           "user_verification": user_verification}}
+    metadata = Credential.create(
+        credential_id=credential_id, user_id=user,
+        policy={"user_presence": True, "rp_id": RP_ID,
+                "origin": ORIGIN, "backend": be.name, "mode": "simulated-test",
+                "user_verification": user_verification}).to_dict()
     fido2_store.save_credential(metadata, root=root)
     fido2_store.audit("register", {"user_id": user,
                                    "credential": fido2_sanitize.short_credential(credential_id)},
@@ -188,15 +213,6 @@ def register_user(user_id: str, *, backend=None, rng=None,
 #: Attestationsformat RP:n accepterar. "packed" endast som self-attestation
 #: (Pico Fido har ingen vendor-CA; x5c saknar trust anchors här och avvisas).
 HW_ATTESTATION_FORMATS = ("none", "packed")
-
-
-def _b64unpad(data: str) -> bytes:
-    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-
-
-def _client_data_type(client_data) -> str:
-    t = getattr(client_data, "type", "")
-    return str(getattr(t, "value", t))
 
 
 def verify_hw_registration(*, attestation_object: bytes, client_data_json: bytes,
@@ -264,50 +280,16 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes, origin: str = ORI
                         expected_backend: str | None = None) -> tuple:
     """Verifiera HW-assertion. Returnerar (allow, reason, new_sign_count|None).
 
-    Samma prechecks som mock (replay/timeout/origin/…) plus ECDSA mot
-    lagrad publik nyckel och monoton sign-counter (klondetektion).
-    Med require_uv krävs UV-flaggan från enheten (PIN/badge), annars
-    räcker närvaro.
+    Tunn wrapper som binder SHALLOTs RP-identitet; beslutet ägs av
+    fido2_verify (samma prechecks som mock plus ECDSA och monoton
+    sign-counter).
     """
-    reason = ceremony.precheck(credential=credential, challenge=challenge,
-                               origin=origin, rp_id=rp_id, user_presence=True,
-                               expected_backend=expected_backend)
-    if reason is not None:
-        return False, reason, None
-    if not credential.get("public_key"):
-        return False, "invalid-signature", None
-    from fido2.webauthn import AuthenticatorData, CollectedClientData
-    from fido2.cose import CoseKey
-    try:
-        auth_data = AuthenticatorData(bytes(authenticator_data))
-        client_data = CollectedClientData(bytes(client_data_json))
-    except Exception:
-        return False, "invalid-signature", None
-    if auth_data.rp_id_hash != hashlib.sha256(rp_id.encode()).digest():
-        return False, "invalid-signature", None
-    if not auth_data.is_user_present():
-        return False, "no-user-presence", None
-    if require_uv and not auth_data.is_user_verified():
-        return False, "no-user-verification", None
-    if (_client_data_type(client_data) != "webauthn.get"
-            or not hmac.compare_digest(bytes(client_data.challenge), bytes(challenge))
-            or client_data.origin != origin):
-        return False, "invalid-signature", None
-    stored = credential.get("sign_count", 0)
-    new_count = int(auth_data.counter)
-    if stored == 0 and new_count == 0:
-        pass  # räknare används ej av enheten — ingen klondetektion möjlig
-    elif new_count <= stored:
-        return False, "clone-detected", None
-    try:
-        from fido2 import cbor
-        key = CoseKey.parse(cbor.decode(_b64unpad(credential["public_key"])))
-        key.verify(bytes(authenticator_data)
-                   + hashlib.sha256(bytes(client_data_json)).digest(),
-                   bytes(signature))
-    except Exception:
-        return False, "invalid-signature", None
-    return True, "ok", new_count
+    return fido2_verify.verify_hw_assertion(
+        credential=credential, challenge=challenge, origin=origin,
+        rp_id=rp_id, authenticator_data=authenticator_data,
+        client_data_json=client_data_json, signature=signature,
+        ceremony=ceremony, expected_origin=ORIGIN, expected_rp_id=RP_ID,
+        require_uv=require_uv, expected_backend=expected_backend)
 
 
 def register_hw_user(user_id: str, *, ctap, root=None,
@@ -326,14 +308,14 @@ def register_hw_user(user_id: str, *, ctap, root=None,
             challenge=challenge, rp_id=RP_ID, origin=ORIGIN)
     except (ValueError, KeyError) as e:
         raise RuntimeError("registrering underkänd: %s" % e) from None
-    metadata = {"credential_id": cred["credential_id"], "user_id": user,
-                "created": fido2_store.utcnow(), "status": fido2_store.STATUS_ACTIVE,
-                "policy": {"user_presence": True, "rp_id": RP_ID, "origin": ORIGIN,
-                           "backend": "hardware", "mode": "hardware-ctap",
-                           "attestation": cred["attestation_fmt"],
-                           "user_verification": user_verification},
-                "public_key": cred["public_key_cose"],
-                "sign_count": cred["sign_count"]}
+    metadata = Credential.create(
+        credential_id=cred["credential_id"], user_id=user,
+        policy={"user_presence": True, "rp_id": RP_ID, "origin": ORIGIN,
+                "backend": "hardware", "mode": "hardware-ctap",
+                "attestation": cred["attestation_fmt"],
+                "user_verification": user_verification},
+        extra={"public_key": cred["public_key_cose"],
+               "sign_count": cred["sign_count"]}).to_dict()
     fido2_store.save_credential(metadata, root=root)
     fido2_store.audit("register", {"user_id": user,
                                    "credential": fido2_sanitize.short_credential(

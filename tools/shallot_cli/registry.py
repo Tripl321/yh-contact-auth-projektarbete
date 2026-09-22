@@ -10,6 +10,8 @@ att bryta importcykeln registry <-> tui.
 
 from __future__ import annotations
 
+import sys
+
 
 class Command:
     """Ett registrerat kommando.
@@ -35,12 +37,19 @@ def register(cmd: Command) -> Command:
 
 
 def dispatch_tui(number: str) -> bool:
-    """Kör TUI-post via registry. True = känt nummer (kört)."""
+    """Kör TUI-post via registry. True = känt nummer (kört).
+
+    Strängflöden slås upp mot tui-modulen och felar högt med kontext om
+    namnet inte finns — ett omdöpt flöde får aldrig tystna.
+    """
     from shallot_cli import tui
     for cmd in COMMANDS.values():
         if number in cmd.tui:
             _, flow = cmd.tui[number]
-            fn = getattr(tui, flow) if isinstance(flow, str) else flow
+            fn = getattr(tui, flow, None) if isinstance(flow, str) else flow
+            if not callable(fn):
+                raise RuntimeError(
+                    "trasig TUI-koppling: flöde %r för %s saknas" % (flow, cmd.name))
             fn()
             return True
     return False
@@ -64,8 +73,8 @@ def _simulate_args(parser):
 
 
 def _simulate_run(args):
-    from shallot_cli.commands import simulate_cmd
-    return simulate_cmd.run(args.scenario)
+    from shallot_cli import sim
+    return sim.run_cli(args.scenario)
 
 
 def _test_args(parser):
@@ -87,18 +96,20 @@ def _demo_args(parser):
 
 
 def _demo_run(args):
-    from shallot_cli.commands import demo_cmd
-    return demo_cmd.run()
+    from shallot_cli import incident
+    return incident.run_cli()
 
 
 def _explain_args(parser):
     from shallot_cli.explain import TOPICS
+    from shallot_cli.ollama import DEFAULT_MODEL
     parser.add_argument("topic", nargs="?", default=None,
                         help="ämne (%s) eller utelämna med --list" % "|".join(sorted(TOPICS)))
     parser.add_argument("--list", action="store_true", help="lista ämnen")
     parser.add_argument("--ai", action="store_true",
                         help="utveckla med lokal Ollama-modell (endast localhost)")
-    parser.add_argument("--model", default="llama3.2", help="Ollama-modell (default: llama3.2)")
+    parser.add_argument("--model", default=DEFAULT_MODEL,
+                        help="Ollama-modell (default: %s)" % DEFAULT_MODEL)
     parser.add_argument("--host", default=None,
                         help="Ollama-bas-URL (default: $OLLAMA_HOST eller localhost; endast loopback)")
 
@@ -198,16 +209,16 @@ def _fido2_args(parser):
     f2r.add_argument("--user", required=True, help="anonymt användar-ID (t.ex. admin-01)")
     f2r.add_argument("--yes", action="store_true",
                      help="bekräfta registrering utan interaktiv fråga")
-    f2r.add_argument("--hardware", action="store_true",
-                     help="använd fysisk authenticator över CTAP2/HID (kräver beröring)")
+    f2r.add_argument("--mock", action="store_true",
+                     help="mock-authenticator istället för fysisk (explicit testläge, SIMULATED / TEST-ONLY)")
     f2r.add_argument("--require-uv", action="store_true",
                      help="kräv PIN/biometri (user verification), lagras i policyn")
     f2a = sub.add_parser("authenticate", help="verifiera assertion (ALLOW/DENY)")
     f2a.add_argument("--user", required=True, help="anonymt användar-ID")
     f2a.add_argument("--credential", default=None,
                      help="credential-ID (default: användarens aktiva credential)")
-    f2a.add_argument("--hardware", action="store_true",
-                     help="använd fysisk authenticator över CTAP2/HID (kräver beröring)")
+    f2a.add_argument("--mock", action="store_true",
+                     help="mock-authenticator istället för fysisk (explicit testläge, SIMULATED / TEST-ONLY)")
     f2a.add_argument("--require-uv", action="store_true",
                      help="kräv PIN/biometri för detta beslut (fail closed utan UV-flagg)")
     f2c = sub.add_parser("credential", help="administrera credentials")
@@ -231,6 +242,9 @@ def _fido2_args(parser):
     f2s = sub.add_parser("simulate", help="deterministisk FIDO2-simulering (TEST-ONLY)")
     f2s.add_argument("--scenario", required=True, choices=list(FIDO2_SCENARIOS),
                      help="scenario att simulera")
+    f2u = sub.add_parser("audit", help="visa senaste auditposter")
+    f2u.add_argument("--limit", type=int, default=20,
+                     help="antal poster (default: 20)")
     f2d = sub.add_parser("device", help="fysiska CTAP-enheter (skrivfritt)")
     f2dsub = f2d.add_subparsers(dest="devop", required=True)
     f2dsub.add_parser("list", help="lista anslutna FIDO2-authenticators")
@@ -239,12 +253,12 @@ def _fido2_args(parser):
 def _fido2_run(args):
     from shallot_cli.commands import fido2_cmd
     if args.what == "register":
-        return fido2_cmd.run_register(args.user, yes=args.yes, hardware=args.hardware,
-                                      require_uv=args.require_uv)
+        return fido2_cmd.run_register(args.user, yes=args.yes, mock=args.mock,
+                                       require_uv=args.require_uv)
     if args.what == "authenticate":
         return fido2_cmd.run_authenticate(args.user, credential=args.credential,
-                                          hardware=args.hardware,
-                                          require_uv=args.require_uv)
+                                           mock=args.mock,
+                                           require_uv=args.require_uv)
     if args.what == "credential":
         if args.op == "list":
             return fido2_cmd.run_credential_list()
@@ -258,6 +272,11 @@ def _fido2_run(args):
         return fido2_cmd.run_credential_status(args.credential)
     if args.what == "device":
         return fido2_cmd.run_device_list()
+    if args.what == "audit":
+        if args.limit <= 0:
+            print("error: --limit måste vara positivt.", file=sys.stderr)
+            return 2
+        return fido2_cmd.run_audit(limit=args.limit)
     return fido2_cmd.run_simulate(args.scenario)
 
 
@@ -297,7 +316,8 @@ register(Command(
 register(Command(
     name="demo", help_text="simulerad incident för presentation (SIMULERING)",
     add_arguments=_demo_args, run=_demo_run,
-    tui={"20": ("Simulerad incident (SIMULERING)", "_flow_demo")},
+    tui={"20": ("Simulerad incident (SIMULERING)", "_flow_demo"),
+         "26": ("Demo: presentation (tester + fysisk bänk)", "_flow_demo_presentation")},
 ))
 
 register(Command(
@@ -341,6 +361,41 @@ register(Command(
     name="mamabear", help_text="läsande MamaBear-fjärrläge över system-SSH",
     add_arguments=_mamabear_args, run=_mamabear_run,
     tui={"10": ("MamaBear fjärrläge (läsande, bekräftas)", "_flow_mamabear")},
+))
+
+def _admin_args(parser):
+    sub = parser.add_subparsers(dest="what", required=True)
+    a_in = sub.add_parser("login", help="interaktiv Admin-inloggning (FIDO2 + installationskod)")
+    a_in.add_argument("--user", required=True, help="anonymt användar-ID (t.ex. admin-01)")
+    a_in.add_argument("--credential", default=None, help="credential-ID (default: användarens aktiva credential)")
+    a_in.add_argument("--mock", action="store_true",
+                      help="mock-authenticator istället för fysisk (explicit testläge, SIMULATED / TEST-ONLY)")
+    sub.add_parser("logout", help="avsluta Admin-session")
+    sub.add_parser("status", help="visa sessionsstatus (0 = giltig session)")
+    a_rst = sub.add_parser("reset-code", help="fysisk återställning: skapa ny installationskod")
+    a_rst.add_argument("--confirm", action="store_true",
+                       help="bekräfta återställning (krävs)")
+
+
+def _admin_run(args):
+    from shallot_cli.commands import admin_cmd
+    if args.what == "login":
+        return admin_cmd.run_login(args.user, credential=args.credential,
+                                   mock=args.mock)
+    if args.what == "logout":
+        return admin_cmd.run_logout()
+    if args.what == "status":
+        return admin_cmd.run_status()
+    return admin_cmd.run_reset_code(confirm=args.confirm)
+
+
+register(Command(
+    name="admin", help_text="Admin-upplevelse (FIDO2 + installationskod)",
+    add_arguments=_admin_args, run=_admin_run,
+    tui={"22": ("Admin: logga in (FIDO2 + installationskod)", "_flow_admin_login"),
+         "23": ("Admin: status", "_flow_admin_status"),
+         "24": ("Admin: logga ut", "_flow_admin_logout"),
+         "25": ("Admin: fysisk återställning av installationskod", "_flow_admin_reset")},
 ))
 
 register(Command(

@@ -14,6 +14,8 @@ verkliga beslutsvägar och ändrar ingen semantik.
 
 from __future__ import annotations
 
+import sys
+
 BANNER_TOP = [
     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
     "!!! SIMULERING — DEMOSYSTEM. Ingen verklig incident.      !!!",
@@ -85,3 +87,13 @@ def render(res: dict) -> str:
     lines += list(res["reveal"])
     lines += ["", *BANNER_BOTTOM]
     return "\n".join(lines)
+
+
+def run_cli() -> int:
+    """CLI-presentation av incidenten. Exit 0 = visad, 1 = körfel."""
+    try:
+        print(render(run_incident()))
+    except Exception as e:
+        print("error: kunde inte visa demo: %s" % e, file=sys.stderr)
+        return 1
+    return 0

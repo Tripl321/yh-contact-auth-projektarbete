@@ -44,9 +44,16 @@ def test_alias_validation():
     assert mamabear.validate_alias("mamabear") == "mamabear"
     assert mamabear.validate_alias("  mb-01.lan  ") == "mb-01.lan"
     for bad in ["100.64.1.5", "192.168.1.10", "user@mamabear", "-oProxyJump=x",
-                "a/b", "", "alias med mellanslag", "x" * 65]:
+                "a/b", "", "alias med mellanslag", "x" * 65, ".", ".."]:
         with pytest.raises(ValueError):
             mamabear.validate_alias(bad)
+
+
+def test_run_remote_rejects_outside_allowlist():
+    with pytest.raises(RuntimeError, match="allowlist"):
+        mamabear.run_remote("mamabear", "rm -rf /")
+    with pytest.raises((ValueError, RuntimeError)):
+        mamabear.run_remote("-oProxyJump=x", "uname -a")
 
 
 def test_ssh_argv_uses_system_config_and_batchmode(monkeypatch):
@@ -95,7 +102,8 @@ def test_sanitize_masks_secrets():
                  "aa:bb:cc:dd:ee:ff 08:00:2b:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:00:11 "
                  "ip 100.64.1.5 gw 192.168.1.1 dns 10.0.0.53 lo 127.0.0.1 link fe80::1 end ::1. "
                  "password=hunter2 -----BEGIN OPENSSH PRIVATE KEY-----")
-    clean = mamabear.sanitize(dirty)
+    from shallot_cli import fido2_sanitize
+    clean = fido2_sanitize.sanitize(dirty)
     for secret in ["100.64.1.5", "192.168.1.1", "10.0.0.53", "127.0.0.1",
                    "aa:bb:cc:dd:ee:ff", "OPENSSH"]:
         assert secret not in clean, secret
@@ -106,7 +114,8 @@ def test_sanitize_preserves_benign_status():
     benign = ("Linux mamabear 6.1.0-rpi8 #1 SMP PREEMPT x86_64 GNU/Linux\n"
               "10:00:00 up 3 days, 2:14, 1 user, load average: 0.05, 0.03, 0.01\n"
               "MemTotal: 4024548 kB\n/dev/root 29G 4.1G 24G 15% /")
-    assert mamabear.sanitize(benign) == benign
+    from shallot_cli import fido2_sanitize
+    assert fido2_sanitize.sanitize(benign) == benign
 
 
 def test_allowlist_is_read_only():
@@ -220,6 +229,17 @@ def test_declined_confirmation_runs_no_ssh(capsys, monkeypatch, tmp_path):
     assert "Avbrutet" in capsys.readouterr().err
 
 
+def test_injected_confirm_gates_ssh_without_terminal(capsys, monkeypatch, tmp_path):
+    from shallot_cli.commands import mamabear_cmd
+    called = []
+    monkeypatch.setattr(mamabear, "run_remote",
+                        lambda *a, **k: called.append(True) or (_ for _ in ()).throw(
+                            AssertionError("SSH får inte anropas")))
+    monkeypatch.chdir(tmp_path)
+    assert mamabear_cmd.run_status("mamabear", confirm=lambda q: False) == 2
+    assert called == [] and list(tmp_path.glob("*.json")) == []
+
+
 def test_confirmed_interactively(capsys, monkeypatch, tmp_path):
     fake, _ = _fake_runner(STATUS_OK)
     monkeypatch.setattr(mamabear, "run_remote", fake)
@@ -255,11 +275,12 @@ def test_tui_mamabear_delegates(monkeypatch):
                         lambda *a, **k: calls.append(("status", a, k)) or 0)
     monkeypatch.setattr(tui.mamabear_cmd, "run_test",
                         lambda *a, **k: calls.append(("test", a, k)) or 0)
-    answers = iter(["10", "1", "mamabear", "j", "10", "2", "mamabear", "j", "0"])
+    answers = iter(["10", "1", "mamabear", "10", "2", "mamabear", "", "0"])
     monkeypatch.setattr(builtins, "input", lambda *a: next(answers))
     assert tui.run() == 0
-    assert calls == [("status", ("mamabear",), {"yes": True}),
-                     ("test", ("mamabear",), {"yes": True})]
+    assert calls == [("status", ("mamabear",), {"confirm": tui.confirm}),
+                     ("test", ("mamabear",),
+                      {"confirm": tui.confirm, "output": None})]
 
 
 def test_tailnet_policy_deny_is_transport_error():

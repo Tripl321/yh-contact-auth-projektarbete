@@ -108,3 +108,39 @@ def test_suite_store_is_hermetic(tmp_path):
     import os
     assert os.environ.get(store.STORE_ENV) == str(tmp_path / "fido2-store")
     assert store.store_root() == tmp_path / "fido2-store"
+
+
+def test_update_policy_rejects_forbidden_fields(tmp_path):
+    store.save_credential(_meta(), root=tmp_path)
+    for field in ("private_key", "secret", "signature", "token"):
+        with pytest.raises(ValueError, match="förbjudet fält"):
+            store.update_policy("cred-1", {field: "x"}, root=tmp_path)
+    assert store.load_credentials(root=tmp_path)["cred-1"]["policy"] == {"user_presence": True}
+
+
+def test_nested_forbidden_fields_rejected(tmp_path):
+    bad = _meta()
+    bad["policy"] = {"nested": {"secret": "x"}}
+    with pytest.raises(ValueError, match="förbjudet fält"):
+        store.save_credential(bad, root=tmp_path)
+    with pytest.raises(ValueError, match="förbjudet fält"):
+        store.audit("test", {"outer": [{"token": "x"}]}, root=tmp_path)
+    assert store.load_credentials(root=tmp_path) == {}
+    assert store.read_audit(root=tmp_path) == []
+
+
+def test_store_fails_fast_on_bad_root():
+    with pytest.raises(RuntimeError):
+        store.Store("x\x00y")
+    with pytest.raises(RuntimeError):
+        store.load_credentials(root="   ")
+
+
+def test_widened_forbidden_keys_rejected(tmp_path):
+    for field in ("signature", "attestation_object", "client_data_json",
+                  "authenticator_data", "token", "password"):
+        bad = _meta()
+        bad[field] = "x"
+        with pytest.raises(ValueError, match="förbjudet fält"):
+            store.save_credential(bad, root=tmp_path)
+    assert store.load_credentials(root=tmp_path) == {}

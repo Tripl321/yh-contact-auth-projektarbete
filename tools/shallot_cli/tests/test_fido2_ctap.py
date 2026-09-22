@@ -257,10 +257,7 @@ def test_hw_assertion_replay_and_revoked():
 def test_ctap_backend_touches_no_usb_on_construct():
     be = fido2_backend.CtapHidBackend()
     assert be.name == "hardware"
-    with pytest.raises(fido2_backend.DeviceError):
-        be.sign(credential_id=b"x", signed_data=b"y")
-    with pytest.raises(fido2_backend.DeviceError):
-        be.verify(credential_id=b"x", signed_data=b"y", signature=b"z")
+    assert not hasattr(be, "sign") and not hasattr(be, "verify")
 
 
 def test_ctap_backend_no_device_fails_closed():
@@ -347,7 +344,7 @@ def test_factory_hardware_returns_ctap():
     assert isinstance(fido2_backend.get_backend("hardware"), fido2_backend.CtapHidBackend)
 
 
-# --- Kommandolager: --hardware -----------------------------------------------
+# --- Kommandolager: fysisk default, explicit --mock ---------------------------
 
 class FakeCtap:
     """Fejkad enhet: svarar med riktiga testvektorer, rör aldrig USB."""
@@ -389,7 +386,7 @@ def test_register_hw_stores_pubkey_and_counter(hw_isolated, capsys, monkeypatch)
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose, counter=7)
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    assert fido2_cmd.run_register("hw-01", yes=True, hardware=True) == 0
+    assert fido2_cmd.run_register("hw-01", yes=True) == 0
     out = capsys.readouterr().out
     assert "HARDWARE" in out and "SIMULATED" not in out
     import shallot_cli.fido2_store as store
@@ -407,9 +404,9 @@ def test_authenticate_hw_allow_updates_counter(hw_isolated, capsys, monkeypatch)
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose, counter=7)
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    assert fido2_cmd.run_register("hw-02", yes=True, hardware=True) == 0
+    assert fido2_cmd.run_register("hw-02", yes=True) == 0
     capsys.readouterr()
-    assert fido2_cmd.run_authenticate("hw-02", hardware=True) == 0
+    assert fido2_cmd.run_authenticate("hw-02") == 0
     out = capsys.readouterr().out
     assert "ALLOW" in out and "sign_count=8" in out
     meta = next(iter(store.load_credentials(root=hw_isolated).values()))
@@ -421,11 +418,11 @@ def test_stored_uv_policy_enforced_on_hw(hw_isolated, capsys, monkeypatch):
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose, counter=7)  # UP-only, ingen UV-flagg
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    assert fido2_cmd.run_register("hw-uv", yes=True, hardware=True) == 0
+    assert fido2_cmd.run_register("hw-uv", yes=True) == 0
     cid = next(iter(store.load_credentials(root=hw_isolated)))
     assert fido2_cmd.run_credential_set_policy(cid, "required", yes=True) == 0
     capsys.readouterr()
-    assert fido2_cmd.run_authenticate("hw-uv", hardware=True) == 1
+    assert fido2_cmd.run_authenticate("hw-uv") == 1
     assert "no-user-verification" in capsys.readouterr().out
 
 
@@ -434,11 +431,11 @@ def test_authenticate_hw_no_device_denies(hw_isolated, capsys, monkeypatch):
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose)
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    fido2_cmd.run_register("hw-03", yes=True, hardware=True)
+    fido2_cmd.run_register("hw-03", yes=True)
     capsys.readouterr()
     gone = FakeCtap(priv, cose, error=fido2_backend.DeviceNotFound("borta"))
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: gone)
-    assert fido2_cmd.run_authenticate("hw-03", hardware=True) == 1
+    assert fido2_cmd.run_authenticate("hw-03") == 1
     assert "DENY (device-error)" in capsys.readouterr().out
 
 
@@ -447,12 +444,12 @@ def test_wrong_backend_denies_both_directions(hw_isolated, capsys, monkeypatch):
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose)
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    fido2_cmd.run_register("hw-04", yes=True, hardware=True)
-    fido2_cmd.run_register("mock-04", yes=True, hardware=False)
+    fido2_cmd.run_register("hw-04", yes=True)
+    fido2_cmd.run_register("mock-04", yes=True, mock=True)
     capsys.readouterr()
-    assert fido2_cmd.run_authenticate("hw-04", hardware=False) == 1
+    assert fido2_cmd.run_authenticate("hw-04", mock=True) == 1
     assert "wrong-backend" in capsys.readouterr().out
-    assert fido2_cmd.run_authenticate("mock-04", hardware=True) == 1
+    assert fido2_cmd.run_authenticate("mock-04") == 1
     assert "wrong-backend" in capsys.readouterr().out
     reasons = [e["details"].get("reason") for e in store.read_audit(root=hw_isolated)
                if e["action"] == "authenticate"]
@@ -461,7 +458,7 @@ def test_wrong_backend_denies_both_directions(hw_isolated, capsys, monkeypatch):
 
 
 def test_wrong_backend_denies_before_ctap_access(hw_isolated, capsys, monkeypatch):
-    fido2_cmd.run_register("mock-05", yes=True, hardware=False)
+    fido2_cmd.run_register("mock-05", yes=True, mock=True)
     capsys.readouterr()
 
     class ForbiddenCtap:
@@ -469,18 +466,31 @@ def test_wrong_backend_denies_before_ctap_access(hw_isolated, capsys, monkeypatc
             raise AssertionError("CTAP must not be opened for a mock credential")
 
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", ForbiddenCtap)
-    assert fido2_cmd.run_authenticate("mock-05", hardware=True) == 1
+    assert fido2_cmd.run_authenticate("mock-05") == 1
     assert "wrong-backend" in capsys.readouterr().out
 
 
-def test_cli_hardware_flag_wiring(hw_isolated, capsys, monkeypatch):
+def test_cli_hardware_is_default_and_mock_is_explicit(hw_isolated, capsys, monkeypatch):
     from shallot_cli import cli
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose)
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    assert cli.main(["fido2", "register", "--user", "hw-cli", "--yes", "--hardware"]) == 0
+    # Fysisk är default — ingen flagga behövs.
+    assert cli.main(["fido2", "register", "--user", "hw-cli", "--yes"]) == 0
     capsys.readouterr()
-    assert cli.main(["fido2", "authenticate", "--user", "hw-cli", "--hardware"]) == 0
+    assert cli.main(["fido2", "authenticate", "--user", "hw-cli"]) == 0
+    out = capsys.readouterr().out
+    assert "ALLOW" in out and "SIMULATED" not in out
+
+
+def test_cli_mock_flag_wiring(hw_isolated, capsys):
+    from shallot_cli import cli
+    assert cli.main(["fido2", "register", "--user", "mock-cli",
+                     "--yes", "--mock"]) == 0
+    out = capsys.readouterr().out
+    assert "SIMULATED / TEST-ONLY" in out
+    assert cli.main(["fido2", "authenticate", "--user", "mock-cli",
+                     "--mock"]) == 0
     assert "ALLOW" in capsys.readouterr().out
 
 
@@ -547,13 +557,13 @@ def test_stored_uv_policy_enforced_without_flag(hw_isolated, capsys, monkeypatch
     priv, cose = _keypair()
     fake = FakeCtap(priv, cose)  # UP-only assertions, ingen UV-flagg
     monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
-    assert fido2_cmd.run_register("hw-uv", yes=True, hardware=True,
+    assert fido2_cmd.run_register("hw-uv", yes=True,
                                   require_uv=True) == 0
     meta = next(iter(store.load_credentials(root=hw_isolated).values()))
     assert meta["policy"]["user_verification"] == "required"
     capsys.readouterr()
     # Lagrad policy slår igenom även utan flagga
-    assert fido2_cmd.run_authenticate("hw-uv", hardware=True) == 1
+    assert fido2_cmd.run_authenticate("hw-uv") == 1
     assert "no-user-verification" in capsys.readouterr().out
 
 
@@ -576,13 +586,17 @@ def test_mock_uv_requirement_and_invalid_policy(hw_isolated):
 def test_cli_require_uv_flag_stores_policy(hw_isolated, capsys, monkeypatch):
     from shallot_cli import cli
     import shallot_cli.fido2_store as store
+    priv, cose = _keypair()
+    fake = FakeCtap(priv, cose)
+    monkeypatch.setattr(fido2_backend, "CtapHidBackend", lambda: fake)
     assert cli.main(["fido2", "register", "--user", "uv-cli",
                      "--yes", "--require-uv"]) == 0
     meta = next(iter(store.load_credentials(root=hw_isolated).values()))
     assert meta["policy"]["user_verification"] == "required"
     capsys.readouterr()
-    assert cli.main(["fido2", "authenticate", "--user", "uv-cli"]) == 0
-    assert "ALLOW" in capsys.readouterr().out
+    # Fake-enheten är UP-only: lagrad required-policy nekar utan UV-flagg.
+    assert cli.main(["fido2", "authenticate", "--user", "uv-cli"]) == 1
+    assert "no-user-verification" in capsys.readouterr().out
 
 
 def test_prompt_pin_hint_and_cancel(monkeypatch, capsys):

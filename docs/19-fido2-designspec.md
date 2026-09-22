@@ -1,7 +1,8 @@
 # 19 — FIDO2-härdningsspår (proof of concept)
 
-**Status:** Utkast | **Scope:** design + CLI-PoC med mock-authenticator
-samt HW-läge (`--hardware`, CTAP2 mot Pico Fido @ ESP32-S3).
+**Status:** Utkast | **Scope:** design + CLI-PoC med fysisk authenticator
+som standardläge (CTAP2 mot Pico Fido/Pico Key) samt explicit
+mock-läge (`--mock`, SIMULATED / TEST-ONLY).
 Kompletterar — ersätter inte — UART/HMAC-autentiseringen mellan PAW
 och DEN. FIDO2 skyddar användar- och adminidentitet; UART/HMAC skyddar
 PAW–DEN-kommunikationen. Detta är **inte en certifierad
@@ -15,8 +16,11 @@ FIDO2-implementation**.
   credential-livscykel, negativa tester och auditunderlag.
 - Hålls isolerat från UART-MVP:n: egen CLI-grupp (`shallot fido2`),
   egen lagring, egen testsvit. UART-sviterna påverkas inte.
-- v1 rör aldrig fysisk authenticator (`HwBackend` vägrar explicit) och
-  ger aldrig DEN/PAW skrivkommandon (endast ALLOW/DENY-text).
+- CLI:t använder fysisk authenticator som standard (kräver beröring,
+  ingen flagga); mockat läge kräver explicit `--mock` och märks
+  SIMULATED / TEST-ONLY. Saknad enhet/beroende/USB-åtkomst nekar med
+  nästa steg — aldrig tyst fallback till mock. CLI:t ger aldrig DEN/PAW
+  skrivkommandon (endast ALLOW/DENY-text).
 
 ## 2. Trust boundaries
 
@@ -90,7 +94,7 @@ och verkställs mot enhetens UV-flagg (fail closed utan den).
 
 | Risk | Läge |
 |---|---|
-| Mock-backend (HMAC) är ingen säkerhetsmekanism; PoC övar endast ceremonier | HW-läge (`--hardware`, CTAP2 mot Pico Fido) finns; mock kvarstår som standard |
+| Mock-backend (HMAC) är ingen säkerhetsmekanism; PoC övar endast ceremonier | Fysisk authenticator är standardläge; mock kräver explicit `--mock` (SIMULATED / TEST-ONLY) |
 | HW: self-attestation accepteras (ingen vendor-CA); `none` accepteras | Explicit policy, dokumenterad; x5c/BASIC och övriga format avvisas (inga trust anchors) |
 | HW: enhet utan sign-counter ger ingen klondetektion | Accepterat, loggas implicit (counter 0/0); regression vid counter>0 = DENY |
 | HW: stulen admin-token kan flash-dumpas utan Secure Boot | Rekommendation: Secure Boot + OTP på ESP32-S3; RP2040 saknar skyddet |
@@ -99,6 +103,23 @@ och verkställs mot enhetens UV-flagg (fail closed utan den).
 | Lokal JSON-lagring utan åtkomstkontroll utöver filrättigheter | Accepterat i PoC (inga hemligheter lagras; HW lagrar endast publik nyckel + counter) |
 | RP-ID/origin är PoC-värden (`shallot.local`) | Måste bindas till verklig RP vid produktionssättning |
 | FIDO2-beslut verkställs ännu inte mot adminfunktioner (endast text) | Framtida arbete; idag ingen koppling till DEN/PAW |
+
+## 7b. Standardläge + installationskrav (2026-09-22)
+
+- **Standardläge är fysisk authenticator** (CTAP2/HID, kräver beröring,
+  ingen flagga). Mockat läge kräver explicit `--mock` och märks alltid
+  `SIMULATED / TEST-ONLY` (banner + audit `backend: mock`).
+- **Inget tyst fallback:** saknad enhet, saknat `fido2`-paket eller
+  saknad USB-åtkomst nekar med nästa steg i felmeddelandet.
+- **Lagring:** beständig produktionslagring under
+  `~/.local/share/shallot/fido2` — fungerar utan miljövariabler
+  (`SHALLOT_FIDO2_STORE` endast för tester/edge).
+- **Installationskrav:** `pip install fido2 pyserial` (se pyproject),
+  USB-åtkomst till enheten (Linux: udev-regel eller root för HID;
+  verifiera med `shallot fido2 device list`), samt en CTAP2-capable
+  authenticator (verifierad: Pico Key, CTAP 2).
+- **Demoflöde:** `shallot fido2 simulate --scenario <namn>` (register →
+  authenticate → ALLOW/DENY mot minneslagring, alltid TEST-ONLY).
 
 ## 8. Bänkverifiering (2026-09-14, Pico Fido @ ESP32-S3 Nano)
 - Enhet syns som `Pico Key` över USB HID, CTAP 2. `device list` bekräftar.

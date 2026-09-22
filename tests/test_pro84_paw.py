@@ -61,8 +61,10 @@ class MockPawResponder:
                     self.log.append('ignored type 0x%02x' % ptype)
                 continue
             if not self.key_stored:
-                # PRO-94 fail-closed: unprovisioned PAW never answers,
-                # touches no display state, transmits nothing.
+                # PRO-59 fail-closed: unprovisioned PAW never answers and
+                # never shows AUTHENTICATED; the stale grant (if any) is
+                # cleared to FAILED (mirrors LoRa NO_KEY -> FAILED).
+                self.display_status = 'failed'
                 self.log.append('ignored: no key')
                 continue
             self.display_status = 'authenticating'
@@ -160,11 +162,12 @@ def test_pro84_never_initiates():
 
 def test_pro84_unprovisioned_ignores_challenge():
     """PRO-94 fail-closed: no key -> CHALLENGE ignored, zero transmissions,
-    no display state change (mirrors handleDockAuth keyStored gate)."""
+    display FAILED (never AUTHENTICATED; mirrors handleDockAuth NO_KEY)."""
     paw = MockPawResponder(key_stored=False)
     paw.feed(encode(T_CHALLENGE, bytes(range(0x10, 0x18))))
     assert paw.sent == []
-    assert paw.display_status is None
+    assert paw.display_status == 'failed'
+    assert paw.display_status != 'authenticated'
     assert paw.ack_pending is False
     assert paw.log == ['ignored: no key']
 
@@ -178,7 +181,8 @@ def test_pro84_unprovisioned_ignores_everything():
     paw.feed(encode(T_ALARM, b'\x02'))
     paw.feed(encode(T_RESPONSE, bytes(32)))
     assert paw.sent == []
-    assert paw.display_status is None
+    assert paw.display_status == 'failed'
+    assert paw.display_status != 'authenticated'
     assert paw.ack_pending is False
 
 
@@ -574,3 +578,57 @@ def test_pro59b_source_setup_never_grants_or_denies():
     assert 'EPD_STATUS_AUTHENTICATING' in setup
     assert 'EPD_STATUS_AUTHENTICATED' not in setup
     assert 'EPD_STATUS_FAILED' not in setup
+
+
+# ============================================================================
+# PRO-59 fixes: missing key, strict RESULT length, stale-grant clear
+# ============================================================================
+
+def test_pro59_dock_no_key_shows_failed_never_authenticated():
+    """Saknad nyckel (dock): CHALLENGE utan nyckel -> FAILED, aldrig grant."""
+    paw = MockPawResponder(key_stored=False)
+    paw.feed(encode(T_CHALLENGE, bytes(range(0x10, 0x18))), now=1000)
+    assert paw.sent == []
+    assert paw.display_status == 'failed'
+    assert paw.display_status != 'authenticated'
+    assert paw.ack_pending is False
+    # En obeställd ACK 0x01 efteråt kan inte tända AUTHENTICATED.
+    paw.feed(encode(T_ACK, b'\x01'), now=1100)
+    assert paw.display_status == 'failed'
+
+
+def test_pro59_source_dock_no_key_clears_to_failed():
+    """Firmware: dock NO_KEY-grenen visar FAILED (samma som LoRa)."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    body = _paw_dock_handler_body()
+    assert 'PAW_SESSION_EVENT_NO_KEY' in body
+    no_key_idx = body.index('PAW_SESSION_EVENT_NO_KEY')
+    window = body[no_key_idx:no_key_idx + 500]
+    assert 'EPD_STATUS_FAILED' in window
+
+
+def test_pro59_source_lora_result_requires_exact_length():
+    """Firmware: LoRa RESULT kräver exakt 2 byte (typ + 1 statusbyte);
+    längre ramar är malformed och kan aldrig bevilja."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    assert 'msgType == MSG_RESULT && rxLen == 2' in src
+    assert 'msgType == MSG_RESULT && rxLen >= 2' not in src
+
+
+def test_pro59_source_key_loss_clears_stale_grant():
+    """Firmware: valid -> invalid nyckelkant återställer display till låst
+    läge så bistabil AUTHENTICATED aldrig fastnar efter nyckelbortfall."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent /
+           'id-kort/paw-main/paw-main.ino').read_text()
+    loop = src[src.index('void loop()'):]
+    assert 'lastKeyValid' in loop
+    assert 'key_is_valid()' in loop
+    edge_idx = loop.index('lastKeyValid && !curKeyValid')
+    assert 'EPD_STATUS_AUTHENTICATING' in loop[edge_idx:edge_idx + 300]
+    # Grant-platserna är fortfarande exakt två (ingen ny grant-väg).
+    assert src.count('showStatus(EPD_STATUS_AUTHENTICATED)') == 2

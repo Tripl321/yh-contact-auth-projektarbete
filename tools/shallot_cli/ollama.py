@@ -42,6 +42,9 @@ def resolve_base(host: str | None = None) -> str:
             "vägrar icke-lokal Ollama-värd %r — endast localhost tillåts "
             "(ingen data får lämna maskinen)" % raw
         )
+    if parts.username or parts.password:
+        raise OllamaError(
+            "autentiseringsinfo i Ollama-adress stöds inte: %r" % raw)
     return "%s://%s" % (parts.scheme, parts.netloc)
 
 

@@ -11,18 +11,16 @@ from __future__ import annotations
 
 import sys
 
-from shallot_cli import explain, fido2, registry, serial_adapters, sim, uart
+from shallot_cli import admin, explain, fido2, fido2_sanitize, incident, ollama, provision, registry, serial_adapters, sim, uart
 from shallot_cli.commands import (
+    admin_cmd,
     build_cmd,
-    demo_cmd,
-    device_cmd,
     doctor_cmd,
     explain_cmd,
     fido2_cmd,
     mamabear_cmd,
     monitor_cmd,
     protocol_cmd,
-    simulate_cmd,
     test_cmd,
 )
 
@@ -33,6 +31,26 @@ HEADER = r"""
  ╚════██║██╔══██║██╔══██║██║     ██║     ██║   ██║   ██║
  ███████║██║  ██║██║  ██║███████╗███████╗╚██████╔╝   ██║
  ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝    ╚═╝
+""".strip("\n")
+
+SHALLOT_ONION = r"""
+              /\
+             /  \
+             \  /
+              || ||
+          ___|| ||___
+        .'           '.
+       /   .-----.   \
+      |   /       \   |
+      |  |         |  |
+      |  |         |  |
+      |   \       /   |
+       \   '-----'   /
+        '.         .'
+          '-.   .-'
+            |   |
+            |   |
+           (_| |_)
 """.strip("\n")
 
 def _menu_max() -> int:
@@ -58,11 +76,113 @@ def report(rc: int) -> None:
         print("Kommandot avslutades med kod %d." % rc)
 
 
+class _ArrowCancel(Exception):
+    """Piltangentsval avbrutet (q/Esc) — tillbaka utan extra prompt."""
+
+
+def _arrow_pick(display: list[str]) -> int | None:
+    """Välj rad med ↑/↓ + Enter. Returnerar index eller None.
+
+    None = ingen interaktiv terminal (anroparen faller tillbaka på
+    sifferval). q/Esc höjer _ArrowCancel. Terminalen återställs alltid.
+    Endast POSIX + TTY; Windows/pipe/test → None.
+    """
+    import os
+    import sys
+    if not display or os.name != "posix":
+        return None
+    stdin, stdout = sys.stdin, sys.stdout
+    if not stdin.isatty() or not stdout.isatty():
+        return None
+    try:
+        import select
+        import termios
+    except ImportError:
+        return None
+    fd = stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except Exception:
+        return None
+    selected = 0
+    n = len(display)
+    hint = "\u2191 \u2193 navigera \u00b7 Enter v\u00e4lj \u00b7 q avbryt"
+
+    def render():
+        out = []
+        for i, line in enumerate(display):
+            mark = "\x1b[7m" if i == selected else ""
+            end = "\x1b[0m" if i == selected else ""
+            out.append("\r\x1b[K%s%s%s" % (mark, line, end))
+        out.append("\r\x1b[K\x1b[2m%s\x1b[0m" % hint)
+        stdout.write("\n".join(out) + "\n")
+        stdout.flush()
+
+    def read_key():
+        ch = os.read(fd, 1).decode("utf-8", errors="replace")
+        if ch != "\x1b":
+            return ch
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            return "ESC"
+        nxt = os.read(fd, 1).decode("utf-8", errors="replace")
+        if nxt not in ("[", "O"):
+            return "ESC"
+        code = os.read(fd, 1).decode("utf-8", errors="replace")
+        return {"A": "UP", "B": "DOWN"}.get(code, "OTHER")
+
+    stdout.write("\x1b[?25l")
+    stdout.flush()
+    try:
+        # Som tty.setraw, men TCSANOW: TCSADRAIN kan blockera på dränering.
+        raw = termios.tcgetattr(fd)
+        raw[0] = raw[0] & ~(termios.BRKINT | termios.ICRNL | termios.INPCK
+                            | termios.ISTRIP | termios.IXON)
+        raw[1] = raw[1] & ~termios.OPOST
+        raw[2] = raw[2] & ~(termios.CSIZE | termios.PARENB)
+        raw[2] = raw[2] | termios.CS8
+        raw[3] = raw[3] & ~(termios.ECHO | termios.ICANON | termios.IEXTEN
+                            | termios.ISIG)
+        raw[6][termios.VMIN] = 1
+        raw[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, raw)
+        for line in display:
+            stdout.write("%s\n" % line)
+        stdout.write("\x1b[2m%s\x1b[0m\n" % hint)
+        stdout.flush()
+        while True:
+            stdout.write("\x1b[%dA" % (n + 1))
+            render()
+            key = read_key()
+            if key in ("\r", "\n"):
+                return selected
+            if key in ("q", "Q", "ESC"):
+                raise _ArrowCancel
+            if key == "UP":
+                selected = (selected - 1) % n
+            elif key == "DOWN":
+                selected = (selected + 1) % n
+            elif key == "\x03":
+                raise KeyboardInterrupt
+    finally:
+        # TCSANOW, aldrig TCSADRAIN: cleanup får inte blockera på dränering.
+        termios.tcsetattr(fd, termios.TCSANOW, old)
+        stdout.write("\x1b[?25h\n")
+        stdout.flush()
+
+
 def _pick(title: str, options: list[str]) -> str | None:
-    """Numrerat underval. Returnerar valt alternativ eller None vid fel."""
+    """Underval med piltangenter (fallback: sifferval). None = tillbaka."""
     print(title)
-    for i, opt in enumerate(options, 1):
-        print("  %d  %s" % (i, opt))
+    lines = ["  %d  %s" % (i, opt) for i, opt in enumerate(options, 1)]
+    try:
+        idx = _arrow_pick(lines)
+    except _ArrowCancel:
+        return None
+    if idx is not None:
+        return options[idx]
+    for line in lines:
+        print(line)
     ans = input("Välj [1-%d]: " % len(options)).strip()
     if not ans.isdigit() or not 1 <= int(ans) <= len(options):
         print("Ogiltigt val: %r. Tillbaka i huvudmenyn." % ans)
@@ -87,7 +207,7 @@ def _flow_simulate() -> None:
     scenario = _pick("Scenarier:", list(sim.SCENARIOS))
     if scenario is None:
         return
-    report(simulate_cmd.run(scenario))
+    report(sim.run_cli(scenario))
 
 
 def _flow_encode() -> None:
@@ -108,7 +228,104 @@ def _flow_doctor() -> None:
 
 def _flow_demo() -> None:
     print("Simulerad incident — SIMULERING.")
-    report(demo_cmd.run())
+    report(incident.run_cli())
+
+
+DEMO_SUITES = ("protocol", "den", "paw")
+DEMO_DEN_NEEDLES = ("[DEN] AUTHENTICATED (code 0)", "[DEN] FAILED: ")
+DEMO_PAW_NEEDLES = ("[PRO-84] DEN acknowledged success",
+                    "[PRO-84] DEN denied (ACK 0x00)")
+DEMO_OBSERVE_TIMEOUT_S = 60.0
+
+
+class _DemoAbort(Exception):
+    """Avbruten presentation — anroparen skriver orsak, inget mer."""
+
+
+def _demo_pause(label: str = "Tryck Enter för nästa akt...") -> None:
+    try:
+        input(label)
+    except (EOFError, KeyboardInterrupt):
+        raise _DemoAbort("avbrutet av presentatören")
+
+
+def _demo_pick_port(role: str) -> str:
+    ports = [p["device"] for p in serial_adapters.list_ports()]
+    if not ports:
+        raise _DemoAbort("inga serieportar hittades")
+    sel = _pick("%s-port:" % role, ports)
+    if sel is None:
+        raise _DemoAbort("ingen port vald")
+    return sel
+
+
+def _demo_provision(role: str, port: str, target: str) -> None:
+    try:
+        ser = serial_adapters.open_provision(port)
+    except Exception as e:
+        raise _DemoAbort("kunde inte öppna %s: %s" % (port, e))
+    entries: list = []
+    try:
+        with ser:
+            res = provision.provision_device(ser, target, audit=entries)
+    except provision.ProvisionError as e:
+        for entry in entries:
+            admin.audit_admin(entry["action"], entry["details"])
+        raise _DemoAbort("%s nekar provisionering: %s" % (role, e))
+    except Exception as e:
+        raise _DemoAbort("%s fel vid provisionering: %s" % (role, e))
+    for entry in entries:
+        admin.audit_admin(entry["action"], entry["details"])
+    print("%s provisionerad (fingeravtryck %s)."
+          % (role, res["fingerprint"].hex()))
+
+
+def _flow_demo_presentation() -> None:
+    """Meny -> DEMO -> Starta demo: tester, sedan fysisk bänk."""
+    try:
+        print("SHALLOT demo — Akt 1: automatiska tester.")
+        for suite in DEMO_SUITES:
+            if test_cmd.run_suite(suite) != 0:
+                print("Demot avbryts: rött testresultat.")
+                return
+        _demo_pause()
+        print("Akt 2: fysisk bänk (FIDO2 -> PAW -> DEN).")
+        user = input("Admin-användare: ").strip()
+        if not user:
+            print("Ingen användare angiven. Demot avbryts.")
+            return
+        if admin_cmd.run_login(user) != 0:
+            print("Demot avbryts: inloggning nekad.")
+            return
+        try:
+            admin.require_session("provision")
+        except admin.AdminDenied as e:
+            print("Demot avbryts: %s" % e)
+            return
+        paw_port = _demo_pick_port("PAW")
+        den_port = _demo_pick_port("DEN")
+        _demo_provision("PAW", paw_port, "paw")
+        _demo_provision("DEN", den_port, "den")
+        print("Starta om eller docka enheterna för handshake.")
+        den_hit, den_line = monitor_cmd.read_until(
+            den_port, 115200, list(DEMO_DEN_NEEDLES), DEMO_OBSERVE_TIMEOUT_S)
+        paw_hit, paw_line = monitor_cmd.read_until(
+            paw_port, 115200, list(DEMO_PAW_NEEDLES), DEMO_OBSERVE_TIMEOUT_S)
+        for line in (den_line, paw_line):
+            if line:
+                print("logg: %s" % fido2_sanitize.sanitize(line))
+        manual = confirm("Visar PAW-displayen AUTHENTICATED?")
+        grant = (den_hit == DEMO_DEN_NEEDLES[0]
+                 and paw_hit == DEMO_PAW_NEEDLES[0] and manual)
+        admin.audit_admin("demo-verdict", {"result": "GODKÄND" if grant else "UNDERKÄND"})
+        if grant:
+            print("Demo: GODKÄND.")
+        else:
+            print("Demo: UNDERKÄND (logg och display oense eller timeout).")
+        report(0 if grant else 1)
+    except _DemoAbort as e:
+        print("Demo avbrutet: %s" % e)
+        return
 
 
 def _flow_explain() -> None:
@@ -116,7 +333,13 @@ def _flow_explain() -> None:
     if topic is None:
         return
     use_ai = confirm("Utveckla med lokal Ollama-modell")
-    report(explain_cmd.run(topic, ai=use_ai))
+    model = host = None
+    if use_ai:
+        model = input("Ollama-modell (tomt = %s): " % ollama.DEFAULT_MODEL).strip() or None
+        host = input("Ollama-host (tomt = localhost): ").strip() or None
+    report(explain_cmd.run(topic, ai=use_ai,
+                           model=model or ollama.DEFAULT_MODEL,
+                           host=host))
 
 
 def _flow_build() -> None:
@@ -133,45 +356,41 @@ def _flow_mamabear() -> None:
     if what is None:
         return
     host = input("SSH-alias från ~/.ssh/config: ").strip()
-    print("SSH-anslutning till '%s' via system-ssh. Kör endast läsande "
-          "kommandon; inget skrivs på MamaBear." % host)
-    if not confirm("Fortsätt med SSH-anslutning"):
-        print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
-        return
     if what == "status":
-        report(mamabear_cmd.run_status(host, yes=True))
+        report(mamabear_cmd.run_status(host, confirm=confirm))
     else:
-        report(mamabear_cmd.run_test(host, yes=True))
+        output = input("Resultatfil (tomt = standard): ").strip() or None
+        report(mamabear_cmd.run_test(host, confirm=confirm, output=output))
 
 
-def _pick_backend() -> bool:
-    """Fråga mock vs hardware. Returnerar True för hardware (explicit val)."""
-    choice = input("Authenticator [mock/hardware] (default mock): ").strip().lower()
-    if choice in ("hardware", "hw", "h"):
-        print("HARDWARE — fysisk authenticator via CTAP2/HID. Rör vid enheten vid prompt.")
+def _pick_mock() -> bool:
+    """Fråga fysisk vs mock. Returnerar True för mock (explicit testval).
+
+    Standardläge är fysisk authenticator — mock kräver att användaren
+    aktivt väljer det och märks SIMULATED / TEST-ONLY nedströms.
+    """
+    choice = input("Authenticator [fysisk/mock] (default fysisk): ").strip().lower()
+    if choice in ("mock", "m", "test"):
+        print("Mock-läge valt (SIMULATED / TEST-ONLY).")
         return True
+    print("HARDWARE — fysisk authenticator via CTAP2/HID. Rör vid enheten vid prompt.")
     return False
 
 
 def _flow_fido2_register() -> None:
     user = input("Användar-ID (t.ex. admin-01): ").strip()
-    hardware = _pick_backend()
-    if not hardware:
-        print("Registrering sker i mock-läge (SIMULATED / TEST-ONLY).")
+    mock = _pick_mock()
     require_uv = confirm("Kräv PIN/biometri (user verification)")
-    if not confirm("Fortsätt med registrering för %s" % user):
-        print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
-        return
-    report(fido2_cmd.run_register(user, yes=True, hardware=hardware,
-                                  require_uv=require_uv))
+    report(fido2_cmd.run_register(user, mock=mock,
+                                   require_uv=require_uv, confirm=confirm))
 
 
 def _flow_fido2_authenticate() -> None:
     user = input("Användar-ID: ").strip()
     credential = input("Credential-ID (tomt = aktiv credential): ").strip() or None
-    hardware = _pick_backend()
+    mock = _pick_mock()
     require_uv = confirm("Kräv PIN/biometri för detta beslut")
-    report(fido2_cmd.run_authenticate(user, credential=credential, hardware=hardware,
+    report(fido2_cmd.run_authenticate(user, credential=credential, mock=mock,
                                       require_uv=require_uv))
 
 
@@ -188,10 +407,7 @@ def _flow_fido2_revoke() -> None:
     if not credential:
         print("Inget credential angivet. Tillbaka i huvudmenyn.")
         return
-    if not confirm("Fortsätt med spärrning"):
-        print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
-        return
-    report(fido2_cmd.run_credential_revoke(credential, yes=True))
+    report(fido2_cmd.run_credential_revoke(credential, confirm=confirm))
 
 
 def _flow_fido2_set_policy() -> None:
@@ -202,10 +418,8 @@ def _flow_fido2_set_policy() -> None:
     policy = _pick("Ny UV-policy:", list(fido2.UV_POLICIES))
     if policy is None:
         return
-    if not confirm("Fortsätt med policyändring till %s" % policy):
-        print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
-        return
-    report(fido2_cmd.run_credential_set_policy(credential, policy, yes=True))
+    report(fido2_cmd.run_credential_set_policy(credential, policy,
+                                                confirm=confirm))
 
 
 def _flow_fido2_export() -> None:
@@ -219,6 +433,33 @@ def _flow_fido2_export() -> None:
         print("Ingen målfil angiven. Tillbaka i huvudmenyn.")
         return
     report(fido2_cmd.run_credential_export(credential, output))
+
+
+def _flow_admin_login() -> None:
+    user = input("Admin-användare (t.ex. admin-01): ").strip()
+    if not user:
+        print("Ingen användare angiven. Tillbaka i huvudmenyn.")
+        return
+    mock = _pick_mock()
+    credential = input("Credential-ID (tomt = aktiv credential): ").strip() or None
+    report(admin_cmd.run_login(user, credential=credential, mock=mock))
+
+
+def _flow_admin_status() -> None:
+    report(admin_cmd.run_status())
+
+
+def _flow_admin_logout() -> None:
+    report(admin_cmd.run_logout())
+
+
+def _flow_admin_reset() -> None:
+    print("Fysisk återställning skapar en ny installationskod.")
+    print("Kräver färsk beröring av fysisk authenticator.")
+    if not confirm("Fortsätt med fysisk återställning"):
+        print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
+        return
+    report(admin_cmd.run_reset_code(confirm=True))
 
 
 def _flow_monitor() -> None:
@@ -239,7 +480,13 @@ def _flow_monitor() -> None:
     if not confirm("Fortsätt med skrivskyddad läsning av %s" % port):
         print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
         return
-    report(monitor_cmd.run(device, port))
+    baud_raw = input("Baudrate (tomt = 115200): ").strip()
+    try:
+        baud = int(baud_raw) if baud_raw else 115200
+    except ValueError:
+        print("Ogiltig baudrate. Tillbaka i huvudmenyn.")
+        return
+    report(monitor_cmd.run(device, port, baud=baud))
 
 
 def handle_choice(choice: str) -> bool:
@@ -253,15 +500,30 @@ def handle_choice(choice: str) -> bool:
     return False
 
 
+def _menu_choice() -> str | None:
+    """Huvudmenyval med piltangenter (fallback: siffror). None = avbrutet."""
+    numbered = [(n, label) for n, label in registry.menu_entries()]
+    numbered.append((0, "Avsluta"))
+    lines = [" %d  %s" % (n, label) for n, label in numbered]
+    print()
+    try:
+        idx = _arrow_pick(lines)
+    except _ArrowCancel:
+        return None
+    if idx is not None:
+        return str(numbered[idx][0])
+    print(_menu_text())
+    return input("Välj [0-%d]: " % _menu_max()).strip()
+
+
 def run() -> int:
     """Huvudloop. 0 = normalt avslut; Ctrl-C vid menyn avslutar också rent."""
     print(HEADER)
+    print(SHALLOT_ONION)
     print("Interaktivt läge. Styr eller verifierar ingen fysisk hårdvara.")
     while True:
-        print()
-        print(_menu_text())
         try:
-            choice = input("Välj [0-%d]: " % _menu_max()).strip()
+            choice = _menu_choice()
         except KeyboardInterrupt:
             print("\nAvslutar.")
             return 0

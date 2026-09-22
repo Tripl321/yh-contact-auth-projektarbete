@@ -88,7 +88,7 @@ def _has_fail_closed_opt_in(text: str) -> bool:
 def _tool_version(cmd: list[str]) -> str | None:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     if proc.returncode != 0:
         return None

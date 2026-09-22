@@ -54,15 +54,22 @@ def test_masks_mamabear_fingerprint_and_mac():
     assert san.sanitize("mac AA:BB:CC:DD:EE:FF up") == "mac [REDACTED-MAC] up"
 
 
-def test_mamabear_delegates_to_single_owner():
+def test_mamabear_imports_module_not_name():
     import shallot_cli.mamabear as mamabear
+    from shallot_cli import fido2_sanitize as owner
     assert not hasattr(mamabear, "REDACTIONS")
-    samples = [
-        "fingerprint=deadbeef1234",
-        "mac AA:BB:CC:DD:EE:FF up",
-        "token=supersecretvalue12345678901234567890",
-        "nås via 100.64.9.9",
-        "MAMABEAR_SELFTEST_OK",
-    ]
-    for sample in samples:
-        assert mamabear.sanitize(sample) == san.sanitize(sample), sample
+    assert not hasattr(mamabear, "sanitize")
+    assert mamabear.fido2_sanitize is owner
+
+
+def test_masks_space_separated_short_secrets():
+    assert san.sanitize("secret hunter2") == "secret [REDACTED]"
+    assert san.sanitize("password hunter2") == "password [REDACTED]"
+    assert san.sanitize("användare admin-01 status active") == \
+        "användare admin-01 status active"
+
+
+def test_masks_link_local_and_ula():
+    assert san.sanitize("nås via 169.254.169.254") == "nås via [REDACTED-IP]"
+    assert "[REDACTED-IP]" in san.sanitize("nås via fd00::1")
+    assert san.sanitize("mac AA:BB:CC:DD:EE:FF up") == "mac [REDACTED-MAC] up"

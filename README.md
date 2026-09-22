@@ -244,28 +244,32 @@ shallot fido2 simulate --scenario success       # även: unknown-credential,
   tester.
 - **Lagring:** endast credential-ID, användar-ID (anonymt, t.ex.
   `admin-01` — aldrig e-post), skapad-tid, status och policy.
-  Privata nycklar sparas aldrig. Standardlagring:
-  `~/.local/share/shallot/fido2-test/` (testdata); välj annan rot med
-  `SHALLOT_FIDO2_STORE` för att separera framtida produktionsdata.
+  Privata nycklar sparas aldrig. Standardlagring (beständig, MamaBear):
+  `~/.local/share/shallot/fido2/` — fungerar utan miljövariabler;
+  `SHALLOT_FIDO2_STORE` väljer annan rot (främst tester).
   Varje åtgärd (register/revoke/authenticate) ger en auditpost.
 - **Sanering:** all output saneras före visning, loggning och eventuell
   Ollama-analys. Långa credential-ID:n trunkeras (`cred:<8>…<4>`),
   tokens/nycklar/CBOR-payloads, privata adresser och e-post maskeras.
-- **Begränsningar:** mock som standard; fysisk authenticator kräver
-  explicit `--hardware` (aldrig automatisk åtkomst).
+- **Begränsningar:** fysisk authenticator är standardläge (kräver
+  beröring, ingen flagga); mockat läge kräver explicit `--mock` och
+  märks SIMULATED / TEST-ONLY. Saknad enhet faller aldrig tillbaka
+  tyst — felet anger nästa steg.
   Resultat är ALLOW/DENY-text — ger aldrig DEN/PAW skrivkommandon.
   Detta är **proof of concept, inte en certifierad
   FIDO2-implementation**.
 
-#### Fysisk authenticator (Pico Fido @ ESP32-S3, `--hardware`)
+#### Fysisk authenticator (standardläge; verifierad: Pico Key, CTAP 2)
 
 ```bash
 pip install "fido2>=1.1"   # CTAP2-klient (Yubicos bibliotek)
 shallot fido2 device list                             # 1. syns enheten?
-shallot fido2 register --user admin-01 --hardware --yes   # 2. rör vid knappen
-shallot fido2 authenticate --user admin-01 --hardware     # 3. ALLOW?
+shallot fido2 register --user admin-01 --yes          # 2. rör vid knappen
+shallot fido2 authenticate --user admin-01            # 3. ALLOW?
 # Kräv PIN/biometri (lagras i policyn, verkställs även utan flagga):
-shallot fido2 register --user admin-01 --hardware --yes --require-uv
+shallot fido2 register --user admin-01 --yes --require-uv
+# Mockat testläge (enda undantaget, alltid märkt):
+shallot fido2 register --user test-01 --yes --mock    # SIMULATED / TEST-ONLY
 ```
 
 - Flasha Pico Fido via PicoKeys ESP32-flasher, anslut via USB, rör vid

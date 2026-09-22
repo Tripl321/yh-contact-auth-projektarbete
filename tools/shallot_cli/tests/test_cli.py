@@ -92,6 +92,59 @@ def test_monitor_reads_without_writing(capsys, monkeypatch):
     assert fake.writes == []
 
 
+def test_read_until_matches_split_lines_and_times_out(monkeypatch):
+    from shallot_cli.commands import monitor_cmd
+    chunks = [b"[DEN] AUTHENT", b"ICATED (code 0)\nrest\n"]
+
+    class FakeSerial:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def readline(self):
+            if not chunks:
+                return b""
+            return chunks.pop(0)
+
+    monkeypatch.setattr(monitor_cmd.serial_adapters, "open_read_only",
+                        lambda *a, **k: FakeSerial())
+    hit, line = monitor_cmd.read_until("/dev/ttyX", 115200,
+                                       ["[DEN] AUTHENTICATED (code 0)"],
+                                       timeout=5.0)
+    assert hit == "[DEN] AUTHENTICATED (code 0)"
+    assert "AUTHENTICATED" in line
+    assert monitor_cmd.read_until("/dev/ttyX", 115200, ["NEVER"],
+                                  timeout=0.05) == (None, None)
+    assert monitor_cmd.read_until("", 115200, ["x"]) == (None, None)
+    assert monitor_cmd.read_until("/dev/ttyX", 0, ["x"]) == (None, None)
+
+
+def test_monitor_sanitizes_secrets_and_validates_baud(capsys, monkeypatch):
+    lines = [b"token supersecretvalue12345678901234567890 ip 169.254.169.254\n"]
+
+    class FakeSerial:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def readline(self):
+            if not lines:
+                raise KeyboardInterrupt
+            return lines.pop(0)
+
+    monkeypatch.setattr(serial_adapters, "open_read_only", lambda *a, **k: FakeSerial())
+    assert cli.main(["monitor", "--device", "den", "--port", "/dev/ttyFAKE"]) == 0
+    out = capsys.readouterr().out
+    assert "supersecretvalue" not in out and "169.254.169.254" not in out
+    assert "[REDACTED" in out
+    assert cli.main(["monitor", "--device", "den", "--port", "/dev/ttyFAKE",
+                     "--baud", "0"]) == 2
+
+
 def test_doctor_runs(capsys):
     assert cli.main(["doctor"]) in (0, 1)
     assert "doctor" in capsys.readouterr().out.lower()
@@ -109,3 +162,12 @@ def test_test_unknown_suite_exits_2():
     with pytest.raises(SystemExit) as e:
         cli.main(["test", "finns-inte"])
     assert e.value.code == 2
+
+
+def test_stream_pytest_prints_live_and_returns_output(capsys):
+    import sys
+    from shallot_cli.commands import test_cmd
+    out, rc = test_cmd._stream_pytest(
+        [sys.executable, "-c", "print('live-rad')"])
+    assert rc == 0 and "live-rad" in out
+    assert "live-rad" in capsys.readouterr().out  # strömmad, inte buffrad

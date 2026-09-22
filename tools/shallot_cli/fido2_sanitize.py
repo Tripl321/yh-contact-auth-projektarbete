@@ -3,11 +3,12 @@
 All output saneras före visning, loggning och eventuell Ollama-analys.
 Även mamabear.py konsumerar denna modul (ingen egen REDACTIONS-lista).
 
-Maskerar: långa/identifierande credential-ID:n, tokens, nycklar, råa
+Maskerar: långa/identifierande credential-ID:n, tokens, nycklar
+(även mellanslagsseparerade ``secret hunter2``-former), råa
 CBOR/CTAP-payloads (hex/base64url-blobbar), fingeravtryck, MAC-adresser,
-privata IP-adresser (inkl. Tailscale 100.64/10) och personuppgifter
-(e-post). Korta interna ID:n (t.ex. ``admin-01``) och statusord lämnas
-intakta.
+privata IP-adresser (inkl. Tailscale 100.64/10, link-local 169.254/16
+och ULA fc00::/7) och personuppgifter (e-post). Korta interna ID:n
+(t.ex. ``admin-01``) och statusord lämnas intakta.
 """
 
 from __future__ import annotations
@@ -21,6 +22,11 @@ REDACTIONS = [
                 r"\s*[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+[\"']?", re.IGNORECASE),
      lambda m: "%s=[REDACTED]" % m.group(1)),
     (re.compile(r"\bbearer\s+\S+", re.IGNORECASE), "bearer [REDACTED]"),
+    # Mellanslagsseparerad hemlighet utan :/=: secret hunter2 ("token"
+    # undantas här — för vanligt ord; långa token-blobbar tas av
+    # blob-reglerna nedan).
+    (re.compile(r"\b(secret|password|passwd|pwd)\b\s+[\"']?\S+", re.IGNORECASE),
+     lambda m: "%s [REDACTED]" % m.group(1)),
     (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"), "-----BEGIN REDACTED PRIVATE KEY-----"),
     # Fingeravtryck och MAC (från mamabear-spåret, nu enda ägaren här).
     (re.compile(r"\bfingerprint\s*[:=]?\s*[0-9A-Fa-f:]{8,}"), "fingerprint=[REDACTED-FINGERPRINT]"),
@@ -36,11 +42,13 @@ REDACTIONS = [
     (re.compile(r"\b[A-Za-z0-9_~+/-]{32,}={0,2}\b"), "[REDACTED-TOKEN]"),
     # Privata adresser inkl. Tailscale CGNAT, loopback, link-local.
     (re.compile(r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-                r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
-                r"|192\.168\.\d{1,3}\.\d{1,3}"
-                r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
-                r"|127\.\d{1,3}\.\d{1,3}\.\d{1,3})\b"), "[REDACTED-IP]"),
+                 r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+                 r"|192\.168\.\d{1,3}\.\d{1,3}"
+                 r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
+                 r"|127\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+                 r"|169\.254\.\d{1,3}\.\d{1,3})\b"), "[REDACTED-IP]"),
     (re.compile(r"\bfe80:[0-9A-Fa-f:]*[0-9A-Fa-f]\b"), "[REDACTED-IP]"),
+    (re.compile(r"\b(?:fc|fd)[0-9A-Fa-f]{2}:[0-9A-Fa-f:]*[0-9A-Fa-f]\b"), "[REDACTED-IP]"),
     (re.compile(r"(?<![0-9A-Fa-f:])::1(?![0-9A-Fa-f:])"), "[REDACTED-IP]"),
     # Personuppgifter: e-postadresser.
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),

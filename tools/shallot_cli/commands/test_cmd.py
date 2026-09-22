@@ -1,7 +1,8 @@
 """`shallot test` — kör repoets befintliga pytest-sviter via subprocess.
 
 Testfiler återanvänds aldrig som bibliotek; de körs som separata
-pytest-processer och endast pass/fail/skip-räkningar rapporteras.
+pytest-processer. Rapporterar pass/fail/skip-räkningar samt en kort
+svans av output för felsökning.
 """
 
 from __future__ import annotations
@@ -10,12 +11,13 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
-#: Svitnamn -> pytest-mål (relativt repo-roten). Tillsammans täcker de
-#: alla 14 testfiler under tests/.
+#: Svitnamn -> pytest-mål (relativt repo-roten). "all" täcker både
+#: tests/ och tools/shallot_cli/tests/.
 SUITES = {
     "protocol": ["tests/test_pro87_uart.py"],
     "den": [
@@ -47,7 +49,7 @@ SUITES = {
         "tools/shallot_cli/tests/test_fido2_cmd.py",
         "tools/shallot_cli/tests/test_fido2_ctap.py",
     ],
-    "all": ["tests"],
+    "all": ["tests", "tools/shallot_cli/tests"],
 }
 
 _COUNT_RES = {
@@ -56,6 +58,51 @@ _COUNT_RES = {
     "skipped": re.compile(r"(\d+) skipped"),
     "errors": re.compile(r"(\d+) error"),
 }
+
+
+def _stream_pytest(cmd: list[str]) -> tuple[str, int]:
+    """Kör pytest med live-output (så långa sviter inte ser ut att ha
+    fastnat). Returnerar (sammanslagen output, exit-kod). Timeout 600 s."""
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
+    chunks: list[str] = []
+    deadline = time.monotonic() + 600
+    try:
+        import select
+        haveselect = True
+    except ImportError:
+        haveselect = False
+    try:
+        while True:
+            if proc.poll() is not None:
+                rest = proc.stdout.read()
+                if rest:
+                    print(rest, end="")
+                    chunks.append(rest)
+                break
+            if haveselect:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    proc.kill()
+                    raise subprocess.TimeoutExpired(cmd, 600)
+                try:
+                    ready, _, _ = select.select([proc.stdout], [], [],
+                                                min(remaining, 0.5))
+                except (OSError, ValueError):
+                    haveselect = False
+                    continue
+                if not ready:
+                    continue
+            line = proc.stdout.readline()
+            if not line:
+                continue  # låt poll() avgöra om processen är klar
+            print(line, end="", flush=True)
+            chunks.append(line)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    return "".join(chunks), proc.returncode
 
 
 def run_suite(suite: str, as_json: bool = False) -> int:
@@ -68,35 +115,50 @@ def run_suite(suite: str, as_json: bool = False) -> int:
     if missing:
         print("error: saknade testmål: %s" % ", ".join(missing), file=sys.stderr)
         return 1
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", *targets, "-q", "--tb=short"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=600)
-    except FileNotFoundError:
-        print("error: python-tolken hittades inte.", file=sys.stderr)
-        return 1
-    except subprocess.TimeoutExpired:
-        print("error: pytest tog längre än 600 s — avbrutet.", file=sys.stderr)
-        return 1
-    output = (proc.stdout or "") + (proc.stderr or "")
+    cmd = [sys.executable, "-m", "pytest", *targets, "-q", "--tb=short"]
+    if as_json:
+        try:
+            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True,
+                                  text=True, timeout=600)
+        except FileNotFoundError:
+            print("error: python-tolken hittades inte.", file=sys.stderr)
+            return 1
+        except subprocess.TimeoutExpired:
+            print("error: pytest tog längre än 600 s — avbrutet.", file=sys.stderr)
+            return 1
+        except OSError as e:
+            print("error: kunde inte starta pytest: %s" % e, file=sys.stderr)
+            return 1
+        output = (proc.stdout or "") + (proc.stderr or "")
+        returncode = proc.returncode
+    else:
+        print("shallot test: svit '%s' (%s)" % (suite, ", ".join(targets)),
+              flush=True)
+        try:
+            output, returncode = _stream_pytest(cmd)
+        except FileNotFoundError:
+            print("error: python-tolken hittades inte.", file=sys.stderr)
+            return 1
+        except subprocess.TimeoutExpired:
+            print("error: pytest tog längre än 600 s — avbrutet.", file=sys.stderr)
+            return 1
+        except OSError as e:
+            print("error: kunde inte starta pytest: %s" % e, file=sys.stderr)
+            return 1
     counts = {k: (int(r.search(output).group(1)) if r.search(output) else 0)
               for k, r in _COUNT_RES.items()}
-    ok = proc.returncode == 0 and counts["failed"] == 0 and counts["errors"] == 0
+    ok = returncode == 0 and counts["failed"] == 0 and counts["errors"] == 0
     if as_json:
         print(json.dumps({
             "suite": suite, "targets": targets,
             "passed": counts["passed"], "failed": counts["failed"],
             "skipped": counts["skipped"], "errors": counts["errors"],
-            "pytest_exit": proc.returncode, "ok": ok,
+            "pytest_exit": returncode, "ok": ok,
         }, indent=2))
     else:
-        tail = "\n".join((proc.stdout or "").strip().splitlines()[-8:])
-        print("shallot test: svit '%s' (%s)" % (suite, ", ".join(targets)))
-        if tail:
-            print(tail)
         print("passerade=%d misslyckade=%d hoppade_över=%d fel=%d" % (
             counts["passed"], counts["failed"], counts["skipped"], counts["errors"]))
         if not ok:
-            print("SVIKT: inte alla tester godkända (pytest exit %d)." % proc.returncode,
+            print("SVIKT: inte alla tester godkända (pytest exit %d)." % returncode,
                   file=sys.stderr)
     return 0 if ok else 1

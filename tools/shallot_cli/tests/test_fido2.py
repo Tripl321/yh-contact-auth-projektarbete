@@ -4,6 +4,7 @@ import pytest
 
 from shallot_cli import fido2
 from shallot_cli import fido2_store as store
+from shallot_cli.fido2 import Credential
 
 
 def test_all_scenarios_known():
@@ -142,3 +143,29 @@ def test_approval_fingerprint_stable_and_scoped():
     assert fido2.approval_fingerprint("cid-1", "cHViLWtleQ") == fp1
     assert fido2.approval_fingerprint("cid-2", "cHViLWtleQ") != fp1
     assert fido2.approval_fingerprint("cid-1", None) != fp1
+
+
+def test_credential_create_validates_and_roundtrips():
+    cred = Credential.create(credential_id="c1", user_id="u",
+                             policy={"user_presence": True})
+    d = cred.to_dict()
+    assert d["status"] == store.STATUS_ACTIVE and d["created"]
+    assert d["policy"] == {"user_presence": True}
+    with pytest.raises(ValueError, match="förbjudet fält"):
+        Credential.create(credential_id="c2", user_id="u",
+                          policy={"private_key": "x"})
+    with pytest.raises(ValueError, match="förbjudet fält"):
+        Credential.create(credential_id="c3", user_id="u", policy={},
+                          extra={"signature": "x"})
+    incomplete = {"credential_id": "c4"}
+    with pytest.raises(ValueError, match="obligatoriskt fält"):
+        Credential.check_record(incomplete)
+
+
+def test_credential_builders_match_register_shape(tmp_path, monkeypatch):
+    monkeypatch.setenv(store.STORE_ENV, str(tmp_path))
+    meta = fido2.register_user("cred-shape-01")
+    stored = store.load_credentials()[meta["credential_id"]]
+    assert set(stored) == {"credential_id", "user_id", "created",
+                           "status", "policy"}
+    assert stored == Credential(stored).to_dict()

@@ -32,10 +32,14 @@ class DeviceError(Exception):
     """Enhetsfel: urkopplad, timeout, PIN-fel eller CTAP-fel (fail closed)."""
 
 
-class AuthenticatorBackend:
-    """Gränssnitt som varje backend måste uppfulla. Behålls medvetet:
-    två verkliga implementationer finns (MockBackend, CtapHidBackend),
-    så detta är en äkta söm, inte ett hypotetiskt lager."""
+class Signer:
+    """Capability: server-side sign/verify (mock only, HMAC).
+
+    Enda implementeringen är MockBackend — fysisk authenticator har
+    avsiktligt ingen sign/verify (nyckeln lämnar aldrig enheten; HW går
+    endast via enhetsceremoni + RP-verifiering). verify_assertion
+    typkontrollerar mot denna capability och nekar allt annat.
+    """
 
     name = "base"
 
@@ -51,7 +55,7 @@ def _mock_key(credential_id: bytes) -> bytes:
     return hashlib.sha256(MOCK_DOMAIN + bytes(credential_id)).digest()
 
 
-class MockBackend(AuthenticatorBackend):
+class MockBackend(Signer):
     """Deterministisk HMAC-mock. Standardbackend i v1."""
 
     name = "mock"
@@ -91,13 +95,16 @@ def _prompt_pin(rp_id: str) -> str | None:
     return pin or None
 
 
-class CtapHidBackend(AuthenticatorBackend):
+class CtapHidBackend:
     """Fysisk authenticator över CTAP2/USB HID (t.ex. Pico Fido @ ESP32-S3).
 
-    Rör aldrig USB i konstruktorn — enheten öppnas först per operation,
-    och endast när CLI:t körs med explicit ``--hardware``. För tester kan
-    ``device_finder`` och ``client_factory`` injiceras (ingen fysisk
-    enhet i testsuiten).
+    Avsiktligt INGEN Signer: sign/verify finns inte här alls (inte ens som
+    vägran) — nyckeln lämnar aldrig enheten. Ceremonier går via
+    register/authenticate; beslut via RP-verifiering mot lagrad publik
+    nyckel. Rör aldrig USB i konstruktorn — enheten öppnas först per
+    operation. CLI:t använder denna backend som standard; mockat läge
+    kräver explicit ``--mock``. För tester kan ``device_finder`` och
+    ``client_factory`` injiceras (ingen fysisk enhet i testsuiten).
     """
 
     name = "hardware"
@@ -105,16 +112,6 @@ class CtapHidBackend(AuthenticatorBackend):
     def __init__(self, *, device_finder=None, client_factory=None):
         self._device_finder = device_finder
         self._client_factory = client_factory
-
-    def sign(self, *, credential_id: bytes, signed_data: bytes) -> bytes:
-        raise DeviceError(
-            "CTAP-backendet signerar endast via enhetsceremoni "
-            "(register/authenticate) — aldrig server-side")
-
-    def verify(self, *, credential_id: bytes, signed_data: bytes, signature: bytes) -> bool:
-        raise DeviceError(
-            "CTAP-backendet verifierar endast via RP-verifiering "
-            "mot lagrad publik nyckel — aldrig server-side")
 
     def list_devices(self) -> list:
         """Lista anslutna CTAP-enheter (skrivfritt). Tom lista om inga finns."""
@@ -246,8 +243,9 @@ class CtapHidBackend(AuthenticatorBackend):
                 "signature": bytes(resp.signature)}
 
 
-def get_backend(name: str = "mock") -> AuthenticatorBackend:
-    """Returnera backend. 'mock' som standard; 'hardware' kräver --hardware vid bruk."""
+def get_backend(name: str = "mock") -> Signer | CtapHidBackend:
+    """Returnera backend. Biblioteksdefault 'mock' (tester, demo);
+    CLI:t väljer 'hardware' om inte explicit --mock givits."""
     if name == "mock":
         return MockBackend()
     if name == "hardware":

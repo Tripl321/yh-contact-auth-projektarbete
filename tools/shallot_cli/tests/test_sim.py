@@ -2,7 +2,7 @@
 
 import pytest
 
-from shallot_cli import sim
+from shallot_cli import fido2, sim
 
 
 def test_all_scenarios_known():
@@ -63,3 +63,16 @@ def test_no_secret_keys_in_output():
         text = sim.render(sim.run_scenario(name))
         for s in secrets:
             assert s not in text
+
+
+def test_both_scenario_harnesses_share_shape():
+    """Delad form utan delad kod: SCENARIOS + run_scenario (ValueError vid
+    okänt) + banner-märkt render. En parameteriserad harness över olika
+    reason-vokabulärer (numerisk vs sträng) vore shallow — formen fästs
+    här istället."""
+    for mod in (sim, fido2):
+        assert len(mod.SCENARIOS) > 0
+        with pytest.raises(ValueError):
+            mod.run_scenario("finns-inte")
+        rendered = mod.render(mod.run_scenario(mod.SCENARIOS[0]))
+        assert "SIMULATED / TEST-ONLY" in rendered

@@ -37,32 +37,43 @@ def _uv_policy(require_uv: bool, credential: dict | None = None) -> str:
     return "preferred"
 
 
-def run_register(user: str, yes: bool = False, hardware: bool = False,
-                 require_uv: bool = False) -> int:
-    """`shallot fido2 register --user <id> [--hardware] [--require-uv]`."""
+def run_register(user: str, yes: bool = False, mock: bool = False,
+                 require_uv: bool = False, confirm=None) -> int:
+    """`shallot fido2 register --user <id> [--mock] [--require-uv]`.
+
+    Standardläge är fysisk authenticator (kräver beröring, ingen flagga).
+    Mockat läge kräver explicit --mock och märks SIMULATED / TEST-ONLY.
+
+    confirm: injicerbar ja/nej-funktion (ConfirmGateway, default _confirm);
+    yes=True hoppar över frågan (icke-interaktivt).
+    """
     try:
         user_id = fido2.validate_user(user)
     except ValueError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
-    if hardware:
+    if not mock:
         print(HARDWARE_MARKER)
+    ask = confirm or _confirm
     if not yes:
         _say("Registrera FIDO2-credential för användare %s? (%s)" % (
-            user_id, "fysisk authenticator" if hardware else "mock, SIMULATED / TEST-ONLY"))
-        if not _confirm("Fortsätt med registrering"):
+            user_id, "mock, SIMULATED / TEST-ONLY" if mock else "fysisk authenticator"))
+        if not ask("Fortsätt med registrering"):
             print("Avbrutet av användaren — inget registrerades.", file=sys.stderr)
             return 2
     try:
-        if hardware:
+        if mock:
+            print(fido2.BANNER)
+            meta = fido2.register_user(user_id,
+                                       user_verification=_uv_policy(require_uv))
+        else:
             meta = fido2.register_hw_user(
                 user_id, ctap=fido2_backend.CtapHidBackend(),
                 user_verification=_uv_policy(require_uv))
-        else:
-            meta = fido2.register_user(user_id,
-                                       user_verification=_uv_policy(require_uv))
     except (fido2_backend.DeviceNotFound, fido2_backend.DeviceError) as e:
-        print("error: %s" % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
+        print("error: %s (nästa steg: anslut en FIDO2-authenticator via USB "
+              "och försök igen — mockat testläge endast med --mock)" % (
+                  fido2_sanitize.sanitize(str(e))), file=sys.stderr)
         return 1
     except (ValueError, RuntimeError) as e:
         print("error: %s" % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
@@ -85,8 +96,12 @@ def _pick_credential(user_id: str, credential: str | None) -> dict | None:
 
 
 def run_authenticate(user: str, credential: str | None = None,
-                     hardware: bool = False, require_uv: bool = False) -> int:
-    """`shallot fido2 authenticate --user <id> [--credential <id>] [--hardware] [--require-uv]`."""
+                     mock: bool = False, require_uv: bool = False) -> int:
+    """`shallot fido2 authenticate --user <id> [--credential <id>] [--mock] [--require-uv]`.
+
+    Standardläge är fysisk authenticator; mockat läge kräver explicit
+    --mock (SIMULATED / TEST-ONLY) och faller aldrig in tyst.
+    """
     try:
         user_id = fido2.validate_user(user)
     except ValueError as e:
@@ -104,8 +119,9 @@ def run_authenticate(user: str, credential: str | None = None,
         return 1
     short = fido2_sanitize.short_credential(cred["credential_id"])
     uv_policy = _uv_policy(require_uv, cred)
-    if hardware:
+    if not mock:
         return _run_authenticate_hw(user_id, cred, short, uv_policy)
+    print(fido2.BANNER)
     cer = fido2.Ceremony()
     challenge = cer.begin()
     data = fido2.signed_data(challenge, fido2.ORIGIN, fido2.RP_ID, True)
@@ -140,9 +156,17 @@ def _run_authenticate_hw(user_id: str, cred: dict, short: str,
     ctap = fido2_backend.CtapHidBackend()
     challenge = cer.begin()
     try:
+        credential_id_bytes = fido2._b64unpad(cred["credential_id"])
+    except (ValueError, KeyError, TypeError):
+        _say("DENY (invalid-signature) användare %s credential %s" % (user_id, short))
+        fido2_store.audit("authenticate", {"user_id": user_id, "credential": short,
+                                           "result": "DENY", "reason": "invalid-signature",
+                                           "backend": "hardware"})
+        return 1
+    try:
         raw = ctap.authenticate(origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
                                 challenge=challenge,
-                                credential_id=fido2._b64unpad(cred["credential_id"]),
+                                credential_id=credential_id_bytes,
                                 user_verification=uv_policy)
     except (fido2_backend.DeviceNotFound, fido2_backend.DeviceError) as e:
         _say("DENY (device-error) användare %s — %s" % (user_id, e))
@@ -190,12 +214,13 @@ def run_credential_list() -> int:
     return 0
 
 
-def run_credential_revoke(credential: str, yes: bool = False) -> int:
+def run_credential_revoke(credential: str, yes: bool = False, confirm=None) -> int:
     """`shallot fido2 credential revoke --credential <id>`."""
     short = fido2_sanitize.short_credential(credential)
+    ask = confirm or _confirm
     if not yes:
         _say("Spärra credential %s? Spärrade credentials nekas (fail closed)." % short)
-        if not _confirm("Fortsätt med spärrning"):
+        if not ask("Fortsätt med spärrning"):
             print("Avbrutet av användaren — inget spärrades.", file=sys.stderr)
             return 2
     try:
@@ -209,7 +234,7 @@ def run_credential_revoke(credential: str, yes: bool = False) -> int:
 
 
 def run_credential_set_policy(credential: str, user_verification: str,
-                              yes: bool = False) -> int:
+                              yes: bool = False, confirm=None) -> int:
     """`shallot fido2 credential set-policy --credential <id> --user-verification <p>`."""
     short = fido2_sanitize.short_credential(credential)
     if user_verification not in fido2.UV_POLICIES:
@@ -229,10 +254,11 @@ def run_credential_set_policy(credential: str, user_verification: str,
     if old == user_verification:
         _say("Oförändrat: credential %s har redan uv %s." % (short, old))
         return 0
+    ask = confirm or _confirm
     if not yes:
         _say("Ändra UV-policy för credential %s: %s → %s?" % (short, old, user_verification))
         _say("Verkställs vid nästa authenticate (fail closed utan UV-flagg vid 'required').")
-        if not _confirm("Fortsätt med policyändring"):
+        if not ask("Fortsätt med policyändring"):
             print("Avbrutet av användaren — policyn är oförändrad.", file=sys.stderr)
             return 2
     try:
@@ -288,6 +314,16 @@ def run_device_list() -> int:
     return 0
 
 
+def _resolve_export_path(output: str):
+    """Validera användarvald exportfil. Fail-closed (S2083: path injection).
+
+    Tunnt alias över mamabear.resolve_output_path — regeln ägs på ett
+    ställe (beslut #1); namnet behålls så anropare är orörda.
+    """
+    from shallot_cli.mamabear import resolve_output_path
+    return resolve_output_path(output)
+
+
 def run_credential_export(credential: str, output: str) -> int:
     """`shallot fido2 credential export --credential <id> --output <fil>`.
 
@@ -304,10 +340,10 @@ def run_credential_export(credential: str, output: str) -> int:
     if meta is None:
         _say("okänd credential %s" % fido2_sanitize.short_credential(credential))
         return 2
-    from pathlib import Path
-    out_path = Path(output)
-    if out_path.parent != Path(".") and not out_path.parent.is_dir():
-        print("error: målkatalogen finns inte: %s" % out_path.parent, file=sys.stderr)
+    try:
+        out_path = _resolve_export_path(output)
+    except RuntimeError as e:
+        print("error: %s" % e, file=sys.stderr)
         return 1
     doc = {
         "format": "shallot-fido2-approval/1",

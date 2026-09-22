@@ -6,13 +6,13 @@ from shallot_cli import cli, registry, tui
 def test_registry_holds_all_commands():
     assert set(registry.COMMANDS) == {
         "test", "simulate", "demo", "explain", "protocol", "doctor",
-        "build", "device", "monitor", "mamabear", "fido2",
+        "build", "device", "monitor", "mamabear", "fido2", "admin",
     }
 
 
 def test_menu_covers_legacy_numbers_plus_demo_explain():
     numbers = [n for n, _label in registry.menu_entries()]
-    assert numbers == list(range(1, 22))
+    assert numbers == list(range(1, 27))
 
 
 def test_argparse_built_from_registry():
@@ -28,6 +28,13 @@ def test_dispatch_tui_known_and_unknown(monkeypatch, capsys):
     assert registry.dispatch_tui("6") is True  # doctor via registry
     assert registry.dispatch_tui("99") is False  # okänt: faller igenom
     assert tui.handle_choice("99") is False
+
+
+def test_all_tui_flows_resolve_to_callables():
+    for cmd in registry.COMMANDS.values():
+        for number, (_label, flow) in cmd.tui.items():
+            fn = getattr(tui, flow, None) if isinstance(flow, str) else flow
+            assert callable(fn), (cmd.name, number, flow)
 
 
 def test_simulate_still_delegates(monkeypatch, capsys):

@@ -756,6 +756,9 @@ static void handleDockAuth() {
                                                f.payload, f.payloadLen,
                                                now, &event)) {
                 if (event == PAW_SESSION_EVENT_NO_KEY) {
+                    // PRO-59 fail-closed: missing key must never leave a stale
+                    // AUTHENTICATED on screen (mirrors LoRa NO_KEY -> FAILED).
+                    epd.showStatus(EPD_STATUS_FAILED);
                     Serial.println("[PRO-84] CHALLENGE ignored, no key stored");
                 } else {
                     Serial.println("[PRO-84] CHALLENGE ignored, session busy");
@@ -946,7 +949,9 @@ void loop() {
                         Serial.println("[PRO-50] Challenge ignored, session busy");
                     }
                 }
-            } else if (msgType == MSG_RESULT && rxLen >= 2) {
+            } else if (msgType == MSG_RESULT && rxLen == 2) {
+                // PRO-59 fail-closed: RESULT body must be exactly one byte.
+                // Longer frames are malformed and ignored (never grant).
                 paw_session_event_t event;
                 bool success = rxBuffer[1] == 0x01;
                 if (paw_session_on_result(&pawSession,
@@ -975,6 +980,21 @@ void loop() {
     if (provisionResult == PROV_DONE) {
         digitalWrite(LED_BUILTIN, HIGH);
         epd.showStatus(EPD_STATUS_AUTHENTICATING);
+    }
+
+    // PRO-59 fail-closed: a new provisioning session or a provisioning
+    // failure wipes the key and clears any grant inside PawSession. The
+    // e-paper is bistable, so a stale AUTHENTICATED would otherwise stay
+    // on screen forever (grant expiry never fires once the grant is
+    // cleared). Revert to locked display on the valid -> invalid edge.
+    // Async showStatus returns immediately; dock timing unaffected.
+    {
+        static bool lastKeyValid = false;
+        bool curKeyValid = key_is_valid();
+        if (lastKeyValid && !curKeyValid) {
+            epd.showStatus(EPD_STATUS_AUTHENTICATING);
+        }
+        lastKeyValid = curKeyValid;
     }
 
     // 5. Advance shared session timeouts and grant expiry.

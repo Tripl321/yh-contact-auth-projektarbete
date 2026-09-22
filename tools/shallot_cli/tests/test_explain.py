@@ -139,7 +139,8 @@ def test_resolve_base_loopback_forms():
 def test_resolve_base_rejects_remote(monkeypatch):
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     for bad in ("http://example.com", "http://10.0.0.5:11434",
-                "https://ollama.example.com", "ftp://localhost/x"):
+                "https://ollama.example.com", "ftp://localhost/x",
+                "http://user:pass@localhost:11434"):
         with pytest.raises(ollama.OllamaError):
             ollama.resolve_base(bad)
 

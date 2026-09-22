@@ -27,7 +27,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shallot_cli.fido2_sanitize import sanitize
+from shallot_cli import fido2_sanitize
 
 CONNECT_TIMEOUT_S = 10
 CMD_TIMEOUT_S = 30
@@ -73,7 +73,7 @@ SCOPE_NOTE = ("Fysisk status-/självtestverifiering av MamaBear-noden. "
               "Inte bevis för hela DEN–PAW-autentiseringskedjan.")
 
 # Maskningsregler ägs av fido2_sanitize (enda ägaren) — denna modul
-# återanvänder sanitize utan egen REDACTIONS-lista.
+# importerar modulen, aldrig namnet (inget sanitize-alias här).
 
 
 def validate_alias(host: str) -> str:
@@ -81,10 +81,18 @@ def validate_alias(host: str) -> str:
     alias = (host or "").strip()
     if IPV4_RE.fullmatch(alias) or alias.startswith("["):
         raise ValueError("'%s' ser ut som en adress — ange ssh-alias från ~/.ssh/config." % host)
+    if alias in (".", ".."):
+        raise ValueError("ogiltigt ssh-alias %r." % host)
     if not ALIAS_RE.fullmatch(alias) or alias.startswith("-"):
         raise ValueError("ogiltigt ssh-alias %r — använd ett alias från ~/.ssh/config "
                          "(aldrig user@värd, adress, sökväg eller flaggor)." % host)
     return alias
+
+
+#: Exakta fjärrkommandon som någonsin får köras (upprätthålls vid
+#: exec-gränsen, inte bara hos anroparen).
+_KNOWN_REMOTE_CMDS = frozenset(
+    [e["cmd"] for e in STATUS_COMMANDS] + [e["cmd"] for e in TEST_COMMANDS])
 
 
 def run_remote(alias: str, remote_cmd: str, timeout_s: int = CMD_TIMEOUT_S) -> dict:
@@ -92,7 +100,12 @@ def run_remote(alias: str, remote_cmd: str, timeout_s: int = CMD_TIMEOUT_S) -> d
 
     Kastar RuntimeError om ssh-binären saknas eller inte kan startas.
     Skriver aldrig något på fjärrnoden (kommandot kommer från allowlist).
+    Alias och kommando valideras här igen — säkerheten bor vid
+    exec-gränsen, inte bara hos anroparen.
     """
+    alias = validate_alias(alias)
+    if remote_cmd not in _KNOWN_REMOTE_CMDS:
+        raise RuntimeError("vägrat: fjärrkommando utanför allowlist.")
     argv = ["ssh", "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S, alias, remote_cmd]
     try:
@@ -142,7 +155,7 @@ def run_suite(alias: str, entries: tuple, timeout_s: int = CMD_TIMEOUT_S) -> dic
     for entry in entries:
         result = run_remote(alias, entry["cmd"], timeout_s=timeout_s)
         if is_transport_error(result):
-            transport_error = sanitize(
+            transport_error = fido2_sanitize.sanitize(
                 (result.get("stderr") or result.get("stdout") or "okänd transportfel").strip())
             aborted = True
             if result.get("timed_out"):
@@ -154,8 +167,8 @@ def run_suite(alias: str, entries: tuple, timeout_s: int = CMD_TIMEOUT_S) -> dic
             "exit_code": result["exit_code"],
             "timed_out": False,
             "check": check_entry(entry, result),
-            "output": sanitize(result.get("stdout") or ""),
-            "stderr": sanitize(result.get("stderr") or ""),
+            "output": fido2_sanitize.sanitize(result.get("stdout") or ""),
+            "stderr": fido2_sanitize.sanitize(result.get("stderr") or ""),
         })
     return {"results": results, "transport_error": transport_error, "aborted": aborted}
 
@@ -164,9 +177,35 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: Enda resultattyper default_output_path() kan namnge (S2083: kind
+#: når filnamnet och får aldrig bära separatorer eller "..").
+_ALLOWED_KINDS = frozenset({"status", "test"})
+
+
 def default_output_path(kind: str) -> Path:
+    if kind not in _ALLOWED_KINDS:
+        raise RuntimeError("ogiltig resultattyp: %r" % (kind,))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return Path.cwd() / ("mamabear-%s-%s.json" % (kind, stamp))
+
+
+def resolve_output_path(raw: str | Path) -> Path:
+    """Validera en användarvald resultatfil (t.ex. CLI --output). Fail-closed.
+
+    Normaliserar (expanduser + resolve mot CWD) och kräver .json-suffix
+    samt att målkalogen finns — den skapas aldrig automatiskt, så en
+    felstavad sökväg kan inte sprida filer oväntat (S2083: path injection).
+    """
+    text = str(raw) if isinstance(raw, Path) else raw
+    if not isinstance(text, str) or "\x00" in text or not text.strip():
+        raise RuntimeError("ogiltig målfil")
+    candidate = Path(text).expanduser()
+    if candidate.suffix != ".json":
+        raise RuntimeError("målfil måste sluta med .json: %s" % text)
+    resolved = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+    if not resolved.parent.is_dir():
+        raise RuntimeError("målkatalogen finns inte: %s" % resolved.parent)
+    return resolved
 
 
 def build_payload(tool: str, alias: str, suite: dict) -> dict:
@@ -194,13 +233,19 @@ def build_payload(tool: str, alias: str, suite: dict) -> dict:
     }
 
 
-def save_result(path: Path, payload: dict) -> Path:
-    """Spara resultatfil lokalt. Kastar RuntimeError vid skrivfel."""
+def save_result(path: str | Path, payload: dict) -> Path:
+    """Spara resultatfil lokalt. Kastar RuntimeError vid skrivfel.
+
+    Går alltid via resolve_output_path() så även interna anropare får
+    samma normalisering (S2083); default-namnen från
+    default_output_path() är redan .json i CWD och passerar oförändrat.
+    """
+    resolved = resolve_output_path(path)
     try:
-        Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        resolved.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     except OSError as e:
-        raise RuntimeError("kunde inte skriva resultatfil %s: %s" % (path, e)) from None
-    return Path(path)
+        raise RuntimeError("kunde inte skriva resultatfil %s: %s" % (resolved, e)) from None
+    return resolved
 
 
 def render_summary(payload: dict, result_path: Path | None) -> str:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_module
+import sys
 
 from shallot_cli import uart
 
@@ -99,8 +100,8 @@ def run_scenario(name: str) -> dict:
         full = uart.encode(uart.T_RESPONSE, paw_answer(nonce))
         out["response_frame_hex"] = full[:5].hex()
         out.update(reason_code=1, reason=REASONS[1],
-                   detail="ofullständig RESPONSE inom 2 s-deadline (5/%d byte); "
-                          "sessionen avbröts." % len(full))
+                   detail="ofullständig RESPONSE inom %d s-deadline (5/%d byte); "
+                          "sessionen avbröts." % (DEADLINE_MS // 1000, len(full)))
         return out
 
     if name == "crc":
@@ -125,7 +126,8 @@ def run_scenario(name: str) -> dict:
         out["response_frame_hex"] = uart.encode(uart.T_RESPONSE, mac).hex()
         out["response_hmac_hex"] = mac.hex()
         out.update(reason_code=1, reason=REASONS[1],
-                   detail="giltig RESPONSE anlände efter 2 s-deadline; för sent svar nekas.")
+                   detail="giltig RESPONSE anlände efter %d s-deadline; för sent svar nekas."
+                          % (DEADLINE_MS // 1000))
         return out
 
     raise AssertionError("unreachable")  # pragma: no cover
@@ -151,3 +153,14 @@ def render(res: dict) -> str:
         lines.append("detalj   : %s" % res["detail"])
     lines.append("nyckel   : deterministisk testnyckel (visas aldrig)")
     return "\n".join(lines)
+
+
+def run_cli(scenario: str) -> int:
+    """CLI-presentation av en simulering. Exit 0 = visad, 2 = användning."""
+    try:
+        res = run_scenario(scenario)
+    except ValueError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    print(render(res))
+    return 0
