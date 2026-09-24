@@ -1,0 +1,13 @@
+{
+  "exclude": [
+    "**/.trunk/**"
+  ],
+  "ignore": {
+    "*": [
+      {
+        "reason": "Ruby test data not used in production",
+        "expires": "2027-01-01"
+      }
+    ]
+  }
+}

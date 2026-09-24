@@ -99,7 +99,7 @@ on unauthenticated input, preventing probing attacks.
 | Truncated/corrupt data                    | Blocklist not activated; old list kept |
 | `blocklist_valid = 0` (no valid list yet) | **All PAWs denied** (`DEN_REASON_BLOCKLISTED`, fail closed) |
 | PAW with blocklisted key                  | Denied after HMAC verification (`DEN_REASON_BLOCKLISTED`) |
-| Trust root still placeholder (all-zero)   | No signature verifies; no list activates; **all PAWs denied** — pin production key to activate (see §11.6) |
+| Trust root not pinned (all-zeros)         | No signature verifies; no list activates; **all PAWs denied** — pin production key to activate (see §11.6) |
 
 ## 8. PAW identity binding
 
@@ -128,7 +128,12 @@ because:
 | `test_pro98_keeps_last_valid_on_error`      | Failed update keeps previous valid list        |
 | `test_pro98_bad_hmac_never_reaches_gate`    | HMAC checked before blocklist gate             |
 | `test_pro98_deny_chain_never_shows_authenticated` | ACK 0x00 → PAW FAILED, never grant         |
-| `test_pro98_source_*`                       | Reason code 8, gate placement, fp hygiene, issuer check, placeholder scope |
+| `test_pro98_trust_root_build_config_guards` | Build-time pinning macros present in source    |
+| `test_pro98_trust_root_pinned_helper`       | Runtime `blocklist_trust_root_pinned()` helper |
+| `test_pro98_fail_closed_default_behavior`   | All-zero key never verifies any signature      |
+| `test_pro98_valid_blocklist_accepted_with_pinned_key` | Pinned key + valid sig → authenticated |
+| `test_pro98_blocked_fp_denied_with_pinned_key` | Listed fp → BLOCKLISTED before grant       |
+| `test_pro98_source_*`                       | Reason code 8, gate placement, fp hygiene, issuer check, build-config scope |
 
 All tests are **Python mock simulations** of the firmware logic. The HMAC
 verification, version checking, and truncation handling are mirrored in Python.
@@ -175,9 +180,37 @@ verification, version checking, and truncation handling are mirrored in Python.
 
 | Check | Status | Notes |
 |-------|--------|-------|
-| DEN contains only public key | ✅ PASS | `blocklist_public_key[32]` embedded in DEN; all-zero placeholder for production |
-| UNO Q contains only private key | ✅ PASS | Private key in UNO Q; public key derived internally if needed |
+| DEN contains only public key | ✅ PASS | `blocklist_public_key[32]` embedded in DEN via build-time pinning |
 | PAW has neither key | ✅ PASS | PAW firmware has no Ed25519 code or keys |
+
+**Build-time pinning mechanism (implemented):**
+
+The DEN firmware (`plc/den-main/den-main.ino`) accepts the Ed25519 public key via a build-time macro:
+
+```bash
+# Production build:
+arduino-cli compile -e \
+  -DSHALLOT_BLOCKLIST_PUBKEY='0x01,0x02,...,0x20' \
+  -DSHALLOT_BLOCKLIST_REQUIRE_KEY \
+  plc/den-main
+```
+
+| Variant | `SHALLOT_BLOCKLIST_PUBKEY` | `SHALLOT_BLOCKLIST_REQUIRE_KEY` | Trust root | Behavior |
+|---|---|---|---|---|
+| Default (no flags) | not defined | not defined | all-zeros | Fail-closed: all PAWs denied |
+| Test build | test key bytes | not defined | test key | Dev/test only — test key verifies |
+| Production build | real key bytes | defined | real key | Production signing key required |
+| Broken production | not defined | defined | — | `#error` at compile time |
+
+When the macro is absent, the trust root defaults to all-zeros (fail-closed). All-zeros is not a valid Ed25519 public key — `ed25519_verify()` rejects every signature, so `blocklist_valid` stays 0 and the revocation gate denies all authentication. The DEN logs its trust root status over USB serial at boot (`[PRO-98] Blocklist trust root PINNED/unpinned`).
+
+**Key pinning workflow:**
+1. UNO Q (MamaBear) generates an Ed25519 key pair using the STM32U585 hardware RNG
+2. The private key is stored on UNO Q only (SRAM, never exposed to MPU)
+3. The public key is pinned in DEN at build time via `-DSHALLOT_BLOCKLIST_PUBKEY`
+4. `SHALLOT_BLOCKLIST_REQUIRE_KEY` in the production CI pipeline ensures no unpinned build ships
+
+**Runtime visibility:** `blocklist_trust_root_pinned()` returns 1 if a non-zero key is configured, 0 otherwise — observable over USB serial (non-secret operational status).
 
 ### 11.3 Implementation Verification
 
@@ -204,6 +237,17 @@ verification, version checking, and truncation handling are mirrored in Python.
 | `test_pro98_stolen_paw_cannot_sign` | ✅ PASS |
 | `test_pro98_blocked_paw_denied` | ✅ PASS |
 | `test_pro98_source_guards_ed25519` | ✅ PASS |
+| `test_pro98_trust_root_build_config_guards` | ✅ PASS | Build-time pinning pattern verified in source |
+| `test_pro98_trust_root_pinned_helper` | ✅ PASS | Runtime helper `blocklist_trust_root_pinned()` present |
+| `test_pro98_fail_closed_default_behavior` | ✅ PASS | All-zero key never verifies any signature |
+| `test_pro98_valid_blocklist_accepted_with_pinned_key` | ✅ PASS | Pinned key + valid sig → authenticated |
+| `test_pro98_blocked_fp_denied_with_pinned_key` | ✅ PASS | Listed fingerprint → BLOCKLISTED before grant |
+| `test_pro98_empty_valid_list_allows_auth` | ✅ PASS | Zero-entry signed list → authenticated |
+| `test_pro98_missing_list_denies_all` | ✅ PASS | No list → deny-all (fail closed) |
+| `test_pro98_invalid_signature_rejected` | ✅ PASS | Tampered signature → verification fails |
+| `test_pro98_replay_attack_rejected` | ✅ PASS | Version rollback → rejected |
+| `test_pro98_bad_hmac_never_reaches_gate` | ✅ PASS | HMAC checked before blocklist gate |
+| `test_pro98_deny_chain_never_shows_authenticated` | ✅ PASS | ACK 0x00 → PAW FAILED, never grant |
 
 ### 11.5 What is Verified vs. Simulated vs. Requires Independent Review
 
@@ -216,7 +260,7 @@ verification, version checking, and truncation handling are mirrored in Python.
 ### 11.6 Open Items for Production Deployment
 
 - [ ] Secure provisioning process for Ed25519 private key on UNO Q (out-of-band, HSM-backed)
-- [ ] Embed production Ed25519 public key in DEN firmware (replace all-zero placeholder)
+- ✅ **DONE** — Build-time public key pinning implemented: `SHALLOT_BLOCKLIST_PUBKEY` macro with `SHALLOT_BLOCKLIST_REQUIRE_KEY` CI gate
 - [ ] Independent cryptographic code review of `libraries/Ed25519/` implementation
 - [ ] Side-channel analysis on target hardware (STM32U585 for UNO Q, RP2350 for DEN)
 - [ ] Flash storage for blocklist across reboots (currently SRAM-only)

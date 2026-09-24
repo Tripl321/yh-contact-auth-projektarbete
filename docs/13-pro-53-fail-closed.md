@@ -130,11 +130,11 @@ $ python3 -m pytest tests/test_pro88_den.py tests/test_pro87_uart.py -v
 42 passed total
 ```
 
-Full suite: **551 tests passing**.
+Full suite: **562 tests passing**.
 
 ```
 $ python3 -m pytest tests/ -q
-551 passed in 6.05s
+562 passed in 5.06s
 ```
 
 ## 5. Transport scope

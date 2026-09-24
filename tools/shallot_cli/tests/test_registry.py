@@ -6,13 +6,13 @@ from shallot_cli import cli, registry, tui
 def test_registry_holds_all_commands():
     assert set(registry.COMMANDS) == {
         "test", "simulate", "demo", "explain", "protocol", "doctor",
-        "build", "device", "monitor", "mamabear", "fido2", "admin",
+        "build", "device", "monitor", "mamabear", "fido2", "admin", "bench",
     }
 
 
 def test_menu_covers_legacy_numbers_plus_demo_explain():
     numbers = [n for n, _label in registry.menu_entries()]
-    assert numbers == list(range(1, 27))
+    assert numbers == list(range(1, 35))
 
 
 def test_argparse_built_from_registry():

@@ -27,7 +27,7 @@ def test_header_shown_and_quit(capsys, monkeypatch):
     assert tui.run() == 0
     out = capsys.readouterr().out
     assert "██" in out
-    assert ".-----." in out  # schalottenlöken hälsar
+    assert "*=@@@@@%%%+" in out  # schalottenlöken hälsar
     assert "Avslutar." in out
 
 

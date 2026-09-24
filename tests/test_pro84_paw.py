@@ -381,14 +381,17 @@ def test_pro59_failed_response_sets_failed():
 
 
 def test_pro59_source_has_text_rendering():
-    """PRO-59: firmware renders AUTHENTICATED text on e-paper."""
+    """PRO-59: firmware renders AUTHENTICATED text on e-paper.
+
+    Texten renderas som inbakad Helvetica-Bold-bitmap (epd_words.h),
+    inte längre via 5x7-ritaren (kvar i källan som reserv).
+    """
     import pathlib
     root = pathlib.Path(__file__).resolve().parent.parent
     src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'FONT_5X7' in src
-    assert 'void drawChar(char c, int x, int y)' in src
-    assert 'void drawText(const char* text, int x, int y)' in src
-    assert 'drawText("AUTHENTICATED"' in src
+    assert 'WORD_AUTHENTICATED' in src
+    assert 'void drawBitmapCentered(' in src
+    assert 'drawBitmapCentered(WORD_AUTHENTICATED' in src
     assert 'PRO-59' in src
 
 
@@ -562,10 +565,14 @@ def test_pro59b_source_grant_text_gated_on_status():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent /
            'id-kort/paw-main/paw-main.ino').read_text()
-    assert src.count('drawText("AUTHENTICATED"') == 1
-    idx = src.index('drawText("AUTHENTICATED"')
+    assert src.count('drawBitmapCentered(WORD_AUTHENTICATED') == 1
+    idx = src.index('drawBitmapCentered(WORD_AUTHENTICATED')
     gate = src[max(0, idx - 300):idx]
     assert 'status == EPD_STATUS_AUTHENTICATED' in gate
+    assert src.count('drawBitmapCentered(WORD_FAILED') == 1
+    idx = src.index('drawBitmapCentered(WORD_FAILED')
+    gate = src[max(0, idx - 300):idx]
+    assert 'status == EPD_STATUS_FAILED' in gate
 
 
 def test_pro59b_source_setup_never_grants_or_denies():

@@ -293,9 +293,20 @@ def test_pro98_source_issuer_checked():
     assert "issuerOk" in body
 
 
-def test_pro98_source_trust_root_placeholder_scoped():
-    """Placeholder-roten är explicit avgränsad: nollor + fail-closed-
-    konsekvens dokumenterad i källan (aktivering kräver pinnad nyckel)."""
+def test_pro98_source_trust_root_build_configurable():
+    """Trust root is configurable at build time with fail-closed default:
+    all-zeros when unpinned, production key via SHALLOT_BLOCKLIST_PUBKEY,
+    SHALLOT_BLOCKLIST_REQUIRE_KEY enforces pinning in production CI."""
     src = _den_src()
-    assert "PLACEHOLDER TRUST ROOT" in src
-    assert "TEST-ONLY trust root" in src
+    # Build-time configuration macros
+    assert "SHALLOT_BLOCKLIST_PUBKEY" in src
+    assert "SHALLOT_BLOCKLIST_REQUIRE_KEY" in src
+    assert "#error" in src
+    # Conditional array definition from the build flag
+    assert "#ifdef SHALLOT_BLOCKLIST_PUBKEY" in src
+    # Fail-closed default: all-zeros placeholder in the #else branch
+    assert "0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00" in src
+    # No hardcoded real key bytes — must come from build flag
+    assert "PLACEHOLDER TRUST ROOT" not in src
+    # Runtime helper for ops visibility
+    assert "blocklist_trust_root_pinned" in src

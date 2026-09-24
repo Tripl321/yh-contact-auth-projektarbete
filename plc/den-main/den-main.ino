@@ -134,19 +134,50 @@ static uint8_t den_key_valid() {
 // PRO-98: Ed25519 public key for blocklist verification.
 // Only MamaBear (UNO Q) holds the private key for signing.
 //
-// PLACEHOLDER TRUST ROOT (deliberately scoped): this array is all zeros
-// until a production public key is pinned here at build time. No signature
-// verifies against it, so no list can become valid and den_on_response
-// denies every session with DEN_REASON_BLOCKLISTED (fail closed). Bench or
-// test builds may pin a TEST-ONLY key, but such builds must never be
-// deployed: grep for "TEST-ONLY trust root" before any production flash.
+// Production pinning (build-time configuration):
+//   Define SHALLOT_BLOCKLIST_PUBKEY with a 32-byte C array initializer.
+//   Example (arduino-cli):
+//     arduino-cli compile -e \
+//       -DSHALLOT_BLOCKLIST_PUBKEY='0x01,0x02,...,0x20' \
+//       plc/den-main
+//   Example (PlatformIO):
+//     build_flags = -DSHALLOT_BLOCKLIST_PUBKEY='{0x01,0x02,...,0x20}'
+//
+// Fail-closed default: when SHALLOT_BLOCKLIST_PUBKEY is not defined, the
+// trust root is all-zeros. No Ed25519 signature can verify against it, so
+// no blocklist can activate and blocklist_valid stays 0. The
+// revocation gate in den_on_response() denies every session with
+// DEN_REASON_BLOCKLISTED — this is correct fail-closed behavior.
+//
+// Production CI gate: define SHALLOT_BLOCKLIST_REQUIRE_KEY to force a
+// compile error when the production key is missing (production builds
+// must explicitly pin a real key, never deploy the all-zeros default).
 // See docs/17 §11.6.
+//
+// TEST-ONLY: do not use test keys in production builds. A test build
+// may pass -DSHALLOT_BLOCKLIST_PUBKEY=<test-key> and optionally mark it
+// with -DSHALLOT_BLOCKLIST_TEST_KEY for source-guard verification.
+
+#ifdef SHALLOT_BLOCKLIST_REQUIRE_KEY
+#ifndef SHALLOT_BLOCKLIST_PUBKEY
+#error "SHALLOT_BLOCKLIST_REQUIRE_KEY set but SHALLOT_BLOCKLIST_PUBKEY not defined. Pin the production Ed25519 public key via -DSHALLOT_BLOCKLIST_PUBKEY or remove REQUIRE_KEY."
+#endif
+#endif
+
+#ifdef SHALLOT_BLOCKLIST_PUBKEY
+static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE] = {
+    SHALLOT_BLOCKLIST_PUBKEY
+};
+#else
+// Fail-closed default: all-zeros trust root. No signature verifies,
+// no list activates, all authentication denied at the revocation gate.
 static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
+#endif
 
 // PRO-98: Blocklist structure for Ed25519 signed blocklists
 typedef struct {
@@ -159,6 +190,17 @@ typedef struct {
 
 static blocklist_t current_blocklist;
 static uint8_t blocklist_valid = 0;
+
+// PRO-98: Check whether the Ed25519 trust root has been pinned with a
+// non-zero public key. Returns 1 if a real key is configured, 0 if the
+// fail-closed all-zeros default is in place. Non-secret status only —
+// observable over USB serial for ops visibility.
+static uint8_t blocklist_trust_root_pinned(void) {
+    for (int i = 0; i < ED25519_PUBLIC_KEY_SIZE; i++) {
+        if (blocklist_public_key[i] != 0) return 1;
+    }
+    return 0;
+}
 
 // PRO-98: blocklist distribution over serial
 #define BLOCKLIST_MAX_SERIAL  (1 + 16 + 1 + BLOCKLIST_MAX_ENTRIES * KEY_HASH_SIZE + BLOCKLIST_SIGNATURE_SIZE)
@@ -939,6 +981,13 @@ void setup() {
   memset(kEnc, 0, sizeof(kEnc));
 
   Serial.println("[DEN] docked UART auth ready (PRO-53/PRO-46/PRO-94)");
+  // Non-secret operational status: trust root pinning state is visible
+  // over USB serial (not wire, not key material).
+  if (blocklist_trust_root_pinned()) {
+      Serial.println("[PRO-98] Blocklist trust root PINNED (Ed25519)");
+  } else {
+      Serial.println("[PRO-98] Blocklist trust root unpinned (fail-closed: all PAWs denied)");
+  }
   // PRO-97: boot is always locked; SRAM-only break-glass state dies here.
   bg_audit(BG_EV_BOOT);
   Serial.println("[DEN] BOOT locked (DENIED); break-glass cleared (fail-closed)");

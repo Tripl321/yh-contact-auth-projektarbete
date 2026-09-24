@@ -5,6 +5,12 @@ Skickar en fast testnyckel över USB-seriell: HANDSHAKE [0xA1, target]
 eller ERROR [0xA5]. All avvikelse (timeout, fel typ/längd, CRC-fel på
 STORED-svar, fel fingeravtryck) nekar fail-closed via ProvisionError.
 
+USB-serien bär inledd loggtext på samma tråd (firmwarens Serial skriver
+både loggar och binärsvar); läsaren synkar därför fram ramarnas
+typsbyte (0xA2/0xA4/0xA5, aldrig ASCII-text) istället för att ta råa
+byte. UNO Q:s egen distribution går över ren Serial1-UART och behöver
+ingen synk.
+
 Aldrig riktiga hemligheter: fast testvektor, aldrig i loggar eller
 auditposter (auditposter returneras — anroparen journalför).
 Transporten är ett objekt med write(bytes) + read(n, timeout)->bytes;
@@ -36,6 +42,29 @@ STORED_LEN = 5
 
 class ProvisionError(RuntimeError):
     """Nekad/felaktig provisionering (fail closed)."""
+
+
+class SerialTransport:
+    """Adapter pyserial -> provision-kontraktet (write + read(n, timeout)).
+
+    pyserials ``read()`` tar ingen timeout-parameter; adaptern sätter
+    portens timeout tillfälligt per anrop och återställer alltid.
+    Äger ingen policy — bara signaturanpassning.
+    """
+
+    def __init__(self, ser):
+        self._ser = ser
+
+    def write(self, data: bytes) -> int:
+        return self._ser.write(data)
+
+    def read(self, n: int, timeout: float = 1.0) -> bytes:
+        old = self._ser.timeout
+        self._ser.timeout = max(0.0, timeout)
+        try:
+            return self._ser.read(n)
+        finally:
+            self._ser.timeout = old
 
 
 def build_handshake(target: str) -> bytes:
@@ -91,6 +120,37 @@ def _read_exact(transport, n: int, deadline: float) -> bytes:
     return bytes(out)
 
 
+def settle(ser, delay: float = 2.5) -> None:
+    """Låt enheten boota klart efter portöppning och töm bufferten.
+
+    USB CDC-öppning resettar enheten (DTR); utan väntan försvinner
+    handskaket i omstarten och svaret uteblir. Anropas av
+    provisioneringsvägarna mellan open och provision_device.
+    """
+    if delay > 0:
+        time.sleep(delay)
+    reset = getattr(ser, "reset_input_buffer", None)
+    if callable(reset):
+        reset()
+
+
+def _sync_frame(transport, want: tuple[int, ...], deadline: float) -> int:
+    """Skanna fram nästa ram-typsbyte, släng inledd loggtext.
+
+    Returnerar typsbyten. Timeout nekar fail-closed. Typsbyten
+    (0xA2/0xA4/0xA5) förekommer aldrig i firmwarens ASCII-loggar.
+    """
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProvisionError("timeout: enheten svarade inte.")
+        chunk = transport.read(1, timeout=remaining)
+        if not chunk:
+            raise ProvisionError("timeout: enheten svarade inte.")
+        if chunk[0] in want:
+            return chunk[0]
+
+
 def provision_device(transport, target: str, key: bytes = TEST_KEY,
                      timeout: float = 10.0,
                      audit: list | None = None) -> dict:
@@ -113,16 +173,18 @@ def provision_device(transport, target: str, key: bytes = TEST_KEY,
     deadline = time.monotonic() + timeout
     try:
         transport.write(build_handshake(target))
-        ready = parse_ready(_read_exact(transport, READY_LEN, deadline))
+        sync = _sync_frame(transport, (MSG_READY,), deadline)
+        ready = parse_ready(bytes([sync])
+                            + _read_exact(transport, READY_LEN - 1, deadline))
         if ready is None:
             deny("bad-ready", "ogiltigt READY-svar.")
         transport.write(build_key_data(key))
-        # ERROR är 1 byte, STORED är 5 — läs typbyten först.
-        first = _read_exact(transport, 1, deadline)
-        if first == bytes([MSG_ERROR]):
+        # ERROR är 1 byte, STORED är 5 — synka fram typbyten först.
+        first = _sync_frame(transport, (MSG_STORED, MSG_ERROR), deadline)
+        if first == MSG_ERROR:
             deny("device-error", "enheten svarade ERROR (nyckel avvisad).")
         rest = _read_exact(transport, STORED_LEN - 1, deadline)
-        if not parse_stored(first + rest, key):
+        if not parse_stored(bytes([first]) + rest, key):
             deny("fingerprint-mismatch",
                  "STORED-fingeravtryck matchar inte nyckeln.")
     except ProvisionError:

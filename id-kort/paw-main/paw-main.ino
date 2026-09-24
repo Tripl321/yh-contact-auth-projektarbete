@@ -33,6 +33,7 @@
 #include <DenUartProtocol.h>  // PRO-84/87: dock framing from shared module
 #include <ShallotCrypto.h>  // PRO-49: SHA/HMAC/KDF/wipe from shared module
 #include <PawSession.h>  // PRO-47/50/95: transport-free PAW session state
+#include "epd_words.h"  // Helvetica-Bold statusord som 1-bitars bitmaps (genererade offline)
 
 // =============================================================
 // Configuration
@@ -187,6 +188,9 @@ static const unsigned char WF_FULL_1IN54[159] = {
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x0, 0x0, 0x0,
     0x22, 0x17, 0x41, 0x0, 0x32, 0x20
 };
@@ -236,6 +240,7 @@ private:
     void drawIcon(int cx, int cy, int size, EpdStatus status);
     void drawChar(char c, int x, int y);
     void drawText(const char* text, int x, int y);
+    void drawBitmapCentered(const unsigned char* bmp, int w, int h, int y);
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
     // Async refresh state (PRO-11): transmit starts in showStatus/clear,
@@ -244,6 +249,8 @@ private:
     bool _updateBusy = false;    // refresh in flight
     uint32_t _updateStart = 0;   // millis at trigger
     bool _pendingSleep = false;  // BLANK path sleeps after completion
+    EpdStatus _shown = EPD_STATUS_BLANK;  // last requested status
+    bool _shownValid = false;             // false until first showStatus
 };
 
 ShallotEPD::ShallotEPD() {
@@ -509,7 +516,7 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
 // Each glyph is 7 bytes (7 rows, 5 columns). Bits 4..0 map to
 // columns left..right. Bit set = black pixel.
 static const uint8_t FONT_5X7[][7] = {
-    {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E},  // A
+    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x0E},  // A (tvärslå särskiljer från O)
     {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},  // B
     {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},  // C
     {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E},  // D
@@ -561,8 +568,26 @@ void ShallotEPD::drawText(const char* text, int x, int y) {
     }
 }
 
+void ShallotEPD::drawBitmapCentered(const unsigned char* bmp, int w, int h,
+                                    int y) {
+    int x0 = (EPD_WIDTH - w) / 2;
+    int stride = (w + 7) / 8;
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            bool black = (bmp[row * stride + col / 8]
+                          & (0x80 >> (col % 8))) != 0;
+            drawPixel(x0 + col, y + row, !black);
+        }
+    }
+}
+
 void ShallotEPD::showStatus(EpdStatus status) {
     if (_degraded) return;  // fail silent: display stays as-is, loop stays fast
+    // Flimmerfri UX: displayen visar senaste utfall, så identisk status
+    // uppdateras aldrig om (en full refresh per ändring, inte per challenge).
+    if (_shownValid && status == _shown) return;
+    _shownValid = true;
+    _shown = status;
     if (status == EPD_STATUS_BLANK) {
         clearBuffer();
         displayFrame(_buffer);
@@ -579,7 +604,10 @@ void ShallotEPD::showStatus(EpdStatus status) {
 
     drawIcon(centerX, centerY, iconRadius, status);
     if (status == EPD_STATUS_AUTHENTICATED) {
-        drawText("AUTHENTICATED", 61, 160);
+        drawBitmapCentered(WORD_AUTHENTICATED, WORD_AUTHENTICATED_W,
+                           WORD_AUTHENTICATED_H, 160);
+    } else if (status == EPD_STATUS_FAILED) {
+        drawBitmapCentered(WORD_FAILED, WORD_FAILED_W, WORD_FAILED_H, 160);
     }
     displayFrame(_buffer);
     _pendingSleep = false;
@@ -766,7 +794,8 @@ static void handleDockAuth() {
                 continue;
             }
 
-            epd.showStatus(EPD_STATUS_AUTHENTICATING);
+            // Displayen visar senaste utfall (boot/grant/deny) — ingen
+            // transient per-challenge (annars full refresh var 3:e s).
             uint8_t mac[DEN_HMAC_LEN];
             shalot_hmac_sha256(paw_session_k_mac(&pawSession),
                                PAW_SESSION_KEY_LEN,

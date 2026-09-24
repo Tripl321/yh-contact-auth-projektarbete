@@ -9,6 +9,11 @@ granskas på ett ställe:
   ``monitor``-kommandot läser endast.
 - :func:`open_provision` öppnar en port för nyckelsändning (enda
   skrivvägen; testnycklar via :mod:`shallot_cli.provision`).
+- :func:`open_console` öppnar en port för läsning + skrivning mot en
+  bänkkonsol (t.ex. UNO Q:s ``g``/``1``/``2``/``s``-kommandon).
+  Får endast användas av bänkceremoni-flödet med explicit
+  operatörsbekräftelse per tillståndsändrande kommando; sänder aldrig
+  hemligheter.
 """
 
 from __future__ import annotations
@@ -60,6 +65,27 @@ def open_provision(port: str, baud: int = 115200, timeout: float = 1.0):
     """Öppna en serieport för nyckelsändning (enda skrivvägen).
 
     Får endast användas av provision-sändaren med testnycklar.
+    Samma felkontrakt som open_read_only.
+    """
+    if not isinstance(port, str) or "\x00" in port or not port.strip():
+        raise RuntimeError("ogiltig serieport.")
+    try:
+        import serial
+    except ImportError:
+        raise RuntimeError(
+            "pyserial saknas — installera med: pip install 'shallot[test]' "
+            "eller pip install pyserial") from None
+    return serial.Serial(port=port, baudrate=baud, timeout=timeout,
+                         write_timeout=timeout)
+
+
+def open_console(port: str, baud: int = 115200, timeout: float = 1.0):
+    """Öppna en seriekonsol för läsning + skrivning (bänkceremoni).
+
+    Används endast av ``bench unoq`` för UNO Q-konsolens enbokstavs-
+    kommandon (``s`` status, ``g`` generera, ``1``/``2`` distribuera).
+    Anroparen ansvarar för operatörsbekräftelse före tillståndsändrande
+    kommandon; inga hemligheter skickas eller loggas någonsin här.
     Samma felkontrakt som open_read_only.
     """
     if not isinstance(port, str) or "\x00" in port or not port.strip():

@@ -110,12 +110,70 @@ def test_full_flow_den_uses_target_01():
     assert bytes(t.written[:2]) == bytes([0xA1, 0x01])
 
 
+def test_sync_skips_interleaved_log_text():
+    fp = hashlib.sha256(TEST_KEY).digest()[:4]
+    t = FakeTransport([b"==== banner ====\r\n[PRO-46] Handshake received.\r\n",
+                       bytes([0xA2]) + b"DEN\x01",
+                       b"[PRO-46] CRC verified OK.\r\n",
+                       bytes([0xA4]) + fp])
+    res = provision.provision_device(t, "den", TEST_KEY)
+    assert res["result"] == "granted"
+    assert res["fingerprint"] == fp
+
+
+def test_settle_drains_buffer_without_crashing():
+    class S:
+        def __init__(self):
+            self.drained = False
+
+        def reset_input_buffer(self):
+            self.drained = True
+
+    s = S()
+    provision.settle(s, delay=0)
+    assert s.drained
+    provision.settle(object(), delay=0)  # utan reset-metod: ingen krasch
+
+
 def test_open_provision_rejects_bad_port():
     from shallot_cli import serial_adapters
     with pytest.raises(RuntimeError):
         serial_adapters.open_provision("")
     with pytest.raises(RuntimeError):
         serial_adapters.open_provision("x\x00y")
+
+
+class FakeSerial:
+    """Minimal pyserial-form: read(size) utan timeout-parameter."""
+
+    def __init__(self, chunks):
+        self._chunks = [bytes(c) for c in chunks]
+        self.written = bytearray()
+        self.timeout = 1.0
+
+    def write(self, data):
+        self.written += bytes(data)
+        return len(bytes(data))
+
+    def read(self, size=1):
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0][:size]
+        self._chunks[0] = self._chunks[0][size:]
+        if not self._chunks[0]:
+            self._chunks.pop(0)
+        return bytes(chunk)
+
+
+def test_serial_transport_adapts_pyserial_signature():
+    fp = hashlib.sha256(TEST_KEY).digest()[:4]
+    ser = FakeSerial([bytes([0xA2]) + b"DEN\x01", bytes([0xA4]) + fp])
+    res = provision.provision_device(provision.SerialTransport(ser), "den",
+                                     TEST_KEY)
+    assert res["result"] == "granted"
+    assert res["fingerprint"] == fp
+    assert ser.timeout == 1.0  # återställd efter anrop
+    assert bytes(ser.written[:2]) == bytes([0xA1, 0x01])
 
 
 def test_timeout_fails_closed():
@@ -134,7 +192,9 @@ def test_deny_paths_leave_exactly_one_audit_entry():
         ([bytes([0xA2]) + b"PAW1", bytes([0xA5])], "device-error"),
         ([bytes([0xA2]) + b"PAW1", bytes([0xA4]) + b"\xDE\xAD\xBE\xEF"],
          "fingerprint-mismatch"),
-        ([b"\x00\x00\x00\x00\x00"], "bad-ready"),
+        # Skräpbyte utan giltig ramstart synkas aldrig fram — svaret
+        # uteblir och tiden tar slut (fail closed, en post).
+        ([b"\x00\x00\x00\x00\x00"], "timeout"),
     ]
     for replies, reason in cases:
         entries = []

@@ -1,0 +1,80 @@
+=== SHALLOT DEMO-INSPELNING (TEST-ONLY bänk) ===
+DEN: nyckel+signerad tom lista sedan tidigare (orörd).
+--- AKT 1: fel nyckel -> ska NEKAS (fail closed) ---
+  PAW(fel) provisionerad fp=fc2e2c73
+  Titta på e-paper: ska visa FAILED.
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+  [AKT1] code 0: 0, nekade: 26
+  AKT 1 VERDIKT: NEKAD (förväntat)
+--- AKT 2: rätt nyckel -> ska BEVILJAS ---
+  PAW(rätt) provisionerad fp=be45cb26
+  Titta på e-paper: ska visa AUTHENTICATED.
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+  [AKT2] code 0: 6, nekade: 1
+  AKT 2 VERDIKT: ÅTKOMST (förväntat)
+=== SLUT: akt1=OK akt2=OK ===

@@ -93,11 +93,70 @@ def _test_run(args):
 def _demo_args(parser):
     sub = parser.add_subparsers(dest="what", required=True)
     sub.add_parser("incident", help="simulerad driftlarmscen som avslöjar SHALLOT CLI")
+    b = sub.add_parser("breadboard", help="60-sekunders fysisk breadboard-demo")
+    b.add_argument("--mock", action="store_true",
+                   help="mockat läge (SIMULATED / TEST-ONLY)")
+    sub.add_parser("precheck", help="förkontroll av breadboard-riggen (skrivfritt)")
+    sub.add_parser("latest", help="visa senaste demo-resultat/logg")
 
 
 def _demo_run(args):
-    from shallot_cli import incident
+    from shallot_cli import demo as _demo, incident
+    if args.what == "breadboard":
+        _demo.run_demo(mock=args.mock)
+        return 0
+    if args.what == "precheck":
+        return _demo.run_precheck_cli()
+    if args.what == "latest":
+        _demo.show_latest()
+        return 0
     return incident.run_cli()
+
+
+def _bench_args(parser):
+    sub = parser.add_subparsers(dest="what", required=True)
+    sub.add_parser("list", help="visa bänkverifierings-checklistan")
+    v = sub.add_parser("verify", help="steg-för-steg fysisk bänkverifiering (evidenslogg)")
+    v.add_argument("--only", nargs="+", default=None, metavar="STEG",
+                   help="kör endast angivna steg-ID:n (t.ex. --only RIGG-1 K1)")
+    i = sub.add_parser("identify", help="identifiera DEN/PAW/UNO Q-portar skrivskyddat")
+    i.add_argument("--baud", type=int, default=115200, help="baudrate (default: 115200)")
+    i.add_argument("--timeout", type=float, default=10.0,
+                   help="sekunder per port (default: 10)")
+    u = sub.add_parser("unoq", help="skicka konsolkommando till UNO Q (s/g/1/2, evidenslogg)")
+    u.add_argument("--port", required=True, help="UNO Q:s USB-serieport (t.ex. /dev/cu.usbmodemXXXX)")
+    u.add_argument("--cmd", required=True, help="kommando: s=status, g=generera, 1=till DEN, 2=till PAW")
+    u.add_argument("--baud", type=int, default=115200, help="baudrate (default: 115200)")
+    u.add_argument("--timeout", type=float, default=20.0,
+                   help="sekunder att fånga svar (default: 20)")
+    u.add_argument("--yes", action="store_true",
+                   help="bekräfta tillståndsändrande kommando utan interaktiv fråga")
+    sub.add_parser("latest", help="visa senaste bänkverifieringsresultat")
+
+
+def _bench_run(args):
+    from shallot_cli import bench
+    if args.what == "list":
+        return bench.run_list()
+    if args.what == "identify":
+        bench.run_identify(baud=args.baud, timeout=args.timeout)
+        return 0
+    if args.what == "unoq":
+        try:
+            return bench.run_unoq(args.port, args.cmd, baud=args.baud,
+                                  timeout=args.timeout, yes=args.yes)
+        except ValueError as e:
+            print("error: %s" % e, file=sys.stderr)
+            return 2
+    if args.what == "latest":
+        bench.show_latest()
+        return 0
+    try:
+        bench.run_verify(only=args.only)
+    except ValueError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
+    return 0
 
 
 def _explain_args(parser):
@@ -317,7 +376,20 @@ register(Command(
     name="demo", help_text="simulerad incident för presentation (SIMULERING)",
     add_arguments=_demo_args, run=_demo_run,
     tui={"20": ("Simulerad incident (SIMULERING)", "_flow_demo"),
-         "26": ("Demo: presentation (tester + fysisk bänk)", "_flow_demo_presentation")},
+         "26": ("Demo: presentation (tester + fysisk bänk)", "_flow_demo_presentation"),
+         "27": ("Förkontroll", "_flow_demo_precheck"),
+         "28": ("Starta demo", "_flow_demo_breadboard"),
+         "29": ("Visa senaste*logg", "_flow_demo_latest")},
+))
+
+register(Command(
+    name="bench", help_text="steg-för-steg fysisk bänkverifiering (evidenslogg)",
+    add_arguments=_bench_args, run=_bench_run,
+    tui={"30": ("Bänk: visa checklista", "_flow_bench_list"),
+         "31": ("Bänk: steg-för-steg verifiering", "_flow_bench_verify"),
+         "32": ("Bänk: senaste resultat", "_flow_bench_latest"),
+         "33": ("Bänk: identifiera portar (skrivskyddat)", "_flow_bench_identify"),
+         "34": ("Bänk: UNO Q-konsol (bekräftas vid ändring)", "_flow_bench_unoq")},
 ))
 
 register(Command(

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from shallot_cli import admin, explain, fido2, fido2_sanitize, incident, ollama, provision, registry, serial_adapters, sim, uart
+from shallot_cli import admin, bench, demo, explain, fido2, fido2_sanitize, incident, ollama, provision, registry, serial_adapters, sim, theme, uart
 from shallot_cli.commands import (
     admin_cmd,
     build_cmd,
@@ -34,24 +34,20 @@ HEADER = r"""
 """.strip("\n")
 
 SHALLOT_ONION = r"""
-              /\
-             /  \
-             \  /
-              || ||
-          ___|| ||___
-        .'           '.
-       /   .-----.   \
-      |   /       \   |
-      |  |         |  |
-      |  |         |  |
-      |   \       /   |
-       \   '-----'   /
-        '.         .'
-          '-.   .-'
-            |   |
-            |   |
-           (_| |_)
+=+
+  *=@@@@@%%%+%%%%%%%%==+%%%%%%%%=*    :*@@@+     +%%%%%%%=    :+%%%%%%%=        :**%@@@@%%+:-++%%%%%%%%%%%%%%%%
+-%@@==*=%@@%=*+%@@@==-**++%@@@==**    *@@@@%     :+=%@@%++    :-+=@@@=+:      -*=@@%==*=%@@%=+*%@====%@@%===%@@
+=@@@%==* +*:::.=@@@%==   .=@@@%=     -%@%@@@*      +%@@=        -*%@@=       +*%@@*   ::+=@@@%*%=-+++%@@=++-*=%
+*%@@@@@@=*+    =@@@%==   .=@@@%=    :%@@*%@@@*     +%@@=        -*%@@=      ++%@@%     ---=@@@   -+++%@@=::
+ -=%@@@@@@@@%+ =@@@@@@%%%%@@@@%=    *@@%**@@@@     +%@@=        -*%@@=     :+*%@@+     -++*%@@+  -+++%@@=
+    -=%%@@@@@@%=@@%===****%@@@%=   -%@@%==%@@@*    +%@@=        -*%@@=     -+*%@@=     :++*%@@+  -+++%@@=
+ +++++ -*%@@@%%=@@@%==   .=@@@%=  :%@@%%%%%%@@@*   +%@@=        -*%@@=      +-%@@=     +++=%@@   -+++%@@=
+%@@@@@%+ =@@@===@@@%==   .=@@@%=  *@@@=:   *@@@@+  +%@@=    :*%%-*%@@=   :+*%**%@@=   -++=%@@+   -+++%@@=
+=@@@@@@@%@@%*+*=@@@%%%*- +=@@@%%**%@@%=*  ++%@@@%***%@@%%%%%%%@@*=%@@%%%%%=%@%-*%@@@%%%%%@@%-  ++****%@@=+
+-=%%%@%%%=*.:%@%%%@@@%==%@%%%@@%@@%%@@@%- =@%%%@@@@@%%%%%%%%%%@%@@%%%%%%%%%%@+..-=%%%@@%%=+    +++=%@%%%@@@
+   .--::     ........-  ...............   ...................................      .--::         :.........
 """.strip("\n")
+
 
 def _menu_max() -> int:
     """Högsta menynummer — genereras från registryt."""
@@ -59,8 +55,9 @@ def _menu_max() -> int:
 
 
 def _menu_text() -> str:
-    lines = [" %d  %s" % (n, label) for n, label in registry.menu_entries()]
-    lines.append(" 0  Avsluta")
+    lines = [theme.orange(" %d  %s" % (n, label))
+             for n, label in registry.menu_entries()]
+    lines.append(theme.orange(" 0  Avsluta"))
     return "\n".join(lines)
 
 
@@ -111,10 +108,11 @@ def _arrow_pick(display: list[str]) -> int | None:
     def render():
         out = []
         for i, line in enumerate(display):
-            mark = "\x1b[7m" if i == selected else ""
-            end = "\x1b[0m" if i == selected else ""
-            out.append("\r\x1b[K%s%s%s" % (mark, line, end))
-        out.append("\r\x1b[K\x1b[2m%s\x1b[0m" % hint)
+            prefix = "\u25b6 " if i == selected else "  "
+            text = prefix + line
+            out.append("\r\x1b[K%s" % (
+                theme.accent(text) if i == selected else theme.orange(text)))
+        out.append("\r\x1b[K%s" % theme.dim(hint))
         stdout.write("\n".join(out) + "\n")
         stdout.flush()
 
@@ -146,9 +144,12 @@ def _arrow_pick(display: list[str]) -> int | None:
         raw[6][termios.VMIN] = 1
         raw[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, raw)
-        for line in display:
-            stdout.write("%s\n" % line)
-        stdout.write("\x1b[2m%s\x1b[0m\n" % hint)
+        for i, line in enumerate(display):
+            prefix = "\u25b6 " if i == selected else "  "
+            stdout.write("%s\n" % (
+                theme.accent(prefix + line) if i == selected
+                else theme.orange(prefix + line)))
+        stdout.write("%s\n" % theme.dim(hint))
         stdout.flush()
         while True:
             stdout.write("\x1b[%dA" % (n + 1))
@@ -182,7 +183,7 @@ def _pick(title: str, options: list[str]) -> str | None:
     if idx is not None:
         return options[idx]
     for line in lines:
-        print(line)
+        print(theme.orange(line))
     ans = input("Välj [1-%d]: " % len(options)).strip()
     if not ans.isdigit() or not 1 <= int(ans) <= len(options):
         print("Ogiltigt val: %r. Tillbaka i huvudmenyn." % ans)
@@ -229,6 +230,50 @@ def _flow_doctor() -> None:
 def _flow_demo() -> None:
     print("Simulerad incident — SIMULERING.")
     report(incident.run_cli())
+
+
+def _flow_demo_precheck() -> None:
+    print("Förkontroll av breadboard-riggen (skrivfritt).")
+    demo.run_precheck_cli(mock=_pick_mock())
+
+
+def _flow_demo_breadboard() -> None:
+    """Meny -> DEMO -> Starta demo: fysisk 60-sek breadboard-demo.
+
+    Fysisk FIDO2 är standard; mock kräver uttryckligt val och märks
+    SIMULATED / TEST-ONLY i hela flödet.
+    """
+    mock = _pick_mock()
+    demo.run_demo(mock=mock)
+
+
+def _flow_demo_latest() -> None:
+    demo.show_latest()
+
+
+def _flow_bench_list() -> None:
+    bench.run_list()
+
+
+def _flow_bench_verify() -> None:
+    bench.run_verify()
+
+
+def _flow_bench_latest() -> None:
+    bench.show_latest()
+
+
+def _flow_bench_identify() -> None:
+    bench.run_identify()
+
+
+def _flow_bench_unoq() -> None:
+    port = input("UNO Q-port (t.ex. /dev/cu.usbmodemXXXX): ").strip()
+    cmd = input("Kommando (s=status, g=generera, 1=till DEN, 2=till PAW): ").strip().lower()
+    try:
+        report(bench.run_unoq(port, cmd))
+    except ValueError as e:
+        print("error: %s" % e)
 
 
 DEMO_SUITES = ("protocol", "den", "paw")
@@ -518,8 +563,8 @@ def _menu_choice() -> str | None:
 
 def run() -> int:
     """Huvudloop. 0 = normalt avslut; Ctrl-C vid menyn avslutar också rent."""
-    print(HEADER)
-    print(SHALLOT_ONION)
+    print(theme.paint(HEADER, theme.ORANGE))
+    print(theme.paint(SHALLOT_ONION, theme.ORANGE))
     print("Interaktivt läge. Styr eller verifierar ingen fysisk hårdvara.")
     while True:
         try:
