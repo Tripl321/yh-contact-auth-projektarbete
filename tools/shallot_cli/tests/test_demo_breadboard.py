@@ -47,30 +47,41 @@ def test_run_demo_grants_on_logs_and_display(tmp_path):
     def provision(role, port):
         return "aabbccdd"
 
-    reads = iter([
-        (demo.PAW_SUCCESS_NEEDLES[0], "paw ok"),
-        (demo.DEN_AUTH_NEEDLES[0], "den ok"),
-        (demo.DEN_AUTH_NEEDLES[1], "den nekat"),
-    ])
+    reads = iter(
+        [
+            (demo.PAW_SUCCESS_NEEDLES[0], "paw ok"),
+            (demo.DEN_AUTH_NEEDLES[0], "den ok"),
+            (demo.DEN_AUTH_NEEDLES[1], "den nekat"),
+        ]
+    )
 
     def read_until(port, needles):
         return next(reads)
 
     res = demo.run_demo(
-        mock=False, pause_fn=lambda p: None, confirm_fn=lambda p: True,
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=provision, read_until_fn=read_until,
+        mock=False,
+        pause_fn=lambda p: None,
+        confirm_fn=lambda p: True,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=provision,
+        read_until_fn=read_until,
         list_ports_fn=lambda: _ports("/dev/ttyPaw", "/dev/ttyDen"),
-        log_path=str(log), summary_path=str(summary))
+        log_path=str(log),
+        summary_path=str(summary),
+    )
     assert res["overall"] == "GODKÄNT"
     assert res["hardware_verified"] is True
-    assert any(v["resultat"] == "ÅTKOMST" and v["display"] == "verifierad"
-               for v in res["verdicts"])
-    assert any(v["moment"] == "nekat-fall" and v["resultat"] == "NEKAD"
-               for v in res["verdicts"])
+    assert any(
+        v["resultat"] == "ÅTKOMST" and v["display"] == "verifierad"
+        for v in res["verdicts"]
+    )
+    assert any(
+        v["moment"] == "nekat-fall" and v["resultat"] == "NEKAD"
+        for v in res["verdicts"]
+    )
     assert log.exists() and summary.exists()
-    runs = [r for r in demo._read_jsonl(log)
-            if r.get("action") == "run-summary"]
+    runs = [r for r in demo._read_jsonl(log) if r.get("action") == "run-summary"]
     assert len(runs) == 1 and runs[0]["overall"] == "GODKÄNT"
 
 
@@ -85,12 +96,17 @@ def test_run_demo_mock_marker_in_record(tmp_path):
         return demo.DEN_AUTH_NEEDLES[1], "den"
 
     res = demo.run_demo(
-        mock=True, pause_fn=lambda p: None, confirm_fn=lambda p: False,
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=provision, read_until_fn=read_until,
+        mock=True,
+        pause_fn=lambda p: None,
+        confirm_fn=lambda p: False,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=provision,
+        read_until_fn=read_until,
         list_ports_fn=lambda: _ports("/dev/ttyPaw", "/dev/ttyDen"),
         log_path=str(tmp_path / "l.jsonl"),
-        summary_path=str(tmp_path / "s.txt"))
+        summary_path=str(tmp_path / "s.txt"),
+    )
     assert res["mock_marker"] == demo.MOCK_MARKER
 
 
@@ -103,28 +119,33 @@ def test_run_demo_unverified_display_denies(tmp_path):
     def provision(role, port):
         return "11223344"
 
-    reads = iter([
-        (demo.PAW_SUCCESS_NEEDLES[0], "paw ok"),
-        (demo.DEN_AUTH_NEEDLES[0], "den ok"),
-        (demo.DEN_AUTH_NEEDLES[1], "den nekat"),
-    ])
+    reads = iter(
+        [
+            (demo.PAW_SUCCESS_NEEDLES[0], "paw ok"),
+            (demo.DEN_AUTH_NEEDLES[0], "den ok"),
+            (demo.DEN_AUTH_NEEDLES[1], "den nekat"),
+        ]
+    )
 
     def read_until(port, needles):
         return next(reads)
 
     res = demo.run_demo(
-        mock=False, pause_fn=lambda p: None,
+        mock=False,
+        pause_fn=lambda p: None,
         confirm_fn=lambda p: False,  # skärm EJ bekräftad
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=provision, read_until_fn=read_until,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=provision,
+        read_until_fn=read_until,
         list_ports_fn=lambda: _ports("/dev/ttyPaw", "/dev/ttyDen"),
         log_path=str(tmp_path / "l.jsonl"),
-        summary_path=str(tmp_path / "s.txt"))
+        summary_path=str(tmp_path / "s.txt"),
+    )
     assert res["overall"] == "NEKAD"
     assert res["hardware_verified"] is False
     assert res["verification_note"].startswith("ej verifierad")
-    verdict = [v for v in res["verdicts"]
-               if v["moment"] == "godkänt-fall"][0]
+    verdict = [v for v in res["verdicts"] if v["moment"] == "godkänt-fall"][0]
     assert verdict["display"] == "ej verifierad"
 
 
@@ -133,12 +154,17 @@ def test_run_demo_login_failure_is_fail_closed(tmp_path):
         return 1
 
     res = demo.run_demo(
-        mock=False, pause_fn=lambda p: None, confirm_fn=lambda p: True,
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=lambda r, p: "0", read_until_fn=lambda p, n: (None, None),
+        mock=False,
+        pause_fn=lambda p: None,
+        confirm_fn=lambda p: True,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=lambda r, p: "0",
+        read_until_fn=lambda p, n: (None, None),
         list_ports_fn=lambda: _ports("/dev/ttyPaw", "/dev/ttyDen"),
         log_path=str(tmp_path / "l.jsonl"),
-        summary_path=str(tmp_path / "s.txt"))
+        summary_path=str(tmp_path / "s.txt"),
+    )
     assert res["overall"] == "AVBRUTET"
     assert res["error"] == "ingen giltig Admin-session"
     recs = demo._read_jsonl(tmp_path / "l.jsonl")
@@ -150,12 +176,17 @@ def test_run_demo_requires_two_ports(tmp_path):
         return 0
 
     res = demo.run_demo(
-        mock=False, pause_fn=lambda p: None, confirm_fn=lambda p: True,
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=lambda r, p: "0", read_until_fn=lambda p, n: (None, None),
+        mock=False,
+        pause_fn=lambda p: None,
+        confirm_fn=lambda p: True,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=lambda r, p: "0",
+        read_until_fn=lambda p, n: (None, None),
         list_ports_fn=lambda: _ports("/dev/ttyACM0"),
         log_path=str(tmp_path / "l.jsonl"),
-        summary_path=str(tmp_path / "s.txt"))
+        summary_path=str(tmp_path / "s.txt"),
+    )
     assert res["overall"] == "AVBRUTET"
     assert "två" in res["error"]
 
@@ -170,21 +201,29 @@ def test_show_latest_returns_last_run(tmp_path):
     def provision(role, port):
         return "11223344"
 
-    reads = iter([
-        (demo.PAW_SUCCESS_NEEDLES[0], "paw"),
-        (demo.DEN_AUTH_NEEDLES[0], "den"),
-        (demo.DEN_AUTH_NEEDLES[1], "den"),
-    ])
+    reads = iter(
+        [
+            (demo.PAW_SUCCESS_NEEDLES[0], "paw"),
+            (demo.DEN_AUTH_NEEDLES[0], "den"),
+            (demo.DEN_AUTH_NEEDLES[1], "den"),
+        ]
+    )
 
     def read_until(port, needles):
         return next(reads)
 
     demo.run_demo(
-        mock=False, pause_fn=lambda p: None, confirm_fn=lambda p: True,
-        ask_fn=lambda p: "admin-01", login_fn=login,
-        provision_fn=provision, read_until_fn=read_until,
+        mock=False,
+        pause_fn=lambda p: None,
+        confirm_fn=lambda p: True,
+        ask_fn=lambda p: "admin-01",
+        login_fn=login,
+        provision_fn=provision,
+        read_until_fn=read_until,
         list_ports_fn=lambda: _ports("/dev/ttyPaw", "/dev/ttyDen"),
-        log_path=str(log), summary_path=str(summary))
+        log_path=str(log),
+        summary_path=str(summary),
+    )
     last = demo.latest_result(log_path=str(log))
     assert last["overall"] == "GODKÄNT"
     assert last["_log_records"] >= 1

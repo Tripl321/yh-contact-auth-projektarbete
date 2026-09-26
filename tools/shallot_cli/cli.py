@@ -15,15 +15,15 @@ from __future__ import annotations
 import argparse
 import sys
 
-from shallot_cli import registry
-from shallot_cli import tui
+from shallot_cli import registry, tui
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="shallot",
         description="Lokal test-/simulerings-CLI för SHALLOT. "
-                    "Styr eller verifierar ingen fysisk hårdvara.")
+        "Styr eller verifierar ingen fysisk hårdvara.",
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     for _cmd in registry.COMMANDS.values():

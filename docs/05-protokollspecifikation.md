@@ -12,11 +12,11 @@ Detta protokoll definierar binär paketstruktur för autentisering mellan edge e
 
 ### Roller
 
-| Roll | Hårdvara | Funktion |
-|---|---|---|
-| DEN (Edge Enforcement, PLC) | Pico 2 (RP2350) + Core1262 | Initierar challenge, verifierar response, fattar fail-closed beslut |
-| PAW (ID-bricka) | Feather RP2350 + Core1262 + e-Paper | Mottager challenge, returnerar krypterat svar, visar verdict |
-| UNO Q | STM32U585 (air-gapped) | Provisionering: genererar och distribuerar master-nyckel via USB |
+| Roll                        | Hårdvara                            | Funktion                                                            |
+| --------------------------- | ----------------------------------- | ------------------------------------------------------------------- |
+| DEN (Edge Enforcement, PLC) | Pico 2 (RP2350) + Core1262          | Initierar challenge, verifierar response, fattar fail-closed beslut |
+| PAW (ID-bricka)             | Feather RP2350 + Core1262 + e-Paper | Mottager challenge, returnerar krypterat svar, visar verdict        |
+| UNO Q                       | STM32U585 (air-gapped)              | Provisionering: genererar och distribuerar master-nyckel via USB    |
 
 ### Beroenden
 
@@ -35,14 +35,14 @@ SHALLOT använder ett tvåhandsgrepp mellan DEN (edge enforcement-nod) och PAW (
 
 Alla fält är i network byte order (big-endian) om inget annat anges.
 
-| Offset | Fält | Storlek (byte) | Beskrivning | HMAC-täckt |
-|---|---|---|---|---|
-| 0 | Version + Message Type | 1 | Version: bit 7–4, Message Type: bit 3–0 | Ja |
-| 1 | SenderID | 8 | Sändarens unika identifierare | Ja |
-| 9 | Sequence Number | 4 | Strikt ökande 32-bitars räknare per sändare | Ja |
-| 13 | Nonce | 8 | 64-bitars kryptografiskt slump, unik per paket | Ja |
-| 21 | Encrypted Payload | N | AES-128-CTR-krypterad nyttolast (0–64 byte) | Ja |
-| 21+N | HMAC-SHA256 | 8 | Trunkerad HMAC (första 8 byte av 32-byte digest) | Nej |
+| Offset | Fält                   | Storlek (byte) | Beskrivning                                      | HMAC-täckt |
+| ------ | ---------------------- | -------------- | ------------------------------------------------ | ---------- |
+| 0      | Version + Message Type | 1              | Version: bit 7–4, Message Type: bit 3–0          | Ja         |
+| 1      | SenderID               | 8              | Sändarens unika identifierare                    | Ja         |
+| 9      | Sequence Number        | 4              | Strikt ökande 32-bitars räknare per sändare      | Ja         |
+| 13     | Nonce                  | 8              | 64-bitars kryptografiskt slump, unik per paket   | Ja         |
+| 21     | Encrypted Payload      | N              | AES-128-CTR-krypterad nyttolast (0–64 byte)      | Ja         |
+| 21+N   | HMAC-SHA256            | 8              | Trunkerad HMAC (första 8 byte av 32-byte digest) | Nej        |
 
 N = payloadlängd i byte. Total paketstorlek = 21 + N + 8 byte.
 
@@ -56,22 +56,22 @@ N = payloadlängd i byte. Total paketstorlek = 21 + N + 8 byte.
 
 **Message Type (4 bitar):** Anger meddelandets semantiska typ. Inkluderas i HMAC för att förhindra meddelandemanipulation och state confusion.
 
-| Värde | Typ | Riktning | Beskrivning |
-|---|---|---|---|
-| 0x01 | CHALLENGE | Edge till PAW | Utmaning: nonce i header-fält, tom payload |
-| 0x02 | RESPONSE | PAW till Edge | Svar: krypterad challenge-nonce i payload |
-| 0x03 | SUCCESS | Edge till PAW | Autentisering lyckades, tom payload |
-| 0x04 | FAILURE | Edge till PAW | Autentisering misslyckades (fail-closed), tom payload |
-| 0x05 | KEY_DIST | UNO Q till nod | Nyckeldistribution (via USB, ej LoRa) |
-| 0x06 | KEY_ACK | Nod till UNO Q | Bekräftelse på mottagen nyckel (via USB) |
-| 0x07 | HEARTBEAT | Edge till PAW | Livstecken, underhåller sessionsstatus |
+| Värde | Typ       | Riktning       | Beskrivning                                           |
+| ----- | --------- | -------------- | ----------------------------------------------------- |
+| 0x01  | CHALLENGE | Edge till PAW  | Utmaning: nonce i header-fält, tom payload            |
+| 0x02  | RESPONSE  | PAW till Edge  | Svar: krypterad challenge-nonce i payload             |
+| 0x03  | SUCCESS   | Edge till PAW  | Autentisering lyckades, tom payload                   |
+| 0x04  | FAILURE   | Edge till PAW  | Autentisering misslyckades (fail-closed), tom payload |
+| 0x05  | KEY_DIST  | UNO Q till nod | Nyckeldistribution (via USB, ej LoRa)                 |
+| 0x06  | KEY_ACK   | Nod till UNO Q | Bekräftelse på mottagen nyckel (via USB)              |
+| 0x07  | HEARTBEAT | Edge till PAW  | Livstecken, underhåller sessionsstatus                |
 
 **SenderID (8 byte):** Sändarens unika identifierare. Används av mottagaren för att slå upp förväntad nyckel och sekvensnummerfönster.
 
-| Nod | SenderID (hex) |
-|---|---|
+| Nod              | SenderID (hex)     |
+| ---------------- | ------------------ |
 | Edge Enforcement | 0x0100000000000000 |
-| PAW | 0x0200000000000000 |
+| PAW              | 0x0200000000000000 |
 
 **Sequence Number (4 byte):** 32-bitars strikt ökande räknare. Varje sändare upprätthåller en monoton ökande räknare (initierad till 0). Mottagaren sparar en sliding-window whitelist över de 10 senast mottagna sekvensnumren per SenderID och förkastar paket där sekvensnumret finns i whitelisten eller är lägre än det senast mottagna. Whitelist-storlek: 10 (enligt PRO-79/PRO-81 beslut 10). Förhindrar replay-attacker.
 
@@ -149,9 +149,9 @@ HMAC verifieras INNAN sekvensnummer konsumeras i SeqWhitelist. Detta förhindrar
 
 ### 4.1 CHALLENGE (0x01) — Edge till PAW
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| (tom) | 0 byte | Challenge-nonce transporteras i header Nonce-fältet |
+| Fält  | Storlek | Beskrivning                                         |
+| ----- | ------- | --------------------------------------------------- |
+| (tom) | 0 byte  | Challenge-nonce transporteras i header Nonce-fältet |
 
 Payload-storlek: 0 byte. Total paketstorlek: 21 + 0 + 8 = 29 byte.
 
@@ -159,9 +159,9 @@ Designnotering: Challenge-nonce placeras i header Nonce-fältet (ej i krypterad 
 
 ### 4.2 RESPONSE (0x02) — PAW till Edge
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| Echoed Challenge Nonce | 8 byte | Challenge-nonce kopierad från CHALLENGE, AES-CTR-krypterad |
+| Fält                   | Storlek | Beskrivning                                                |
+| ---------------------- | ------- | ---------------------------------------------------------- |
+| Echoed Challenge Nonce | 8 byte  | Challenge-nonce kopierad från CHALLENGE, AES-CTR-krypterad |
 
 Payload-storlek: 8 byte. Total paketstorlek: 21 + 8 + 8 = 37 byte.
 
@@ -171,9 +171,9 @@ Implementation-notering: edge-noden verifierar nonce-ekot via `verify_echo_bindi
 
 ### 4.3 SUCCESS (0x03) — Edge till PAW
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| (tom) | 0 byte | Verdict signaleras via meddelandetypen |
+| Fält  | Storlek | Beskrivning                            |
+| ----- | ------- | -------------------------------------- |
+| (tom) | 0 byte  | Verdict signaleras via meddelandetypen |
 
 Payload-storlek: 0 byte. Total paketstorlek: 21 + 0 + 8 = 29 byte.
 
@@ -181,9 +181,9 @@ Designnotering: Phase 1 använder tom payload. PRO-42-utkastet föreslog 4-byte 
 
 ### 4.4 FAILURE (0x04) — Edge till PAW
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| (tom) | 0 byte | Verdict signaleras via meddelandetypen |
+| Fält  | Storlek | Beskrivning                            |
+| ----- | ------- | -------------------------------------- |
+| (tom) | 0 byte  | Verdict signaleras via meddelandetypen |
 
 Payload-storlek: 0 byte. Total paketstorlek: 21 + 0 + 8 = 29 byte.
 
@@ -191,28 +191,28 @@ Designnotering: Phase 1 använder tom payload. PRO-42-utkastet föreslog 1-byte 
 
 ### 4.5 KEY_DIST (0x05) — UNO Q till nod (via USB, ej LoRa)
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| Key ID | 2 byte | Identifierare för distribuerad nyckel |
-| AES-128 Key | 16 byte | Nyckelmaterial |
-| Key Fingerprint | 4 byte | SHA-256[:4] av nyckel för verifiering |
+| Fält            | Storlek | Beskrivning                           |
+| --------------- | ------- | ------------------------------------- |
+| Key ID          | 2 byte  | Identifierare för distribuerad nyckel |
+| AES-128 Key     | 16 byte | Nyckelmaterial                        |
+| Key Fingerprint | 4 byte  | SHA-256[:4] av nyckel för verifiering |
 
 Hanteras på USB-protokollnivå, inte LoRa. Inkluderas för fullständighet. Se PRO-46 för USB-protokollspecifikation.
 
 ### 4.6 KEY_ACK (0x06) — Nod till UNO Q (via USB, ej LoRa)
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| Key ID | 2 byte | Identifierare för mottagen nyckel |
-| Status | 1 byte | 0x01 = mottagen och verifierad, 0x02 = verifiering misslyckades |
+| Fält   | Storlek | Beskrivning                                                     |
+| ------ | ------- | --------------------------------------------------------------- |
+| Key ID | 2 byte  | Identifierare för mottagen nyckel                               |
+| Status | 1 byte  | 0x01 = mottagen och verifierad, 0x02 = verifiering misslyckades |
 
 Hanteras på USB-protokollnivå. Se PRO-46.
 
 ### 4.7 HEARTBEAT (0x07) — Edge till PAW
 
-| Fält | Storlek | Beskrivning |
-|---|---|---|
-| Timestamp | 4 byte | Edge-enhetens uptime (sekunder sedan start) |
+| Fält      | Storlek | Beskrivning                                 |
+| --------- | ------- | ------------------------------------------- |
+| Timestamp | 4 byte  | Edge-enhetens uptime (sekunder sedan start) |
 
 Ej implementerad i Phase 1. Reserverad för framtida användning.
 
@@ -317,6 +317,7 @@ Giltig challenge-response ger en kortlivad lokal behörighet på DEN för anslut
 #### Relation till befintliga säkerhetsmekanismer
 
 Tvåhandsgreppet är ett krav för operatörsavsikt och ersätter inte:
+
 - HMAC-SHA256-meddelandeautentisering (avsnitt 3.3)
 - SeqWhitelist replay-skydd (avsnitt 7)
 - Timeout-baserad felhantering (avsnitt 6)
@@ -328,13 +329,13 @@ Tvåhandsgreppet lägger till ett fysiskt närvarhetskrav ovanpå dessa kryptogr
 
 Systemet rör sig genom följande tillstånd:
 
-| Tillstånd | Beskrivning | LoRa-aktivitet | Knappar |
-|---|---|---|---|
-| IDLE | Viloläge, ingen aktivering | Inaktiv | Alla släppta |
-| DEN_ARMED | DEN-knapp tryckt, 5 s fönster öppet | Lyssnar | DEN nedtryckt, PAW släppt |
-| AUTHENTICATING | Båda knapparna hålls, challenge-response pågår | Aktiv (TX/RX) | Båda nedtryckta |
-| AUTHORIZED | Giltig autentisering, kortlivad behörighet aktiv | Inaktiv | Frivilligt |
-| FAILURE/LOCKED | Avbrott eller ogiltigt resultat | Inaktiv | N/A |
+| Tillstånd      | Beskrivning                                      | LoRa-aktivitet | Knappar                   |
+| -------------- | ------------------------------------------------ | -------------- | ------------------------- |
+| IDLE           | Viloläge, ingen aktivering                       | Inaktiv        | Alla släppta              |
+| DEN_ARMED      | DEN-knapp tryckt, 5 s fönster öppet              | Lyssnar        | DEN nedtryckt, PAW släppt |
+| AUTHENTICATING | Båda knapparna hålls, challenge-response pågår   | Aktiv (TX/RX)  | Båda nedtryckta           |
+| AUTHORIZED     | Giltig autentisering, kortlivad behörighet aktiv | Inaktiv        | Frivilligt                |
+| FAILURE/LOCKED | Avbrott eller ogiltigt resultat                  | Inaktiv        | N/A                       |
 
 Tillståndsövergångar:
 
@@ -365,6 +366,7 @@ Följande händelser avbryter omedelbart det pågående flödet och återgår ti
 - **Duty cycle-budget:** Om sändningsbudgeten är uttömd avbryts flödet med fail-closed.
 
 Vid avbrott ska:
+
 1. LoRa återgå till inaktivt läge omedelbart.
 2. Ingen behörighet beviljas eller kvarvarande behörighet återkallas.
 3. Systemet övergå till FAILURE/LOCKED.
@@ -376,30 +378,30 @@ Retries, heartbeat och all annan LoRa-trafik ska begränsas till aktiveringsfön
 
 ## 6. Felhantering och returer
 
-| Feltyp | Åtgärd |
-|---|---|
-| Timeout (5000 ms) | Max 3 försök (PRO-78), därefter fail-closed |
-| Ogiltig HMAC | Omedelbar fail-closed, inga returer (PRO-53) |
-| Okänd SenderID | Paket förkastas tyst, ingen respons |
-| Replay (sekvensnummer) | Paket förkastas tyst, ingen respons |
-| Packet loss / ogiltig CRC | Hanteras med returer enligt PRO-41 (max antal försök) |
-| Radio-initieringsfel | LED blinkar (200 ms intervall), system halt |
-| Knappsläpp under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
-| Aktiveringsfönster stängs (5 s timeout) | Återgång till IDLE, ingen sändning |
-| DEN-knapp släpps under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
-| PAW-knapp släpps under AUTHENTICATING | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED |
-| Default-open | Förbjuden — ingen default-open existerar (PRO-53) |
+| Feltyp                                  | Åtgärd                                                |
+| --------------------------------------- | ----------------------------------------------------- |
+| Timeout (5000 ms)                       | Max 3 försök (PRO-78), därefter fail-closed           |
+| Ogiltig HMAC                            | Omedelbar fail-closed, inga returer (PRO-53)          |
+| Okänd SenderID                          | Paket förkastas tyst, ingen respons                   |
+| Replay (sekvensnummer)                  | Paket förkastas tyst, ingen respons                   |
+| Packet loss / ogiltig CRC               | Hanteras med returer enligt PRO-41 (max antal försök) |
+| Radio-initieringsfel                    | LED blinkar (200 ms intervall), system halt           |
+| Knappsläpp under AUTHENTICATING         | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED     |
+| Aktiveringsfönster stängs (5 s timeout) | Återgång till IDLE, ingen sändning                    |
+| DEN-knapp släpps under AUTHENTICATING   | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED     |
+| PAW-knapp släpps under AUTHENTICATING   | Omedelbart avbrott, fail-closed, → FAILURE/LOCKED     |
+| Default-open                            | Förbjuden — ingen default-open existerar (PRO-53)     |
 
 ### Timeout-konfiguration
 
-| Parameter | Värde |
-|---|---|
-| LORA_TIMEOUT_MS | 5000 ms |
-| LORA_RETRIES | 3 |
-| Cykel-intervall (edge) | 10 s |
-| RX-timeout (PAW loop) | 10 000 ms |
-| Aktiveringsfönster (DEN) | 5 000 ms |
-| Behörighet giltighetstid (DEN) | 30 000 ms |
+| Parameter                           | Värde     |
+| ----------------------------------- | --------- |
+| LORA_TIMEOUT_MS                     | 5000 ms   |
+| LORA_RETRIES                        | 3         |
+| Cykel-intervall (edge)              | 10 s      |
+| RX-timeout (PAW loop)               | 10 000 ms |
+| Aktiveringsfönster (DEN)            | 5 000 ms  |
+| Behörighet giltighetstid (DEN)      | 30 000 ms |
 | Lockout-tid (FAILURE/LOCKED → IDLE) | 10 000 ms |
 
 ### Duty cycle-budget och sändningsbegränsningar
@@ -431,12 +433,12 @@ Implementationen använder en uint16_t bitmask istället för en bool[10]-array 
 
 ### 7.2 Minnesåtgång
 
-| Datastruktur | Storlek |
-|---|---|
-| lastSeen (uint32_t) | 4 byte |
-| bitmask (uint16_t) | 2 byte |
-| initialized (bool) | 1 byte |
-| Total per sändare | 7 byte |
+| Datastruktur        | Storlek |
+| ------------------- | ------- |
+| lastSeen (uint32_t) | 4 byte  |
+| bitmask (uint16_t)  | 2 byte  |
+| initialized (bool)  | 1 byte  |
+| Total per sändare   | 7 byte  |
 
 Jämfört med bool[10] (10 byte) sparas 3 byte per sändare.
 
@@ -444,21 +446,21 @@ Jämfört med bool[10] (10 byte) sparas 3 byte per sändare.
 
 ## 8. Säkerhetsegenskaper
 
-| Egenskap | Mekanism | Status |
-|---|---|---|
-| Autentisering | HMAC-SHA256 med K_mac | Implementerad |
-| Integritet | HMAC täcker samtliga fält utom sig självt | Implementerad |
-| Konfidentialitet | AES-128-CTR kryptering av payload med K_enc | Implementerad |
-| Replay-skydd | SeqWhitelist sliding-window (10), bitmask | Implementerad |
-| Förfalskningsskydd | 64-bit trunkerad HMAC, 2^-64 per försök | Implementerad |
-| Versionsskydd | HMAC täcker Version-fältet | Implementerad |
-| Meddelandetypskydd | HMAC täcker Message Type-fältet | Implementerad |
-| Timing-attackskydd | Konstant-tidsjämförelse av HMAC | Implementerad |
-| Anti-DoS | HMAC före sekvensnummerkonsumtion | Implementerad |
-| Fail-closed | Watchdog vid timeout, ogiltig HMAC, okänd sändare | Implementerad |
-| Operatörsavsikt | Tvåhandsgrepp: knapp på DEN + knapp på PAW | Krav |
-| LoRa-inaktivitet utanför aktivering | LoRa inaktiv i IDLE, endast aktiv i AUTHENTICATING | Krav |
-| Nonce-ekoverifiering | Edge dekrypterar och verifierar nonce-ekot | Implementerad (`verify_echo_binding`) |
+| Egenskap                            | Mekanism                                           | Status                                |
+| ----------------------------------- | -------------------------------------------------- | ------------------------------------- |
+| Autentisering                       | HMAC-SHA256 med K_mac                              | Implementerad                         |
+| Integritet                          | HMAC täcker samtliga fält utom sig självt          | Implementerad                         |
+| Konfidentialitet                    | AES-128-CTR kryptering av payload med K_enc        | Implementerad                         |
+| Replay-skydd                        | SeqWhitelist sliding-window (10), bitmask          | Implementerad                         |
+| Förfalskningsskydd                  | 64-bit trunkerad HMAC, 2^-64 per försök            | Implementerad                         |
+| Versionsskydd                       | HMAC täcker Version-fältet                         | Implementerad                         |
+| Meddelandetypskydd                  | HMAC täcker Message Type-fältet                    | Implementerad                         |
+| Timing-attackskydd                  | Konstant-tidsjämförelse av HMAC                    | Implementerad                         |
+| Anti-DoS                            | HMAC före sekvensnummerkonsumtion                  | Implementerad                         |
+| Fail-closed                         | Watchdog vid timeout, ogiltig HMAC, okänd sändare  | Implementerad                         |
+| Operatörsavsikt                     | Tvåhandsgrepp: knapp på DEN + knapp på PAW         | Krav                                  |
+| LoRa-inaktivitet utanför aktivering | LoRa inaktiv i IDLE, endast aktiv i AUTHENTICATING | Krav                                  |
+| Nonce-ekoverifiering                | Edge dekrypterar och verifierar nonce-ekot         | Implementerad (`verify_echo_binding`) |
 
 ---
 
@@ -494,62 +496,62 @@ Master-nyckel i Phase 1 är 0x00–0x0F (statisk, hårdkodad). All säkerhet i P
 
 ### 10.1 Hårdvaruberoenden
 
-| Komponent | API | Användning |
-|---|---|---|
+| Komponent      | API                           | Användning                              |
+| -------------- | ----------------------------- | --------------------------------------- |
 | RP2350 SHA-256 | hw_sha256_start/update/finish | Nyckelderivation, HMAC inner/outer hash |
-| RP2350 RNG | get_rand_128 (pico/rand.h) | Nonce-generering |
-| AESLib | AESLib.encryptSingle() | AES-128-ECB för CTR-keystream |
-| RadioLib | SX1262 radio | LoRa TX/RX |
-| SPI1 | SPIClass(spi1) | Core1262 kommunikation |
+| RP2350 RNG     | get_rand_128 (pico/rand.h)    | Nonce-generering                        |
+| AESLib         | AESLib.encryptSingle()        | AES-128-ECB för CTR-keystream           |
+| RadioLib       | SX1262 radio                  | LoRa TX/RX                              |
+| SPI1           | SPIClass(spi1)                | Core1262 kommunikation                  |
 
 ### 10.2 Minnesoptimeringar
 
-| Optimering | Besparing |
-|---|---|
-| Wire-data HMAC-overload (rxBuf direkt) | Eliminerar 85-byte intermediate stack buffer |
-| SeqWhitelist uint16_t bitmask vs bool[10] | 3 byte per sändare |
-| Fil-scope TX/RX-buffrar (återanvänds) | Undviker per-anrop heap-allokering |
-| Prekalkylerade ipad/opad per HMAC-anrop | Undviker redundant memset |
+| Optimering                                | Besparing                                    |
+| ----------------------------------------- | -------------------------------------------- |
+| Wire-data HMAC-overload (rxBuf direkt)    | Eliminerar 85-byte intermediate stack buffer |
+| SeqWhitelist uint16_t bitmask vs bool[10] | 3 byte per sändare                           |
+| Fil-scope TX/RX-buffrar (återanvänds)     | Undviker per-anrop heap-allokering           |
+| Prekalkylerade ipad/opad per HMAC-anrop   | Undviker redundant memset                    |
 
 ### 10.3 Pin-konfiguration
 
-| Signal | Edge (Pico 2) | PAW (Feather RP2350) |
-|---|---|---|
-| SPI1 SCK | GPIO10 | GPIO10 |
-| SPI1 MOSI | GPIO11 | GPIO11 |
-| SPI1 MISO | GPIO12 | GPIO24 |
-| SPI1 CS | GPIO9 | GPIO9 |
-| RST | GPIO4 | GPIO4 |
-| BUSY | GPIO7 | GPIO7 |
-| DIO1 | GPIO28 | GPIO28 |
-| LED | GPIO25 | GPIO25 |
+| Signal    | Edge (Pico 2) | PAW (Feather RP2350) |
+| --------- | ------------- | -------------------- |
+| SPI1 SCK  | GPIO10        | GPIO10               |
+| SPI1 MOSI | GPIO11        | GPIO11               |
+| SPI1 MISO | GPIO12        | GPIO24               |
+| SPI1 CS   | GPIO9         | GPIO9                |
+| RST       | GPIO4         | GPIO4                |
+| BUSY      | GPIO7         | GPIO7                |
+| DIO1      | GPIO28        | GPIO28               |
+| LED       | GPIO25        | GPIO25               |
 
 Notera: GPIO12 är giltig SPI1 MISO på Pico 2 (40-pins header) men INTE på Feather RP2350 (saknas på headers). Feather RP2350 använder GPIO24 (D24) som SPI1 MISO. GPIO4 är SPI0 MISO på RP2350 men används som digital output (RST) för Core1262 — ingen konflikt eftersom RST är output-only.
 
 ### 10.4 Radio-konfiguration (PRO-78)
 
-| Parameter | Värde |
-|---|---|
-| Frekvens | 868.1 MHz |
-| Spreading Factor | SF7 |
-| Bandwidth | 125 kHz |
-| Coding Rate | 4/5 |
-| Sync Word | 0x12 |
-| TX Power | 20 dBm |
+| Parameter        | Värde     |
+| ---------------- | --------- |
+| Frekvens         | 868.1 MHz |
+| Spreading Factor | SF7       |
+| Bandwidth        | 125 kHz   |
+| Coding Rate      | 4/5       |
+| Sync Word        | 0x12      |
+| TX Power         | 20 dBm    |
 
 ---
 
 ## 11. Framtida arbete
 
-| Post | Beskrivning | Beroende |
-|---|---|---|
-| Flash-persistens av sekvensnummer | Överlev omstart utan replay-fönster | Inget |
-| E-Paper-integration | Ersätt display_status() platshållare med riktig SPI0-drivrutin | PRO-57 |
-| Riktig nyckeldistribution | Ersätt stub-nyckel med UNO Q-nyckel via USB | PRO-45, PRO-46 |
-| AEAD (AES-GCM) | Ersätt separat HMAC + AES-CTR med integrerat AEAD | Hårdvarustöd |
-| HEARTBEAT-implementering | Implementera livstecken, begränsat till aktiveringsfönster (se avsnitt 5.4) | Inget |
-| Session tokens | Implementera session-hantering i SUCCESS-payload | Inget |
-| Tvåhandsgrepp-implementering | Implementera knappstyrning och tillståndsmaskin för aktiveringsmodell (se avsnitt 5.4–5.6) | Inget |
+| Post                              | Beskrivning                                                                                | Beroende       |
+| --------------------------------- | ------------------------------------------------------------------------------------------ | -------------- |
+| Flash-persistens av sekvensnummer | Överlev omstart utan replay-fönster                                                        | Inget          |
+| E-Paper-integration               | Ersätt display_status() platshållare med riktig SPI0-drivrutin                             | PRO-57         |
+| Riktig nyckeldistribution         | Ersätt stub-nyckel med UNO Q-nyckel via USB                                                | PRO-45, PRO-46 |
+| AEAD (AES-GCM)                    | Ersätt separat HMAC + AES-CTR med integrerat AEAD                                          | Hårdvarustöd   |
+| HEARTBEAT-implementering          | Implementera livstecken, begränsat till aktiveringsfönster (se avsnitt 5.4)                | Inget          |
+| Session tokens                    | Implementera session-hantering i SUCCESS-payload                                           | Inget          |
+| Tvåhandsgrepp-implementering      | Implementera knappstyrning och tillståndsmaskin för aktiveringsmodell (se avsnitt 5.4–5.6) | Inget          |
 
 ---
 

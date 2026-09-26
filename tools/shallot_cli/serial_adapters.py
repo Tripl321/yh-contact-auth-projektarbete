@@ -32,21 +32,35 @@ def list_ports() -> list[dict]:
         return _fallback_ports()
     found = []
     for p in lp.comports():
-        found.append({
-            "device": p.device,
-            "description": p.description or "okänd enhet",
-            "hwid": p.hwid or "okänt hwid",
-        })
+        found.append(
+            {
+                "device": p.device,
+                "description": p.description or "okänd enhet",
+                "hwid": p.hwid or "okänt hwid",
+            }
+        )
     return found
 
 
 def _fallback_ports() -> list[dict]:
     import glob
 
-    devices = sorted(set(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")
-                         + glob.glob("/dev/cu.usb*") + glob.glob("/dev/tty.usb*")))
-    return [{"device": d, "description": "okänd enhet (pyserial saknas)",
-             "hwid": "okänt hwid"} for d in devices]
+    devices = sorted(
+        set(
+            glob.glob("/dev/ttyACM*")
+            + glob.glob("/dev/ttyUSB*")
+            + glob.glob("/dev/cu.usb*")
+            + glob.glob("/dev/tty.usb*")
+        )
+    )
+    return [
+        {
+            "device": d,
+            "description": "okänd enhet (pyserial saknas)",
+            "hwid": "okänt hwid",
+        }
+        for d in devices
+    ]
 
 
 def open_read_only(port: str, baud: int = 115200, timeout: float = 1.0):
@@ -57,7 +71,8 @@ def open_read_only(port: str, baud: int = 115200, timeout: float = 1.0):
     except ImportError:
         raise RuntimeError(
             "pyserial saknas — installera med: pip install 'shallot[test]' "
-            "eller pip install pyserial") from None
+            "eller pip install pyserial"
+        ) from None
     return serial.Serial(port=port, baudrate=baud, timeout=timeout)
 
 
@@ -74,9 +89,11 @@ def open_provision(port: str, baud: int = 115200, timeout: float = 1.0):
     except ImportError:
         raise RuntimeError(
             "pyserial saknas — installera med: pip install 'shallot[test]' "
-            "eller pip install pyserial") from None
-    return serial.Serial(port=port, baudrate=baud, timeout=timeout,
-                         write_timeout=timeout)
+            "eller pip install pyserial"
+        ) from None
+    return serial.Serial(
+        port=port, baudrate=baud, timeout=timeout, write_timeout=timeout
+    )
 
 
 def open_console(port: str, baud: int = 115200, timeout: float = 1.0):
@@ -95,6 +112,8 @@ def open_console(port: str, baud: int = 115200, timeout: float = 1.0):
     except ImportError:
         raise RuntimeError(
             "pyserial saknas — installera med: pip install 'shallot[test]' "
-            "eller pip install pyserial") from None
-    return serial.Serial(port=port, baudrate=baud, timeout=timeout,
-                         write_timeout=timeout)
+            "eller pip install pyserial"
+        ) from None
+    return serial.Serial(
+        port=port, baudrate=baud, timeout=timeout, write_timeout=timeout
+    )

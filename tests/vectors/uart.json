@@ -1,7 +1,34 @@
-{"frames": [
-{"id": "heartbeat", "type": 3, "payload": "", "frame": "aa000003a8884866"},
-{"id": "ack01", "type": 255, "payload": "01", "frame": "aa0100ff019d75db7d"},
-{"id": "alarm02", "type": 4, "payload": "02", "frame": "aa01000402511c9a13"},
-{"id": "challenge", "type": 1, "payload": "0001020304050607", "frame": "aa08000100010203040506071cf3b72b"},
-{"id": "response", "type": 2, "payload": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "frame": "aa200002202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f09ad4514"}
-]}
+{
+  "frames": [
+    {
+      "id": "heartbeat",
+      "type": 3,
+      "payload": "",
+      "frame": "aa000003a8884866"
+    },
+    {
+      "id": "ack01",
+      "type": 255,
+      "payload": "01",
+      "frame": "aa0100ff019d75db7d"
+    },
+    {
+      "id": "alarm02",
+      "type": 4,
+      "payload": "02",
+      "frame": "aa01000402511c9a13"
+    },
+    {
+      "id": "challenge",
+      "type": 1,
+      "payload": "0001020304050607",
+      "frame": "aa08000100010203040506071cf3b72b"
+    },
+    {
+      "id": "response",
+      "type": 2,
+      "payload": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "frame": "aa200002202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f09ad4514"
+    }
+  ]
+}

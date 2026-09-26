@@ -82,8 +82,11 @@ def build_key_data(key: bytes) -> bytes:
         raise ValueError("nyckeln måste vara 16 byte.")
     if not any(key):
         raise ValueError("all-noll nyckel avvisas (oskrivbar SRAM-markör).")
-    return (bytes([MSG_KEY_DATA, 16]) + bytes(key)
-            + zlib.crc32(bytes(key)).to_bytes(4, "big"))
+    return (
+        bytes([MSG_KEY_DATA, 16])
+        + bytes(key)
+        + zlib.crc32(bytes(key)).to_bytes(4, "big")
+    )
 
 
 def parse_ready(data: bytes) -> bytes | None:
@@ -151,9 +154,13 @@ def _sync_frame(transport, want: tuple[int, ...], deadline: float) -> int:
             return chunk[0]
 
 
-def provision_device(transport, target: str, key: bytes = TEST_KEY,
-                     timeout: float = 10.0,
-                     audit: list | None = None) -> dict:
+def provision_device(
+    transport,
+    target: str,
+    key: bytes = TEST_KEY,
+    timeout: float = 10.0,
+    audit: list | None = None,
+) -> dict:
     """Kör hela kedjan mot en enhet. Returnerar fakta + auditposter.
 
     audit är en lista av {action, details} utan nyckelmaterial, ägd av
@@ -165,17 +172,21 @@ def provision_device(transport, target: str, key: bytes = TEST_KEY,
     entries: list[dict] = audit if audit is not None else []
 
     def deny(reason: str, message: str) -> None:
-        entries.append({"action": "provision",
-                        "details": {"target": target, "result": "DENY",
-                                    "reason": reason}})
+        entries.append(
+            {
+                "action": "provision",
+                "details": {"target": target, "result": "DENY", "reason": reason},
+            }
+        )
         raise ProvisionError(message)
 
     deadline = time.monotonic() + timeout
     try:
         transport.write(build_handshake(target))
         sync = _sync_frame(transport, (MSG_READY,), deadline)
-        ready = parse_ready(bytes([sync])
-                            + _read_exact(transport, READY_LEN - 1, deadline))
+        ready = parse_ready(
+            bytes([sync]) + _read_exact(transport, READY_LEN - 1, deadline)
+        )
         if ready is None:
             deny("bad-ready", "ogiltigt READY-svar.")
         transport.write(build_key_data(key))
@@ -185,17 +196,35 @@ def provision_device(transport, target: str, key: bytes = TEST_KEY,
             deny("device-error", "enheten svarade ERROR (nyckel avvisad).")
         rest = _read_exact(transport, STORED_LEN - 1, deadline)
         if not parse_stored(bytes([first]) + rest, key):
-            deny("fingerprint-mismatch",
-                 "STORED-fingeravtryck matchar inte nyckeln.")
+            deny("fingerprint-mismatch", "STORED-fingeravtryck matchar inte nyckeln.")
     except ProvisionError:
         if not entries:
             # Tidsöverskridning: exakt en post.
-            entries.append({"action": "provision",
-                            "details": {"target": target, "result": "DENY",
-                                        "reason": "timeout"}})
+            entries.append(
+                {
+                    "action": "provision",
+                    "details": {
+                        "target": target,
+                        "result": "DENY",
+                        "reason": "timeout",
+                    },
+                }
+            )
         raise
-    entries.append({"action": "provision",
-                    "details": {"target": target, "result": "granted",
-                                "fingerprint": expected_fingerprint(key).hex()}})
-    return {"result": "granted", "target": target, "device_id": ready,
-            "fingerprint": expected_fingerprint(key), "audit": entries}
+    entries.append(
+        {
+            "action": "provision",
+            "details": {
+                "target": target,
+                "result": "granted",
+                "fingerprint": expected_fingerprint(key).hex(),
+            },
+        }
+    )
+    return {
+        "result": "granted",
+        "target": target,
+        "device_id": ready,
+        "fingerprint": expected_fingerprint(key),
+        "audit": entries,
+    }

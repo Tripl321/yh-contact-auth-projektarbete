@@ -6,6 +6,7 @@ fingerprints, max 16 entries), this does not follow the codebase convention of
 constant-time comparison for secret-derived values.
 
 **Current code:** `plc/den-main/den-main.ino:900-906`
+
 ```c
 for (uint8_t i = 0; i < current_blocklist.entry_count; i++) {
     uint8_t diff = 0;

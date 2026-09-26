@@ -12,11 +12,16 @@ import pathlib
 import zlib
 
 import pytest
-
 from shallot_cli import provision
 
-VECTORS = json.loads((pathlib.Path(__file__).resolve().parent.parent.parent.parent
-                      / "tests" / "vectors" / "provisioning.json").read_text(encoding="utf-8"))
+VECTORS = json.loads(
+    (
+        pathlib.Path(__file__).resolve().parent.parent.parent.parent
+        / "tests"
+        / "vectors"
+        / "provisioning.json"
+    ).read_text(encoding="utf-8")
+)
 
 TEST_KEY = bytes(range(16))
 
@@ -62,11 +67,13 @@ def test_stored_verify_uses_sha256_fingerprint():
     fp = hashlib.sha256(TEST_KEY).digest()[:4]
     assert provision.expected_fingerprint(TEST_KEY) == fp
     assert provision.parse_stored(bytes([0xA4]) + fp, TEST_KEY) is True
-    assert provision.parse_stored(bytes([0xA4]) + b"\x00\x00\x00\x00", TEST_KEY) is False
+    assert (
+        provision.parse_stored(bytes([0xA4]) + b"\x00\x00\x00\x00", TEST_KEY) is False
+    )
     with pytest.raises(provision.ProvisionError):
         provision.parse_stored(bytes([0xA5]), TEST_KEY)
     with pytest.raises(provision.ProvisionError):
-        provision.parse_stored(b"\xA4\x01\x02", TEST_KEY)
+        provision.parse_stored(b"\xa4\x01\x02", TEST_KEY)
 
 
 class FakeTransport:
@@ -112,10 +119,14 @@ def test_full_flow_den_uses_target_01():
 
 def test_sync_skips_interleaved_log_text():
     fp = hashlib.sha256(TEST_KEY).digest()[:4]
-    t = FakeTransport([b"==== banner ====\r\n[PRO-46] Handshake received.\r\n",
-                       bytes([0xA2]) + b"DEN\x01",
-                       b"[PRO-46] CRC verified OK.\r\n",
-                       bytes([0xA4]) + fp])
+    t = FakeTransport(
+        [
+            b"==== banner ====\r\n[PRO-46] Handshake received.\r\n",
+            bytes([0xA2]) + b"DEN\x01",
+            b"[PRO-46] CRC verified OK.\r\n",
+            bytes([0xA4]) + fp,
+        ]
+    )
     res = provision.provision_device(t, "den", TEST_KEY)
     assert res["result"] == "granted"
     assert res["fingerprint"] == fp
@@ -137,6 +148,7 @@ def test_settle_drains_buffer_without_crashing():
 
 def test_open_provision_rejects_bad_port():
     from shallot_cli import serial_adapters
+
     with pytest.raises(RuntimeError):
         serial_adapters.open_provision("")
     with pytest.raises(RuntimeError):
@@ -168,8 +180,7 @@ class FakeSerial:
 def test_serial_transport_adapts_pyserial_signature():
     fp = hashlib.sha256(TEST_KEY).digest()[:4]
     ser = FakeSerial([bytes([0xA2]) + b"DEN\x01", bytes([0xA4]) + fp])
-    res = provision.provision_device(provision.SerialTransport(ser), "den",
-                                     TEST_KEY)
+    res = provision.provision_device(provision.SerialTransport(ser), "den", TEST_KEY)
     assert res["result"] == "granted"
     assert res["fingerprint"] == fp
     assert ser.timeout == 1.0  # återställd efter anrop
@@ -180,18 +191,22 @@ def test_timeout_fails_closed():
     t = FakeTransport([])
     entries = []
     with pytest.raises(provision.ProvisionError, match="timeout"):
-        provision.provision_device(t, "paw", TEST_KEY, timeout=0.01,
-                                   audit=entries)
-    assert entries == [{"action": "provision",
-                        "details": {"target": "paw", "result": "DENY",
-                                    "reason": "timeout"}}]
+        provision.provision_device(t, "paw", TEST_KEY, timeout=0.01, audit=entries)
+    assert entries == [
+        {
+            "action": "provision",
+            "details": {"target": "paw", "result": "DENY", "reason": "timeout"},
+        }
+    ]
 
 
 def test_deny_paths_leave_exactly_one_audit_entry():
     cases = [
         ([bytes([0xA2]) + b"PAW1", bytes([0xA5])], "device-error"),
-        ([bytes([0xA2]) + b"PAW1", bytes([0xA4]) + b"\xDE\xAD\xBE\xEF"],
-         "fingerprint-mismatch"),
+        (
+            [bytes([0xA2]) + b"PAW1", bytes([0xA4]) + b"\xde\xad\xbe\xef"],
+            "fingerprint-mismatch",
+        ),
         # Skräpbyte utan giltig ramstart synkas aldrig fram — svaret
         # uteblir och tiden tar slut (fail closed, en post).
         ([b"\x00\x00\x00\x00\x00"], "timeout"),
@@ -199,8 +214,9 @@ def test_deny_paths_leave_exactly_one_audit_entry():
     for replies, reason in cases:
         entries = []
         with pytest.raises(provision.ProvisionError):
-            provision.provision_device(FakeTransport(replies), "paw",
-                                       TEST_KEY, timeout=0.05, audit=entries)
+            provision.provision_device(
+                FakeTransport(replies), "paw", TEST_KEY, timeout=0.05, audit=entries
+            )
         assert [e["details"]["reason"] for e in entries] == [reason]
 
 
@@ -211,6 +227,6 @@ def test_device_error_fails_closed():
 
 
 def test_wrong_fingerprint_fails_closed():
-    t = FakeTransport([bytes([0xA2]) + b"PAW1", bytes([0xA4]) + b"\xDE\xAD\xBE\xEF"])
+    t = FakeTransport([bytes([0xA2]) + b"PAW1", bytes([0xA4]) + b"\xde\xad\xbe\xef"])
     with pytest.raises(provision.ProvisionError, match="fingeravtryck"):
         provision.provision_device(t, "paw", TEST_KEY)

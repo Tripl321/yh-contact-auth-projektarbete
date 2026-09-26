@@ -8,13 +8,15 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-ALLOWED = frozenset({
-    "plc/edge-challenge-response/edge-challenge-response.ino",
-    "tests/protocol-test/protocol-test.ino",
-    "tests/test_pro52_protocol.py",
-    "tests/test_shared_freeze.py",  # this guard itself (no dependency)
-    "id-kort/archive/paw-challenge-response-responder/paw-challenge-response.ino",
-})
+ALLOWED = frozenset(
+    {
+        "plc/edge-challenge-response/edge-challenge-response.ino",
+        "tests/protocol-test/protocol-test.ino",
+        "tests/test_pro52_protocol.py",
+        "tests/test_shared_freeze.py",  # this guard itself (no dependency)
+        "id-kort/archive/paw-challenge-response-responder/paw-challenge-response.ino",
+    }
+)
 
 
 def test_shared_frozen_owner_note():
@@ -25,8 +27,9 @@ def test_shared_frozen_owner_note():
 
 def test_shared_no_new_consumers():
     found = set()
-    for path in list(ROOT.rglob("*.ino")) + list(ROOT.rglob("*.h")) + \
-            list(ROOT.rglob("*.py")):
+    for path in (
+        list(ROOT.rglob("*.ino")) + list(ROOT.rglob("*.h")) + list(ROOT.rglob("*.py"))
+    ):
         posix = path.as_posix()
         if ".git/" in posix or "/.kilo/" in posix or "/worktrees/" in posix:
             continue  # andra worktrees scannas inte — endast denna rot

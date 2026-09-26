@@ -1,7 +1,6 @@
 """Tester för shallot demo incident — märkning, dramaturgi, determinism."""
 
 import pytest
-
 from shallot_cli import cli, incident
 
 REQUIRED_LINES = [
@@ -72,6 +71,17 @@ def test_existing_flows_unchanged(capsys):
     assert cli.main(["simulate", "auth", "--scenario", "wrong-key"]) == 0
     out = capsys.readouterr().out
     assert "DENIED" in out
-    assert cli.main(["protocol", "encode", "--type", "challenge",
-                     "--payload", "0001020304050607"]) == 0
+    assert (
+        cli.main(
+            [
+                "protocol",
+                "encode",
+                "--type",
+                "challenge",
+                "--payload",
+                "0001020304050607",
+            ]
+        )
+        == 0
+    )
     assert capsys.readouterr().out.strip() == "aa08000100010203040506071cf3b72b"

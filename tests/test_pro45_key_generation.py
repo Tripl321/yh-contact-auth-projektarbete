@@ -58,8 +58,14 @@ def test_pro45_uses_stm32_rng():
     assert "sys_csrand_get" in src
     assert "generateSecureRandomBytes" in src
     # Decided design: no direct register access
-    for reg in ("STM32_RNG_BASE", "STM32_RNG_CR", "STM32_RNG_SR",
-                "STM32_RNG_DR", "RNG_CR_RNGEN", "RNG_SR_DRDY"):
+    for reg in (
+        "STM32_RNG_BASE",
+        "STM32_RNG_CR",
+        "STM32_RNG_SR",
+        "STM32_RNG_DR",
+        "RNG_CR_RNGEN",
+        "RNG_SR_DRDY",
+    ):
         assert reg not in src, reg
 
 

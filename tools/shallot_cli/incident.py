@@ -38,7 +38,10 @@ SCENE_TITLE = "DRIFTLARM (SIMULERAT SCENARIO): overifierad ändringsbegäran"
 #: (offset_s, händelsetext) — de fyra krävda raderna ordagrant inkluderade.
 EVENTS = (
     (0, "Ändringsbegäran upptäckt — skrivkommando mot process, avsändare overifierad"),
-    (1, "Verifiering saknas eller misslyckades — HMAC-kontroll föll (DEN: HMAC_MISMATCH, kod 5)"),
+    (
+        1,
+        "Verifiering saknas eller misslyckades — HMAC-kontroll föll (DEN: HMAC_MISMATCH, kod 5)",
+    ),
     (1, "Åtgärd nekad — fail closed — ACK 0x00, session avbruten"),
     (2, "Ingen processändring genomförd — tillstånd verifierat oförändrat"),
 )

@@ -2,7 +2,6 @@
 och plattform fakes."""
 
 import pytest
-
 from shallot_cli import admin_vault
 
 
@@ -65,8 +64,10 @@ def test_secret_tool_store_uses_stdin(monkeypatch):
         return _Proc(0)
 
     monkeypatch.setattr("sys.platform", "linux")
-    monkeypatch.setattr("shutil.which",
-                        lambda name: "/usr/bin/secret-tool" if name == "secret-tool" else None)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/secret-tool" if name == "secret-tool" else None,
+    )
     monkeypatch.setattr("subprocess.run", fake_run)
     assert admin_vault.backend_name() == "secret-tool"
     admin_vault.store_hash({"salt": "ab"})

@@ -8,21 +8,22 @@ Covers:
 - Valid, invalid, and manipulated HMAC vectors
 - Hardware-accelerated SHA-256 where available (RP2350)
 """
+
 import hashlib
 import hmac as hmac_module
-
 import sys
-sys.path.insert(0, '.')
-from tests.test_pro88_den import K_MAC, DEV_KEY, DEV_HMAC_HEX
+
+sys.path.insert(0, ".")
+from tests.test_pro88_den import DEV_HMAC_HEX, DEV_KEY, K_MAC
 
 
 def test_pro49_k_mac_derivation_vector():
     """K_mac = SHA-256(master_key || "MAC")[:16] matches expected vector."""
     master = bytes(range(16))
-    msg = master + b'MAC'
+    msg = master + b"MAC"
     full_hash = hashlib.sha256(msg).digest()
     k_mac = full_hash[:16]
-    assert k_mac.hex() == '99c7117275f487623752e6d5d0eb438f'
+    assert k_mac.hex() == "99c7117275f487623752e6d5d0eb438f"
 
 
 def test_pro49_hmac_uses_k_mac_not_master():
@@ -48,70 +49,76 @@ def test_pro49_invalid_hmac_rejected():
 def test_pro49_constant_time_compare_used():
     """Source guard: DEN firmware uses den_ct_compare, not memcmp."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    den = (root / 'plc/den-main/den-main.ino').read_text()
-    assert 'den_ct_compare' in den
-    assert 'memcmp(expect' not in den  # never use memcmp for HMAC
-    assert 'memcmp(kMac' not in den
+    den = (root / "plc/den-main/den-main.ino").read_text()
+    assert "den_ct_compare" in den
+    assert "memcmp(expect" not in den  # never use memcmp for HMAC
+    assert "memcmp(kMac" not in den
 
 
 def test_pro49_k_mac_derived_in_paw_source():
     """Source guard: PAW firmware derives K_mac (library) and uses it for HMAC."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
-    assert 'shalot_derive_k_mac' in lib                  # derivation in library
-    assert 'paw_session_k_mac(&pawSession)' in src      # PAW reads K_mac via API
-    assert 'shalot_hmac_sha256(' in src                 # HMAC uses K_mac
-    assert 'shalot_hmac_sha256(aes_key' not in lib      # never master key directly
-    assert 'void sha256(' not in src                     # no local copy (ShallotCrypto)
+    src = (root / "id-kort/paw-main/paw-main.ino").read_text()
+    lib = (root / "libraries/PawSession/src/PawSession.h").read_text()
+    assert "shalot_derive_k_mac" in lib  # derivation in library
+    assert "paw_session_k_mac(&pawSession)" in src  # PAW reads K_mac via API
+    assert "shalot_hmac_sha256(" in src  # HMAC uses K_mac
+    assert "shalot_hmac_sha256(aes_key" not in lib  # never master key directly
+    assert "void sha256(" not in src  # no local copy (ShallotCrypto)
 
 
 def test_pro49_k_mac_derived_in_den_source():
     """Source guard: DEN firmware derives K_mac and uses it for HMAC."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    src = (root / 'plc/den-main/den-main.ino').read_text()
-    assert 'shalot_derive_k_mac' in src
-    assert 'kMac' in src
-    assert 'shalot_hmac_sha256(kMac' in src
-    assert 'den_hmac_sha256(DEN_DEV_KEY' not in src  # never use master directly
-    assert 'static void den_hmac_sha256(' not in src  # no local copy
-    assert 'static void den_sha256(' not in src  # no local copy
+    src = (root / "plc/den-main/den-main.ino").read_text()
+    assert "shalot_derive_k_mac" in src
+    assert "kMac" in src
+    assert "shalot_hmac_sha256(kMac" in src
+    assert "den_hmac_sha256(DEN_DEV_KEY" not in src  # never use master directly
+    assert "static void den_hmac_sha256(" not in src  # no local copy
+    assert "static void den_sha256(" not in src  # no local copy
 
 
 def test_pro49_k_mac_cleared_on_key_clear():
     """PRO-47 integration: paw_session_wipe_key also clears K_mac."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
-    assert 'secure_clear_key' in src
-    assert 'paw_session_wipe_key(&pawSession)' in src
-    assert 'shalot_wipe(session->k_mac' in lib   # K_mac zeroized by wipe
-    assert 'shalot_wipe(session->k_enc' in lib   # K_enc zeroized by wipe
-    assert 'session->key_stored = false' in lib  # flag cleared
+    src = (root / "id-kort/paw-main/paw-main.ino").read_text()
+    lib = (root / "libraries/PawSession/src/PawSession.h").read_text()
+    assert "secure_clear_key" in src
+    assert "paw_session_wipe_key(&pawSession)" in src
+    assert "shalot_wipe(session->k_mac" in lib  # K_mac zeroized by wipe
+    assert "shalot_wipe(session->k_enc" in lib  # K_enc zeroized by wipe
+    assert "session->key_stored = false" in lib  # flag cleared
 
 
 def test_pro49_k_mac_separate_from_k_enc():
     """K_mac and K_enc are separate buffers in the PawSession struct."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    lib = (root / 'libraries/PawSession/src/PawSession.h').read_text()
-    assert 'uint8_t k_mac[SHALOT_KEY_LEN]' in lib
-    assert 'uint8_t k_enc[SHALOT_KEY_LEN]' in lib
+    lib = (root / "libraries/PawSession/src/PawSession.h").read_text()
+    assert "uint8_t k_mac[SHALOT_KEY_LEN]" in lib
+    assert "uint8_t k_enc[SHALOT_KEY_LEN]" in lib
     # Separate array declarations, not aliases.
-    assert lib.count('uint8_t k_mac[SHALOT_KEY_LEN]') == 1
-    assert lib.count('uint8_t k_enc[SHALOT_KEY_LEN]') == 1
+    assert lib.count("uint8_t k_mac[SHALOT_KEY_LEN]") == 1
+    assert lib.count("uint8_t k_enc[SHALOT_KEY_LEN]") == 1
 
 
 def test_pro49_hardware_sha256_comment():
     """Source guard: PRO-49 mentions hardware-accelerated SHA-256."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    src = (root / 'id-kort/paw-main/paw-main.ino').read_text()
-    assert 'PRO-49' in src
-    assert 'hardware' in src.lower() or 'accelerat' in src.lower()
+    src = (root / "id-kort/paw-main/paw-main.ino").read_text()
+    assert "PRO-49" in src
+    assert "hardware" in src.lower() or "accelerat" in src.lower()
     # Should mention RP2350 SHA accelerator
-    assert 'RP2350' in src or 'pico' in src.lower() or 'hardware' in src.lower()
+    assert "RP2350" in src or "pico" in src.lower() or "hardware" in src.lower()

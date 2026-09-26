@@ -188,19 +188,41 @@ Exempel på resultatfil (`mamabear-test-20260914T100000Z.json`):
   "tool": "shallot mamabear test",
   "host_alias": "mamabear",
   "timestamp_utc": "2026-09-14T10:00:00Z",
-  "transport": {"via": "system-ssh", "alias_source": "~/.ssh/config",
-                "batch_mode": true, "connect_timeout_s": 10,
-                "command_timeout_s": 30},
+  "transport": {
+    "via": "system-ssh",
+    "alias_source": "~/.ssh/config",
+    "batch_mode": true,
+    "connect_timeout_s": 10,
+    "command_timeout_s": 30
+  },
   "commands": [
-    {"name": "exec-sanity", "command": "echo MAMABEAR_SELFTEST_OK",
-     "exit_code": 0, "timed_out": false, "check": "pass",
-     "output": "MAMABEAR_SELFTEST_OK\n", "stderr": ""},
-    {"name": "pipe-sanity", "command": "printf 'a\\nb\\n' | wc -l",
-     "exit_code": 0, "timed_out": false, "check": "pass",
-     "output": "2\n", "stderr": ""},
-    {"name": "clock", "command": "date -u +%Y-%m-%dT%H:%M:%SZ",
-     "exit_code": 0, "timed_out": false, "check": "pass",
-     "output": "2026-09-14T10:00:00Z\n", "stderr": ""}
+    {
+      "name": "exec-sanity",
+      "command": "echo MAMABEAR_SELFTEST_OK",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "MAMABEAR_SELFTEST_OK\n",
+      "stderr": ""
+    },
+    {
+      "name": "pipe-sanity",
+      "command": "printf 'a\\nb\\n' | wc -l",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "2\n",
+      "stderr": ""
+    },
+    {
+      "name": "clock",
+      "command": "date -u +%Y-%m-%dT%H:%M:%SZ",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "2026-09-14T10:00:00Z\n",
+      "stderr": ""
+    }
   ],
   "passed": 3,
   "failed": 0,

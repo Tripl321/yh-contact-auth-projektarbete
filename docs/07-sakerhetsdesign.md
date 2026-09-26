@@ -32,6 +32,7 @@ Referenser: [NIST SP 800-38C](https://csrc.nist.gov/pubs/sp/800/38/c/upd1/final)
 ## Hårdvarurot för PAW-nycklar (PRO-54 tillägg)
 
 ### Produktionskrav
+
 PAW-nycklar (operationsnyckel, `kMac`/`kEnc`, Ed25519-identiteter om de
 införs) ska i produktion bo i secure element eller motsvarande
 hårdvarurot med minst: (a) nyckelgenerering/lagring som aldrig exponerar
@@ -42,6 +43,7 @@ manipulationsresistens anpassad till hotbilden (passivt skydd räcker för
 prototypmiljö; aktivt skydd vid fientlig fysisk åtkomst).
 
 ### Prototypens begränsningar
+
 Feather RP2350 / Pico 2 (RP2350) saknar secure boot, flashkryptering och
 secure element: UF2 kan flashas via BOOTSEL av var och en med fysisk
 åtkomst, flash kan dumpas, SRAM har ingen ECC och e-paper är bistabil.
@@ -50,6 +52,7 @@ fail-closed logik och fysisk procedursäkerhet — giltigt för bänk, inte
 för produktion.
 
 ### Hot som kvarstår utan secure boot/flashkryptering
+
 - Omflashning till angriparfirmware via BOOTSEL (fullständig
   kompromettering vid fysisk possession).
 - Flash-dump: ger ingen nyckel (SRAM-only) men avslöjar protokollogik
@@ -60,6 +63,7 @@ för produktion.
 - FIDO2 admin-token kan dumpas (se PRO-55 risk 2/10).
 
 ### Realistiska post-MVP-alternativ
+
 1. Externt secure element över I2C (t.ex. ATECC608-klass) för
    nyckellagring + P-256/Ed25519 i elementet; RP2350 håller endast
    sessionsflyktiga värden.

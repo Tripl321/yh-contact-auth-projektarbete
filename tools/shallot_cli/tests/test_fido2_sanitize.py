@@ -5,8 +5,10 @@ from shallot_cli import fido2_sanitize as san
 
 def test_masks_long_credential_id():
     cid = "dGhpcyBpcyBhIHRlc3QgY3JlZGVudGlhbCBpZA123456"
-    assert san.sanitize("credential %s registrerad" % cid) == \
-        "credential [REDACTED-CRED] registrerad"
+    assert (
+        san.sanitize("credential %s registrerad" % cid)
+        == "credential [REDACTED-CRED] registrerad"
+    )
 
 
 def test_masks_labeled_keys_and_tokens():
@@ -30,8 +32,10 @@ def test_masks_private_addresses():
 
 def test_masks_email_but_keeps_user_ids():
     assert san.sanitize("kontakt admin@example.com") == "kontakt [REDACTED-EMAIL]"
-    assert san.sanitize("användare admin-01 status active") == \
-        "användare admin-01 status active"
+    assert (
+        san.sanitize("användare admin-01 status active")
+        == "användare admin-01 status active"
+    )
 
 
 def test_short_credential_truncates_only_long_ids():
@@ -43,20 +47,24 @@ def test_short_credential_truncates_only_long_ids():
 
 
 def test_benign_ceremony_output_preserved():
-    benign = ("ALLOW användare admin-01 credential kort-id "
-              "user_presence=True rp_id=shallot.local")
+    benign = (
+        "ALLOW användare admin-01 credential kort-id "
+        "user_presence=True rp_id=shallot.local"
+    )
     assert san.sanitize(benign) == benign
 
 
 def test_masks_mamabear_fingerprint_and_mac():
-    assert "fingerprint=[REDACTED-FINGERPRINT]" in \
-        san.sanitize("fingerprint=deadbeef1234")
+    assert "fingerprint=[REDACTED-FINGERPRINT]" in san.sanitize(
+        "fingerprint=deadbeef1234"
+    )
     assert san.sanitize("mac AA:BB:CC:DD:EE:FF up") == "mac [REDACTED-MAC] up"
 
 
 def test_mamabear_imports_module_not_name():
     import shallot_cli.mamabear as mamabear
     from shallot_cli import fido2_sanitize as owner
+
     assert not hasattr(mamabear, "REDACTIONS")
     assert not hasattr(mamabear, "sanitize")
     assert mamabear.fido2_sanitize is owner
@@ -65,8 +73,10 @@ def test_mamabear_imports_module_not_name():
 def test_masks_space_separated_short_secrets():
     assert san.sanitize("secret hunter2") == "secret [REDACTED]"
     assert san.sanitize("password hunter2") == "password [REDACTED]"
-    assert san.sanitize("användare admin-01 status active") == \
-        "användare admin-01 status active"
+    assert (
+        san.sanitize("användare admin-01 status active")
+        == "användare admin-01 status active"
+    )
 
 
 def test_masks_link_local_and_ula():

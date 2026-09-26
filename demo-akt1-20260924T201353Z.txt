@@ -1,0 +1,68 @@
+=== SHALLOT DEMO-INSPELNING (TEST-ONLY bänk, MVP: NEKAD + ÅTKOMST) ===
+väntar DEN-loop (max 20 s)...
+DEN-loop lever
+väntar PAW-loop (max 20 s)...
+PAW-loop lever
+--- Baslinje: provisionera DEN + signerad tom lista ---
+  DEN provisionerad fp=be45cb26
+  blocklista sänd
+--- AKT 1: fel nyckel -> ska NEKAS (fail closed) ---
+  PAW(fel) provisionerad fp=fc2e2c73
+  Titta på e-paper: ska visa FAILED.
+[DEN] �[DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+  [AKT1] code 0: 0, nekade: 32
+  AKT 1 VERDIKT: NEKAD (förväntat)
+
+████ .██. ███ █... ████ ███.
+█... █..█ .█. █... █... █..█
+███. ████ .█. █... ███. █..█
+█... █..█ .█. █... █... █..█
+█... █..█ ███ ████ ████ ███.
+
+=== SLUT: akt1=OK ===

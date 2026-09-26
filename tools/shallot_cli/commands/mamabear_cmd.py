@@ -20,8 +20,9 @@ def _confirm(question: str) -> bool:
     return ans in ("j", "ja", "y", "yes")
 
 
-def _run(kind: str, entries: tuple, host: str, yes: bool,
-         output: str | None, confirm=None) -> int:
+def _run(
+    kind: str, entries: tuple, host: str, yes: bool, output: str | None, confirm=None
+) -> int:
     """confirm: injicerbar ja/nej-funktion (ConfirmGateway). Default _confirm
     läser terminalen; yes=True hoppar över frågan (icke-interaktivt)."""
     try:
@@ -32,8 +33,10 @@ def _run(kind: str, entries: tuple, host: str, yes: bool,
     ask = confirm or _confirm
     if not yes:
         print("SSH-anslutning till '%s' via system-ssh (~/.ssh/config)." % alias)
-        print("Kör %d läsande kommandon. Inget skrivs på MamaBear; "
-              "inga lösenord eller nycklar hanteras." % len(entries))
+        print(
+            "Kör %d läsande kommandon. Inget skrivs på MamaBear; "
+            "inga lösenord eller nycklar hanteras." % len(entries)
+        )
         if not ask("Fortsätt med SSH-anslutning"):
             print("Avbrutet av användaren — ingen anslutning skedde.", file=sys.stderr)
             return 2
@@ -44,8 +47,11 @@ def _run(kind: str, entries: tuple, host: str, yes: bool,
         return 1
     payload = mamabear.build_payload("shallot mamabear %s" % kind, alias, suite)
     try:
-        out_path = (mamabear.resolve_output_path(output) if output
-                    else mamabear.default_output_path(kind))
+        out_path = (
+            mamabear.resolve_output_path(output)
+            if output
+            else mamabear.default_output_path(kind)
+        )
     except RuntimeError as e:
         print("error: %s" % e, file=sys.stderr)
         return 1
@@ -64,12 +70,11 @@ def run_status(host: str, yes: bool = False, confirm=None) -> int:
     Skriver alltid en lokal JSON-resultatfil (mamabear-status-<tid>.json
     i CWD) — även detta är ett läsande läge, inget skrivs på MamaBear.
     """
-    return _run("status", mamabear.STATUS_COMMANDS, host, yes, None,
-                confirm=confirm)
+    return _run("status", mamabear.STATUS_COMMANDS, host, yes, None, confirm=confirm)
 
 
-def run_test(host: str, yes: bool = False, output: str | None = None,
-             confirm=None) -> int:
+def run_test(
+    host: str, yes: bool = False, output: str | None = None, confirm=None
+) -> int:
     """`shallot mamabear test --host <alias> [--output <fil>]`."""
-    return _run("test", mamabear.TEST_COMMANDS, host, yes, output,
-                confirm=confirm)
+    return _run("test", mamabear.TEST_COMMANDS, host, yes, output, confirm=confirm)

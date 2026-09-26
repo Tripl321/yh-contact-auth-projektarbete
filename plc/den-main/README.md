@@ -62,6 +62,7 @@ flaggavläsning + audit-dump, varje anrop loggas) och `BG ABORT`
 (återlåsning). Allt annat nekas och loggas utan verkan.
 
 Ceremoni (USB-konsol, fysisk närvaro krävs):
+
 1. `BG ARM` (endast från vilande DENIED, ingen provisionering pågår) —
    DEN drar färsk 4-byte ticket ur TRNG, visar den, beväpnar i 60 s.
 2. `BG CONFIRM <8 hex>` inom fönstret — korrekt ticket ger beviljat

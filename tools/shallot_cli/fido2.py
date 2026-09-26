@@ -46,18 +46,30 @@ UV_POLICIES = ("required", "preferred", "discouraged")
 
 def _check_uv_policy(user_verification: str) -> str:
     if user_verification not in UV_POLICIES:
-        raise ValueError("okänd UV-policy %r (välj: %s)"
-                         % (user_verification, "|".join(UV_POLICIES)))
+        raise ValueError(
+            "okänd UV-policy %r (välj: %s)" % (user_verification, "|".join(UV_POLICIES))
+        )
     return user_verification
 
-SCENARIOS = ("success", "unknown-credential", "revoked-credential",
-             "wrong-origin", "replay", "timeout", "invalid-signature")
+
+SCENARIOS = (
+    "success",
+    "unknown-credential",
+    "revoked-credential",
+    "wrong-origin",
+    "replay",
+    "timeout",
+    "invalid-signature",
+)
 
 
 def validate_user(user_id: str) -> str:
     user = (user_id or "").strip()
     if not USER_RE.fullmatch(user):
-        raise ValueError("ogiltigt användar-ID %r (tillåt: bokstäver, siffror, ._-; max 64)" % user_id)
+        raise ValueError(
+            "ogiltigt användar-ID %r (tillåt: bokstäver, siffror, ._-; max 64)"
+            % user_id
+        )
     return user
 
 
@@ -105,7 +117,8 @@ class Credential:
                 for key, value in node.items():
                     if key in fido2_store.FORBIDDEN_FIELDS:
                         raise ValueError(
-                            "förbjudet fält i %s: %s%s" % (where, key, suffix))
+                            "förbjudet fält i %s: %s%s" % (where, key, suffix)
+                        )
                     stack.append(value)
             elif isinstance(node, list):
                 stack.extend(node)
@@ -118,13 +131,23 @@ class Credential:
                 raise ValueError("saknar obligatoriskt fält: %s" % req)
 
     @classmethod
-    def create(cls, *, credential_id: str, user_id: str, policy: dict,
-               created: str | None = None, status: str | None = None,
-               extra: dict | None = None) -> "Credential":
-        data = {"credential_id": credential_id, "user_id": user_id,
-                "created": created or fido2_store.utcnow(),
-                "status": status or fido2_store.STATUS_ACTIVE,
-                "policy": dict(policy)}
+    def create(
+        cls,
+        *,
+        credential_id: str,
+        user_id: str,
+        policy: dict,
+        created: str | None = None,
+        status: str | None = None,
+        extra: dict | None = None,
+    ) -> "Credential":
+        data = {
+            "credential_id": credential_id,
+            "user_id": user_id,
+            "created": created or fido2_store.utcnow(),
+            "status": status or fido2_store.STATUS_ACTIVE,
+            "policy": dict(policy),
+        }
         if extra:
             data.update(extra)
         cls.check_record(data)
@@ -150,63 +173,111 @@ class Ceremony:
         self._challenges[challenge.hex()] = {"created": self.now_fn(), "used": False}
         return challenge
 
-    def check_backend(self, credential: dict,
-                      expected_backend: str | None) -> str | None:
+    def check_backend(
+        self, credential: dict, expected_backend: str | None
+    ) -> str | None:
         """Kontrollera backend-policy utan att konsumera challenge."""
         return fido2_verify.check_backend(credential, expected_backend)
 
-    def precheck(self, *, credential: dict | None, challenge: bytes,
-                   origin: str, rp_id: str, user_presence: bool,
-                   expected_backend: str | None = None) -> str | None:
+    def precheck(
+        self,
+        *,
+        credential: dict | None,
+        challenge: bytes,
+        origin: str,
+        rp_id: str,
+        user_presence: bool,
+        expected_backend: str | None = None,
+    ) -> str | None:
         """Delade billiga kontroller. Returnerar reason eller None vid OK."""
         return fido2_verify.precheck(
-            self, credential=credential, challenge=challenge,
-            origin=origin, rp_id=rp_id, user_presence=user_presence,
-            expected_origin=ORIGIN, expected_rp_id=RP_ID,
-            expected_backend=expected_backend)
+            self,
+            credential=credential,
+            challenge=challenge,
+            origin=origin,
+            rp_id=rp_id,
+            user_presence=user_presence,
+            expected_origin=ORIGIN,
+            expected_rp_id=RP_ID,
+            expected_backend=expected_backend,
+        )
 
-    def verify_assertion(self, *, credential: dict | None, challenge: bytes,
-                         origin: str, rp_id: str, user_presence: bool,
-                         signature: bytes,
-                         user_verified: bool = True,
-                         require_uv: bool = False,
-                         expected_backend: str | None = None) -> tuple[bool, str]:
+    def verify_assertion(
+        self,
+        *,
+        credential: dict | None,
+        challenge: bytes,
+        origin: str,
+        rp_id: str,
+        user_presence: bool,
+        signature: bytes,
+        user_verified: bool = True,
+        require_uv: bool = False,
+        expected_backend: str | None = None,
+    ) -> tuple[bool, str]:
         """Returnerar (allow, reason-kod). Aldrig undantag för deny-fall."""
         return fido2_verify.verify_assertion(
-            self, credential=credential, challenge=challenge,
-            origin=origin, rp_id=rp_id, user_presence=user_presence,
-            signature=signature, expected_origin=ORIGIN,
-            expected_rp_id=RP_ID, user_verified=user_verified,
-            require_uv=require_uv, expected_backend=expected_backend)
+            self,
+            credential=credential,
+            challenge=challenge,
+            origin=origin,
+            rp_id=rp_id,
+            user_presence=user_presence,
+            signature=signature,
+            expected_origin=ORIGIN,
+            expected_rp_id=RP_ID,
+            user_verified=user_verified,
+            require_uv=require_uv,
+            expected_backend=expected_backend,
+        )
 
 
-def register_user(user_id: str, *, backend=None, rng=None,
-                  root=None, user_verification: str = "preferred") -> dict:
+def register_user(
+    user_id: str,
+    *,
+    backend=None,
+    rng=None,
+    root=None,
+    user_verification: str = "preferred",
+) -> dict:
     """Registrera credential för användare. Sparar endast sanerad metadata."""
     user = validate_user(user_id)
     _check_uv_policy(user_verification)
     be = backend or fido2_backend.get_backend("mock")
     challenge = (rng or secrets.token_bytes)(CHALLENGE_BYTES)
-    credential_id = b64url(hashlib.sha256(
-        user.encode() + b"|" + bytes(challenge) + b"|register").digest()[:32])
+    credential_id = b64url(
+        hashlib.sha256(user.encode() + b"|" + bytes(challenge) + b"|register").digest()[
+            :32
+        ]
+    )
     data = signed_data(challenge, ORIGIN, RP_ID, True)
     try:
         signature = be.sign(credential_id=credential_id.encode(), signed_data=data)
-        valid = be.verify(credential_id=credential_id.encode(),
-                          signed_data=data, signature=signature)
+        valid = be.verify(
+            credential_id=credential_id.encode(), signed_data=data, signature=signature
+        )
     except fido2_backend.BackendUnavailable as e:
         raise RuntimeError(str(e)) from None
     if not valid:
         raise RuntimeError("registrering underkänd: mock-attestation verifierades inte")
     metadata = Credential.create(
-        credential_id=credential_id, user_id=user,
-        policy={"user_presence": True, "rp_id": RP_ID,
-                "origin": ORIGIN, "backend": be.name, "mode": "simulated-test",
-                "user_verification": user_verification}).to_dict()
+        credential_id=credential_id,
+        user_id=user,
+        policy={
+            "user_presence": True,
+            "rp_id": RP_ID,
+            "origin": ORIGIN,
+            "backend": be.name,
+            "mode": "simulated-test",
+            "user_verification": user_verification,
+        },
+    ).to_dict()
     fido2_store.save_credential(metadata, root=root)
-    fido2_store.audit("register", {"user_id": user,
-                                   "credential": fido2_sanitize.short_credential(credential_id)},
-                      root=root)
+    fido2_store.audit(
+        "register",
+        {"user_id": user, "credential": fido2_sanitize.short_credential(credential_id)},
+        root=root,
+    )
     return metadata
 
 
@@ -215,18 +286,28 @@ def register_user(user_id: str, *, backend=None, rng=None,
 HW_ATTESTATION_FORMATS = ("none", "packed")
 
 
-def verify_hw_registration(*, attestation_object: bytes, client_data_json: bytes,
-                           challenge: bytes, rp_id: str = RP_ID,
-                           origin: str = ORIGIN) -> dict:
+def verify_hw_registration(
+    *,
+    attestation_object: bytes,
+    client_data_json: bytes,
+    challenge: bytes,
+    rp_id: str = RP_ID,
+    origin: str = ORIGIN,
+) -> dict:
     """Verifiera HW-registrering (RP-sidan). Returnerar lagringsbar credential-data.
 
     Kastar ValueError(reason) vid varje avvikelse (fail closed).
     Accepterar fmt "none" samt "packed" self-attestation; allt annat
     (inkl. packed med x5c — inga trust anchors konfigurerade) avvisas.
     """
+    from fido2.attestation import (
+        AttestationType,
+        InvalidSignature,
+        NoneAttestation,
+        PackedAttestation,
+    )
     from fido2.webauthn import AttestationObject, CollectedClientData
-    from fido2.attestation import (AttestationType, InvalidData, InvalidSignature,
-                                   NoneAttestation, PackedAttestation)
+
     try:
         att_obj = AttestationObject(bytes(attestation_object))
         client_data = CollectedClientData(bytes(client_data_json))
@@ -237,9 +318,11 @@ def verify_hw_registration(*, attestation_object: bytes, client_data_json: bytes
         raise ValueError("untrusted-attestation")
     if not auth_data.is_user_present():
         raise ValueError("no-user-presence")
-    if (_client_data_type(client_data) != "webauthn.create"
-            or not hmac.compare_digest(bytes(client_data.challenge), bytes(challenge))
-            or client_data.origin != origin):
+    if (
+        _client_data_type(client_data) != "webauthn.create"
+        or not hmac.compare_digest(bytes(client_data.challenge), bytes(challenge))
+        or client_data.origin != origin
+    ):
         raise ValueError("untrusted-attestation")
     client_data_hash = hashlib.sha256(bytes(client_data_json)).digest()
     try:
@@ -247,8 +330,9 @@ def verify_hw_registration(*, attestation_object: bytes, client_data_json: bytes
             NoneAttestation().verify(att_obj.att_stmt, auth_data, client_data_hash)
             fmt = "none"
         elif att_obj.fmt == "packed":
-            result = PackedAttestation().verify(att_obj.att_stmt, auth_data,
-                                                client_data_hash)
+            result = PackedAttestation().verify(
+                att_obj.att_stmt, auth_data, client_data_hash
+            )
             if result.attestation_type is not AttestationType.SELF:
                 raise ValueError("untrusted-attestation")
             fmt = "packed-self"
@@ -262,22 +346,32 @@ def verify_hw_registration(*, attestation_object: bytes, client_data_json: bytes
     if cred is None:
         raise ValueError("untrusted-attestation")
     from fido2 import cbor
+
     try:
         public_key_bytes = cbor.encode(dict(cred.public_key))
     except Exception as e:
         raise ValueError("untrusted-attestation") from e
-    return {"credential_id": b64url(bytes(cred.credential_id)),
-            "public_key_cose": b64url(public_key_bytes),
-            "sign_count": int(auth_data.counter),
-            "attestation_fmt": fmt}
+    return {
+        "credential_id": b64url(bytes(cred.credential_id)),
+        "public_key_cose": b64url(public_key_bytes),
+        "sign_count": int(auth_data.counter),
+        "attestation_fmt": fmt,
+    }
 
 
-def verify_hw_assertion(*, credential: dict, challenge: bytes, origin: str = ORIGIN,
-                        rp_id: str = RP_ID, authenticator_data: bytes,
-                        client_data_json: bytes, signature: bytes,
-                        ceremony: Ceremony,
-                        require_uv: bool = False,
-                        expected_backend: str | None = None) -> tuple:
+def verify_hw_assertion(
+    *,
+    credential: dict,
+    challenge: bytes,
+    origin: str = ORIGIN,
+    rp_id: str = RP_ID,
+    authenticator_data: bytes,
+    client_data_json: bytes,
+    signature: bytes,
+    ceremony: Ceremony,
+    require_uv: bool = False,
+    expected_backend: str | None = None,
+) -> tuple:
     """Verifiera HW-assertion. Returnerar (allow, reason, new_sign_count|None).
 
     Tunn wrapper som binder SHALLOTs RP-identitet; beslutet ägs av
@@ -285,43 +379,70 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes, origin: str = ORI
     sign-counter).
     """
     return fido2_verify.verify_hw_assertion(
-        credential=credential, challenge=challenge, origin=origin,
-        rp_id=rp_id, authenticator_data=authenticator_data,
-        client_data_json=client_data_json, signature=signature,
-        ceremony=ceremony, expected_origin=ORIGIN, expected_rp_id=RP_ID,
-        require_uv=require_uv, expected_backend=expected_backend)
+        credential=credential,
+        challenge=challenge,
+        origin=origin,
+        rp_id=rp_id,
+        authenticator_data=authenticator_data,
+        client_data_json=client_data_json,
+        signature=signature,
+        ceremony=ceremony,
+        expected_origin=ORIGIN,
+        expected_rp_id=RP_ID,
+        require_uv=require_uv,
+        expected_backend=expected_backend,
+    )
 
 
-def register_hw_user(user_id: str, *, ctap, root=None,
-                     user_verification: str = "preferred") -> dict:
+def register_hw_user(
+    user_id: str, *, ctap, root=None, user_verification: str = "preferred"
+) -> dict:
     """Registrera HW-credential för användare. Sparar metadata + publik nyckel."""
     user = validate_user(user_id)
     _check_uv_policy(user_verification)
     challenge = secrets.token_bytes(CHALLENGE_BYTES)
-    raw = ctap.register(origin=ORIGIN, rp_id=RP_ID, rp_name="SHALLOT",
-                        user_id=user, challenge=challenge,
-                        user_verification=user_verification)
+    raw = ctap.register(
+        origin=ORIGIN,
+        rp_id=RP_ID,
+        rp_name="SHALLOT",
+        user_id=user,
+        challenge=challenge,
+        user_verification=user_verification,
+    )
     try:
         cred = verify_hw_registration(
             attestation_object=raw["attestation_object"],
             client_data_json=raw["client_data_json"],
-            challenge=challenge, rp_id=RP_ID, origin=ORIGIN)
+            challenge=challenge,
+            rp_id=RP_ID,
+            origin=ORIGIN,
+        )
     except (ValueError, KeyError) as e:
         raise RuntimeError("registrering underkänd: %s" % e) from None
     metadata = Credential.create(
-        credential_id=cred["credential_id"], user_id=user,
-        policy={"user_presence": True, "rp_id": RP_ID, "origin": ORIGIN,
-                "backend": "hardware", "mode": "hardware-ctap",
-                "attestation": cred["attestation_fmt"],
-                "user_verification": user_verification},
-        extra={"public_key": cred["public_key_cose"],
-               "sign_count": cred["sign_count"]}).to_dict()
+        credential_id=cred["credential_id"],
+        user_id=user,
+        policy={
+            "user_presence": True,
+            "rp_id": RP_ID,
+            "origin": ORIGIN,
+            "backend": "hardware",
+            "mode": "hardware-ctap",
+            "attestation": cred["attestation_fmt"],
+            "user_verification": user_verification,
+        },
+        extra={"public_key": cred["public_key_cose"], "sign_count": cred["sign_count"]},
+    ).to_dict()
     fido2_store.save_credential(metadata, root=root)
-    fido2_store.audit("register", {"user_id": user,
-                                   "credential": fido2_sanitize.short_credential(
-                                       cred["credential_id"]),
-                                   "backend": "hardware"},
-                      root=root)
+    fido2_store.audit(
+        "register",
+        {
+            "user_id": user,
+            "credential": fido2_sanitize.short_credential(cred["credential_id"]),
+            "backend": "hardware",
+        },
+        root=root,
+    )
     return metadata
 
 
@@ -332,60 +453,101 @@ def run_scenario(name: str, *, backend=None) -> dict:
     be = backend or fido2_backend.get_backend("mock")
     now = [1000.0]
     cer = Ceremony(backend=be, rng=lambda n: b"\x42" * n, now_fn=lambda: now[0])
-    credential = {"credential_id": b64url(b"test-credential-0123456789abcdef"),
-                  "user_id": "test-admin", "created": "2026-01-01T00:00:00Z",
-                  "status": fido2_store.STATUS_ACTIVE,
-                  "policy": {"user_presence": True}}
-    out = {"scenario": name,
-           "credential": fido2_sanitize.short_credential(credential["credential_id"]),
-           "result": "DENY", "reason": "", "decision": "deny (fail closed)"}
+    credential = {
+        "credential_id": b64url(b"test-credential-0123456789abcdef"),
+        "user_id": "test-admin",
+        "created": "2026-01-01T00:00:00Z",
+        "status": fido2_store.STATUS_ACTIVE,
+        "policy": {"user_presence": True},
+    }
+    out = {
+        "scenario": name,
+        "credential": fido2_sanitize.short_credential(credential["credential_id"]),
+        "result": "DENY",
+        "reason": "",
+        "decision": "deny (fail closed)",
+    }
 
     def attempt(**kw):
-        args = {"credential": credential, "challenge": kw.get("challenge"),
-                "origin": kw.get("origin", ORIGIN), "rp_id": kw.get("rp_id", RP_ID),
-                "user_presence": kw.get("user_presence", True),
-                "signature": kw.get("signature", b"")}
+        args = {
+            "credential": credential,
+            "challenge": kw.get("challenge"),
+            "origin": kw.get("origin", ORIGIN),
+            "rp_id": kw.get("rp_id", RP_ID),
+            "user_presence": kw.get("user_presence", True),
+            "signature": kw.get("signature", b""),
+        }
         return cer.verify_assertion(**args)
 
     if name == "success":
         ch = cer.begin()
-        sig = be.sign(credential_id=credential["credential_id"].encode(),
-                      signed_data=signed_data(ch, ORIGIN, RP_ID, True))
+        sig = be.sign(
+            credential_id=credential["credential_id"].encode(),
+            signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+        )
         allow, reason = attempt(challenge=ch, signature=sig)
     elif name == "unknown-credential":
         ch = cer.begin()
-        sig = be.sign(credential_id="någon-annan".encode(), signed_data=signed_data(ch, ORIGIN, RP_ID, True))
+        sig = be.sign(
+            credential_id="någon-annan".encode(),
+            signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+        )
         allow, reason = cer.verify_assertion(
-            credential=None, challenge=ch, origin=ORIGIN, rp_id=RP_ID,
-            user_presence=True, signature=sig)
+            credential=None,
+            challenge=ch,
+            origin=ORIGIN,
+            rp_id=RP_ID,
+            user_presence=True,
+            signature=sig,
+        )
     elif name == "revoked-credential":
         credential = dict(credential, status=fido2_store.STATUS_REVOKED)
         ch = cer.begin()
-        sig = be.sign(credential_id=credential["credential_id"].encode(),
-                      signed_data=signed_data(ch, ORIGIN, RP_ID, True))
+        sig = be.sign(
+            credential_id=credential["credential_id"].encode(),
+            signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+        )
         allow, reason = attempt(challenge=ch, signature=sig)
     elif name == "wrong-origin":
         ch = cer.begin()
-        sig = be.sign(credential_id=credential["credential_id"].encode(),
-                      signed_data=signed_data(ch, "https://evil.example", RP_ID, True))
-        allow, reason = attempt(challenge=ch, origin="https://evil.example", signature=sig)
+        sig = be.sign(
+            credential_id=credential["credential_id"].encode(),
+            signed_data=signed_data(ch, "https://evil.example", RP_ID, True),
+        )
+        allow, reason = attempt(
+            challenge=ch, origin="https://evil.example", signature=sig
+        )
     elif name == "replay":
         ch = cer.begin()
-        sig = be.sign(credential_id=credential["credential_id"].encode(),
-                      signed_data=signed_data(ch, ORIGIN, RP_ID, True))
-        cer.verify_assertion(credential=credential, challenge=ch, origin=ORIGIN,
-                             rp_id=RP_ID, user_presence=True, signature=sig)
+        sig = be.sign(
+            credential_id=credential["credential_id"].encode(),
+            signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+        )
+        cer.verify_assertion(
+            credential=credential,
+            challenge=ch,
+            origin=ORIGIN,
+            rp_id=RP_ID,
+            user_presence=True,
+            signature=sig,
+        )
         allow, reason = attempt(challenge=ch, signature=sig)
     elif name == "timeout":
         ch = cer.begin()
-        sig = be.sign(credential_id=credential["credential_id"].encode(),
-                      signed_data=signed_data(ch, ORIGIN, RP_ID, True))
+        sig = be.sign(
+            credential_id=credential["credential_id"].encode(),
+            signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+        )
         now[0] += CHALLENGE_TIMEOUT_S + 1
         allow, reason = attempt(challenge=ch, signature=sig)
     else:  # invalid-signature
         ch = cer.begin()
-        sig = bytearray(be.sign(credential_id=credential["credential_id"].encode(),
-                                signed_data=signed_data(ch, ORIGIN, RP_ID, True)))
+        sig = bytearray(
+            be.sign(
+                credential_id=credential["credential_id"].encode(),
+                signed_data=signed_data(ch, ORIGIN, RP_ID, True),
+            )
+        )
         sig[0] ^= 0xFF
         allow, reason = attempt(challenge=ch, signature=bytes(sig))
 
@@ -397,10 +559,12 @@ def run_scenario(name: str, *, backend=None) -> dict:
 
 def render(res: dict) -> str:
     """Mänsklig text. Alltid banner; aldrig råa hemligheter."""
-    lines = [BANNER,
-             "scenario : %s" % res["scenario"],
-             "credential: %s" % res["credential"],
-             "resultat : %s (%s)" % (res["result"], res["reason"]),
-             "beslut   : %s" % res["decision"],
-             "notera   : FIDO2 skyddar adminidentitet; PAW–DEN skyddas av UART/HMAC."]
+    lines = [
+        BANNER,
+        "scenario : %s" % res["scenario"],
+        "credential: %s" % res["credential"],
+        "resultat : %s (%s)" % (res["result"], res["reason"]),
+        "beslut   : %s" % res["decision"],
+        "notera   : FIDO2 skyddar adminidentitet; PAW–DEN skyddas av UART/HMAC.",
+    ]
     return fido2_sanitize.sanitize("\n".join(lines))

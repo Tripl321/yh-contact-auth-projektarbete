@@ -67,9 +67,9 @@ GROUPS: list[dict] = [
                 "id": "RIGG-1",
                 "title": "Enheter fysiskt närvarande",
                 "instructions": "Samla UNO Q (STM32U585), DEN (RP2350), "
-                                "PAW (Feather RP2350), FIDO2-nyckel, "
-                                "e-paper-panel, originalkablar samt "
-                                "oscilloskop/logikanalysator på samma plats.",
+                "PAW (Feather RP2350), FIDO2-nyckel, "
+                "e-paper-panel, originalkablar samt "
+                "oscilloskop/logikanalysator på samma plats.",
                 "expected": "Alla enheter och instrument finns till hands.",
                 "hardware": "UNO Q, DEN, PAW, FIDO2, e-paper, osc./LA",
             },
@@ -77,8 +77,8 @@ GROUPS: list[dict] = [
                 "id": "RIGG-2",
                 "title": "Kabeldragning enligt bänkdokumentation",
                 "instructions": "Dra UART enligt docs/13 §3 (DEN TX GP0 -> PAW "
-                                "RX GP1, PAW TX GP0 -> DEN RX GP1, GND, "
-                                "115200 8N1) och UNO Q-enligt docs/15 §2.",
+                "RX GP1, PAW TX GP0 -> DEN RX GP1, GND, "
+                "115200 8N1) och UNO Q-enligt docs/15 §2.",
                 "expected": "Kabeldragning stämmer med tabellerna.",
                 "hardware": "DEN, PAW, UNO Q, kablar",
             },
@@ -86,9 +86,9 @@ GROUPS: list[dict] = [
                 "id": "RIGG-3",
                 "title": "Portar identifierade",
                 "instructions": "Anslut alla USB-serieportar; införskaffa "
-                                "portlistan (t.ex. `shallot device list`).",
+                "portlistan (t.ex. `shallot device list`).",
                 "expected": "UNO Q, DEN och PAW syns som serieportar; "
-                            "FIDO2 hittas som fysisk enhet.",
+                "FIDO2 hittas som fysisk enhet.",
                 "hardware": "UNO Q, DEN, PAW, FIDO2",
             },
         ],
@@ -100,9 +100,9 @@ GROUPS: list[dict] = [
                 "id": "K1",
                 "title": "SRAM-volatilitet: nyckel dör vid spänningsbortfall",
                 "instructions": "Provisionera giltig nyckel, bryt matningen "
-                                "till PAW/DEN, starta om och försök autentisera.",
+                "till PAW/DEN, starta om och försök autentisera.",
                 "expected": "Efter omstart krävs ny ceremoni; ingen auth "
-                            "utan nyckel.",
+                "utan nyckel.",
                 "evidence": "Loggutdrag efter omstart (nekad challenge).",
                 "hardware": "PAW, DEN",
             },
@@ -110,7 +110,7 @@ GROUPS: list[dict] = [
                 "id": "K2",
                 "title": "Ingen flash-persistens (UF2)",
                 "instructions": "Inspektera UF2/Flash efter provisionering och "
-                                "power-cykla enheten.",
+                "power-cykla enheten.",
                 "expected": "Nyckel/fingerprint får inte överleva i flash.",
                 "evidence": "UF2-inspektionslogg + dump-sökning.",
                 "hardware": "PAW, DEN",
@@ -119,8 +119,8 @@ GROUPS: list[dict] = [
                 "id": "K3",
                 "title": "Volatile-wipe biter i assembler",
                 "instructions": "Granska genererad assembler för "
-                                "secure_clear_key med repoets toolchain och "
-                                "verifiera nollställda buffertar i minnesdump.",
+                "secure_clear_key med repoets toolchain och "
+                "verifiera nollställda buffertar i minnesdump.",
                 "expected": "Nollställningen optimeras inte bort.",
                 "evidence": "Assemblerutdrag + minnesdump.",
                 "hardware": "PAW, DEN, build-verktyg",
@@ -129,9 +129,8 @@ GROUPS: list[dict] = [
                 "id": "K4",
                 "title": "Noll/korrupt nyckel nekar på enheten",
                 "instructions": "Provisionera giltig nyckel, korrumpera via "
-                                "omprovisionering med nollnyckel.",
-                "expected": "MSG_ERROR, därefter nekas challenge (fail "
-                            "closed).",
+                "omprovisionering med nollnyckel.",
+                "expected": "MSG_ERROR, därefter nekas challenge (fail " "closed).",
                 "evidence": "Logg MSG_ERROR + nekad challenge.",
                 "hardware": "PAW, DEN, UNO Q",
             },
@@ -139,9 +138,9 @@ GROUPS: list[dict] = [
                 "id": "K5",
                 "title": "Timeout/handshake-clear på riktig USB-serie",
                 "instructions": "Håll inne key-data > 10 s och starta ny "
-                                "handshake mitt i en session.",
+                "handshake mitt i en session.",
                 "expected": "PROV_FAILED, lagrad nyckel borta; ny handshake "
-                            "nollställer.",
+                "nollställer.",
                 "evidence": "Logg PROV_FAILED + efterföljande nekad challenge.",
                 "hardware": "DEN, UNO Q",
             },
@@ -149,9 +148,8 @@ GROUPS: list[dict] = [
                 "id": "K6",
                 "title": "Nyckel aldrig på tråd utom fingerprint",
                 "instructions": "Sätt logikanalysator på USB + dock-UART "
-                                "under ceremoni och session.",
-                "expected": "Endast 4-byte fingerprint på tråd, aldrig "
-                            "nyckelbyte.",
+                "under ceremoni och session.",
+                "expected": "Endast 4-byte fingerprint på tråd, aldrig " "nyckelbyte.",
                 "evidence": "Tråddump utan nyckelbyte.",
                 "hardware": "UNO Q, DEN, PAW, logikanalysator",
             },
@@ -164,10 +162,9 @@ GROUPS: list[dict] = [
                 "id": "H1",
                 "title": "RP2350 TRNG-entropi (get_rand_64)",
                 "instructions": "Kör flera sessioner och jämför nonce-värden; "
-                                "kör en körning med trasig/noll RNG om "
-                                "möjligt.",
-                "expected": "Nonce unika per session; noll-RNG fångas "
-                            "fail-closed.",
+                "kör en körning med trasig/noll RNG om "
+                "möjligt.",
+                "expected": "Nonce unika per session; noll-RNG fångas " "fail-closed.",
                 "evidence": "Nonce-lista över körningar.",
                 "hardware": "PAW, DEN",
             },
@@ -175,7 +172,7 @@ GROUPS: list[dict] = [
                 "id": "H2",
                 "title": "UART-signalintegritet 115200 över pogo",
                 "instructions": "Mät med oscilloskop: signalnivåer, bit-tid "
-                                "(86,8 us, ±2 %), 8N1, inga teckenförluster.",
+                "(86,8 us, ±2 %), 8N1, inga teckenförluster.",
                 "expected": "Ren signal över hela sessionen.",
                 "evidence": "Oscilloskopmätning (nivåer, bit-tid).",
                 "hardware": "PAW, DEN, oscilloskop",
@@ -184,9 +181,8 @@ GROUPS: list[dict] = [
                 "id": "H3",
                 "title": "2 s-deadline mot verkliga klockor",
                 "instructions": "Sänd RESPONSE försenat (> 2 s) och mät "
-                                "PAW-sidans svarstid under session.",
-                "expected": "Försenad RESPONSE nekas (kod 1); PAW håller "
-                            "budgeten.",
+                "PAW-sidans svarstid under session.",
+                "expected": "Försenad RESPONSE nekas (kod 1); PAW håller " "budgeten.",
                 "evidence": "Tidsstämplad logg (kod 1).",
                 "hardware": "PAW, DEN",
             },
@@ -194,9 +190,8 @@ GROUPS: list[dict] = [
                 "id": "H4",
                 "title": "Oprovisionerad PAW svarar ej",
                 "instructions": "Docka oprovisionerad PAW mot DEN och "
-                                "observera UART.",
-                "expected": "Ingen RESPONSE lämnar Serial1; DEN nekar "
-                            "(timeout).",
+                "observera UART.",
+                "expected": "Ingen RESPONSE lämnar Serial1; DEN nekar " "(timeout).",
                 "evidence": "LOG: timeout + ingen RESPONSE på tråd.",
                 "hardware": "PAW, DEN",
             },
@@ -204,20 +199,20 @@ GROUPS: list[dict] = [
                 "id": "H5",
                 "title": "UNO Q-ceremoni (knapptryck + USB-distribution)",
                 "instructions": "Begär distribution; vänta 5 s utan knapptryck, "
-                                "tryck sedan på A0.",
+                "tryck sedan på A0.",
                 "expected": "Ingen distribution utan knapptryck; distribution "
-                            "startar efter tryck.",
+                "startar efter tryck.",
                 "evidence": "Logg 'awaiting button press' + distribution efter "
-                            "tryck.",
+                "tryck.",
                 "hardware": "UNO Q",
             },
             {
                 "id": "H6",
                 "title": "SRAM-volatilitet vid spänningsbortfall (enhetssida)",
                 "instructions": "Provisionera, bryt matningen och starta om "
-                                "utan ny ceremoni.",
+                "utan ny ceremoni.",
                 "expected": "Nyckeln dör med kraften; enheten startar i "
-                            "nekande läge.",
+                "nekande läge.",
                 "evidence": "Omstartslogg + nekad challenge.",
                 "hardware": "PAW, DEN",
             },
@@ -225,7 +220,7 @@ GROUPS: list[dict] = [
                 "id": "H7",
                 "title": "e-paper-degradering under dock-session",
                 "instructions": "Dra bort e-paper-panel/kabel mitt i en "
-                                "session (eller använd död panel).",
+                "session (eller använd död panel).",
                 "expected": "DEN-beslutet påverkas inte; PAW svarar normalt.",
                 "evidence": "Autentiseringslogg med panel bortkopplad.",
                 "hardware": "PAW, DEN, e-paper",
@@ -239,9 +234,9 @@ GROUPS: list[dict] = [
                 "id": "PRO45-T1",
                 "title": "RNG-nyckelgenerering",
                 "instructions": "Starta UNO Q; vänta på TRNG health check och "
-                                "fingerprint-rad.",
+                "fingerprint-rad.",
                 "expected": "Health check OK, 16 byte, endast fingerprint i "
-                            "logg (inga clear-nyckelrader).",
+                "logg (inga clear-nyckelrader).",
                 "evidence": "Serial-utdrag med [PRO-45].",
                 "hardware": "UNO Q",
             },
@@ -249,9 +244,9 @@ GROUPS: list[dict] = [
                 "id": "PRO45-T2",
                 "title": "RNG-felåterhämtning",
                 "instructions": "Koppla bort kraft under nyckelgenereringen och "
-                                "återstarta.",
+                "återstarta.",
                 "expected": "ERROR_STATE, ingen export, secureWipeKey "
-                            "(fail closed).",
+                "(fail closed).",
                 "evidence": "Serial-utdrag med abortering.",
                 "hardware": "UNO Q",
             },
@@ -259,7 +254,7 @@ GROUPS: list[dict] = [
                 "id": "PRO46-T3",
                 "title": "USB-distribution till DEN",
                 "instructions": "Begär distribution till TARGET_PLC och "
-                                "övervaka båda sidornas loggar.",
+                "övervaka båda sidornas loggar.",
                 "expected": "Handshake, CRC, hash-match mellan UNO Q och DEN.",
                 "evidence": "Båda sidornas loggar + hash-match.",
                 "hardware": "UNO Q, DEN",
@@ -268,7 +263,7 @@ GROUPS: list[dict] = [
                 "id": "PRO46-T4",
                 "title": "USB-distribution till PAW (PRO-48)",
                 "instructions": "Begär distribution till TARGET_PAW och "
-                                "övervaka PAW-loggen.",
+                "övervaka PAW-loggen.",
                 "expected": "Handshake, CRC, hash-match (PRO-48).",
                 "evidence": "PAW-loggen + hash-match.",
                 "hardware": "UNO Q, PAW",
@@ -277,11 +272,10 @@ GROUPS: list[dict] = [
                 "id": "PRO46-T5",
                 "title": "Operatörsbekräftelse (knappkrav)",
                 "instructions": "Begär distribution och vänta 5 s utan tryck; "
-                                "tryck sedan A0.",
+                "tryck sedan A0.",
                 "expected": "Ingen distribution utan tryck; distribution "
-                            "startar efter tryck.",
-                "evidence": "Logg 'awaiting button press' + timeout/efter "
-                            "tryck.",
+                "startar efter tryck.",
+                "evidence": "Logg 'awaiting button press' + timeout/efter " "tryck.",
                 "hardware": "UNO Q",
             },
             {
@@ -289,18 +283,17 @@ GROUPS: list[dict] = [
                 "title": "Signal- och tidsverifiering 115200",
                 "instructions": "Mät TX/RX med oscilloskop under distribution.",
                 "expected": "HIGH >= 0,7*Vcc, LOW <= 0,3*Vcc, bit-tid 86,8 us "
-                            "±2 %, inga teckenförluster.",
-                "evidence": "Oscilloskopmätning + distribution uten "
-                            "teckenförlust.",
+                "±2 %, inga teckenförluster.",
+                "evidence": "Oscilloskopmätning + distribution uten " "teckenförlust.",
                 "hardware": "UNO Q, DEN/PAW, oscilloskop",
             },
             {
                 "id": "PRO46-T7",
                 "title": "Avbruten USB-överföring (fail closed)",
                 "instructions": "Koppla loss kabeln under key-data och "
-                                "återanslut efter ~1 s.",
+                "återanslut efter ~1 s.",
                 "expected": "distribution_failed, ingen partiell nyckel, "
-                            "buffert rensad.",
+                "buffert rensad.",
                 "evidence": "Logg PROV_FAILED + rensad buffert.",
                 "hardware": "UNO Q, DEN",
             },
@@ -308,7 +301,7 @@ GROUPS: list[dict] = [
                 "id": "PRO46-T8",
                 "title": "CRC-fel under distribution",
                 "instructions": "Inför en man-in-the-middle-enhet som ändrar 1 "
-                                "byte i key-paketet.",
+                "byte i key-paketet.",
                 "expected": "CRC mismatch, MSG_ERROR, ingen nyckel lagras.",
                 "evidence": "Logg CRC mismatch + MSG_ERROR.",
                 "hardware": "UNO Q, DEN, MitM-enhet",
@@ -322,8 +315,8 @@ GROUPS: list[dict] = [
                 "id": "PT-01",
                 "title": "Replay av giltigt RESPONSE",
                 "instructions": "Fånga giltigt RESPONSE på dock-UART med "
-                                "logikanalysator och återinjicera i nästa "
-                                "session.",
+                "logikanalysator och återinjicera i nästa "
+                "session.",
                 "expected": "DENIED (HMAC_MISMATCH, kod 5), ACK 0x00.",
                 "evidence": "Logg 'hmac mismatch' + ACK-byte på tråd.",
                 "hardware": "PAW, DEN, logikanalysator",
@@ -332,9 +325,9 @@ GROUPS: list[dict] = [
                 "id": "PT-02",
                 "title": "Felaktig nyckel (avvikande master)",
                 "instructions": "Provisionera PAW med annan nyckel än DEN och "
-                                "kör session; fotografera e-paper efter 60 s.",
+                "kör session; fotografera e-paper efter 60 s.",
                 "expected": "DENIED (HMAC_MISMATCH), PAW FAILED, ingen "
-                            "accessindikering kvar efter 30 s.",
+                "accessindikering kvar efter 30 s.",
                 "evidence": "Båda sidors loggar + e-paper-foto efter 60 s.",
                 "hardware": "PAW, DEN, e-paper",
             },
@@ -342,9 +335,9 @@ GROUPS: list[dict] = [
                 "id": "PT-03",
                 "title": "Timeout / trunkerad RESPONSE",
                 "instructions": "Sänd ofullständig RESPONSE (5 av N byte) "
-                                "inom 2 s; separat: komplett men försenad.",
+                "inom 2 s; separat: komplett men försenad.",
                 "expected": "DENIED (TIMEOUT, kod 1); försenad giltig "
-                            "RESPONSE nekas.",
+                "RESPONSE nekas.",
                 "evidence": "Logg 'timeout' + tidsstämplad tråddump.",
                 "hardware": "PAW, DEN",
             },
@@ -352,10 +345,10 @@ GROUPS: list[dict] = [
                 "id": "PT-04",
                 "title": "Paketförlust och korruption",
                 "instructions": "Bitfel i nonce/HMAC/CRC (ett i taget), fel "
-                                "ramtyp mot CHALLENGE_SENT, överstor payload, "
-                                "resynk-brus före SYNC.",
+                "ramtyp mot CHALLENGE_SENT, överstor payload, "
+                "resynk-brus före SYNC.",
                 "expected": "DENIED med kod 2/3/4/5; skanner återhämtar; loop "
-                            "svarar < 100 ms (ingen krasch/hängning).",
+                "svarar < 100 ms (ingen krasch/hängning).",
                 "evidence": "Kod per injiceringsfall + svarstidsobservation.",
                 "hardware": "PAW, DEN",
             },
@@ -363,11 +356,11 @@ GROUPS: list[dict] = [
                 "id": "PT-05",
                 "title": "Fysisk possession",
                 "instructions": "(a) Läs av flash via UF2/USB-masslagring; "
-                                "(b) autentisera stulen PAW efter nyckelrensning; "
-                                "(c) flasha modifierad firmware via BOOTSEL.",
+                "(b) autentisera stulen PAW efter nyckelrensning; "
+                "(c) flasha modifierad firmware via BOOTSEL.",
                 "expected": "(a) ingen nyckel i dumpen; (b) DENIED; (c) "
-                            "angripar­kod exekveras — bekräftad designbegränsning "
-                            "(ingen secure boot), dokumenteras som förväntat.",
+                "angripar­kod exekveras — bekräftad designbegränsning "
+                "(ingen secure boot), dokumenteras som förväntat.",
                 "evidence": "Dump-hash + söklogg, DEN-logg, foto.",
                 "hardware": "PAW, DEN, testlabb",
             },
@@ -375,12 +368,12 @@ GROUPS: list[dict] = [
                 "id": "PT-06",
                 "title": "Break-glass-missbruk",
                 "instructions": "(a) CONFIRM utan ARM; (b) fel ticket; "
-                                "(c) ticket återanvänd efter förfall; "
-                                "(d) okänt kommando i beviljat läge; "
-                                "(e) bekräfta efter ARM-fönster; "
-                                "(f) en person utför båda stegen.",
+                "(c) ticket återanvänd efter förfall; "
+                "(d) okänt kommando i beviljat läge; "
+                "(e) bekräfta efter ARM-fönster; "
+                "(f) en person utför båda stegen.",
                 "expected": "(a–e) DENIED + audit + låst; förfall efter 120 s; "
-                            "(f) tekniskt möjligt — dokumenterad restrisk.",
+                "(f) tekniskt möjligt — dokumenterad restrisk.",
                 "evidence": "[AUDIT]-sekvenser per delfall.",
                 "hardware": "DEN",
             },
@@ -388,9 +381,9 @@ GROUPS: list[dict] = [
                 "id": "PT-07",
                 "title": "Provisioneringsstörning",
                 "instructions": "Avbryt PRO-46 mitt i, fel CRC, fel längd, "
-                                "nollnyckel; starta ny handshake mitt i session.",
+                "nollnyckel; starta ny handshake mitt i session.",
                 "expected": "PROV_FAILED, buffertar torkade, lagrad nyckel "
-                            "borta; DEN stannar i DENIED.",
+                "borta; DEN stannar i DENIED.",
                 "evidence": "Logg PROV_FAILED + nekad challenge.",
                 "hardware": "UNO Q, DEN",
             },
@@ -403,9 +396,9 @@ GROUPS: list[dict] = [
                 "id": "BG-1",
                 "title": "Legitim break-glass-ceremoni på enhet",
                 "instructions": "Genomför ticket -> ARM -> CONFIRM -> åtkomst "
-                                "och låt föreskrivet fönster förfalla.",
+                "och låt föreskrivet fönster förfalla.",
                 "expected": "Beviljat tillstånd förfaller (auto-relock); audit "
-                            "+ larm loggas; ordinarie auth-väg orörd.",
+                "+ larm loggas; ordinarie auth-väg orörd.",
                 "evidence": "Ceremoni-loggar inkl. auto-relock och audit.",
                 "hardware": "DEN",
             },
@@ -413,10 +406,10 @@ GROUPS: list[dict] = [
                 "id": "PNL-1",
                 "title": "Panelbeteende (e-paper) under session",
                 "instructions": "Verifiera AUTHENTICATING/AUTHENTICATED/FAILED "
-                                "samt att ÅTKOMST-visningen förfaller efter "
-                                "30 s (PRO-95).",
+                "samt att ÅTKOMST-visningen förfaller efter "
+                "30 s (PRO-95).",
                 "expected": "Visar beviljande bara vid verklig session; "
-                            "förfaller efter 30 s till AUTHENTICATING.",
+                "förfaller efter 30 s till AUTHENTICATING.",
                 "evidence": "E-paper-foto per tillstånd + tidpunkt.",
                 "hardware": "PAW, e-paper",
             },
@@ -445,18 +438,19 @@ def run_list(checklist=None) -> int:
 #: Kända identitetsmarkörer per roll (banderoller/loggrader från firmware).
 #: Matchning sker mot seriell logg — aldrig mot portnamn/Vid:Pid-gissning.
 IDENTIFY_NEEDLES = {
-    "DEN": ("SHALLOT — PLC Complete Firmware", "[PRO-47]", "[DEN] ",
-            "Pico 2"),
-    "PAW": ("SHALLOT — PAW Key Receiver", "[PRO-48]", "[PRO-84]",
-            "Feather RP2350"),
-    "UNO Q": ("SHALLOT — UNO Q Key Authority", "[PRO-45]", "[PRO-46]",
-              "STM32U585"),
+    "DEN": ("SHALLOT — PLC Complete Firmware", "[PRO-47]", "[DEN] ", "Pico 2"),
+    "PAW": ("SHALLOT — PAW Key Receiver", "[PRO-48]", "[PRO-84]", "Feather RP2350"),
+    "UNO Q": ("SHALLOT — UNO Q Key Authority", "[PRO-45]", "[PRO-46]", "STM32U585"),
 }
 
 
-def run_identify(list_ports_fn=None, read_fn=None, baud: int = 115200,
-                 timeout: float = 10.0,
-                 log_path: str | None = None) -> dict:
+def run_identify(
+    list_ports_fn=None,
+    read_fn=None,
+    baud: int = 115200,
+    timeout: float = 10.0,
+    log_path: str | None = None,
+) -> dict:
     """Identifiera DEN/PAW/UNO Q-portar skrivskyddat. Returnerar mappning.
 
     Öppnar varje serieport för läsning och matchar firmware-banderoller.
@@ -465,22 +459,30 @@ def run_identify(list_ports_fn=None, read_fn=None, baud: int = 115200,
     till JSONL som RIGG-3-evidens.
     """
     from shallot_cli import fido2_sanitize
+
     if list_ports_fn is None:
         from shallot_cli import serial_adapters
+
         list_ports_fn = serial_adapters.list_ports
     if read_fn is None:
         from shallot_cli.commands import monitor_cmd
 
         def read_fn(port, baud, needles, timeout):
-            return monitor_cmd.read_until(port, baud, list(needles),
-                                          timeout)
+            return monitor_cmd.read_until(port, baud, list(needles), timeout)
+
     try:
         ports = list_ports_fn()
     except Exception as e:
-        print("error: kunde inte lista serieportar: %s"
-              % fido2_sanitize.sanitize(str(e)))
-        return {"timestamp": _ts(), "type": "bench", "action": "identify",
-                "error": "list_ports misslyckades", "mapping": []}
+        print(
+            "error: kunde inte lista serieportar: %s" % fido2_sanitize.sanitize(str(e))
+        )
+        return {
+            "timestamp": _ts(),
+            "type": "bench",
+            "action": "identify",
+            "error": "list_ports misslyckades",
+            "mapping": [],
+        }
     needle_to_role = {}
     for role, needles in IDENTIFY_NEEDLES.items():
         for needle in needles:
@@ -493,27 +495,45 @@ def run_identify(list_ports_fn=None, read_fn=None, baud: int = 115200,
         dev = str(p.get("device", ""))
         hit, line = read_fn(dev, baud, list(needle_to_role), timeout)
         if hit is None:
-            mapping.append({"port": dev, "roll": "oidentifierad",
-                            "bevis": ""})
+            mapping.append({"port": dev, "roll": "oidentifierad", "bevis": ""})
         else:
             bevis = "%s: %s" % (hit, (line or "").strip())
-            mapping.append({"port": dev,
-                            "roll": needle_to_role.get(hit,
-                                                       "oidentifierad"),
-                            "bevis": bevis})
+            mapping.append(
+                {
+                    "port": dev,
+                    "roll": needle_to_role.get(hit, "oidentifierad"),
+                    "bevis": bevis,
+                }
+            )
     for m in mapping:
-        print("  %-16s %-14s %s" % (
-            fido2_sanitize.sanitize(m["port"]),
-            m["roll"],
-            fido2_sanitize.sanitize(m["bevis"]) if m["bevis"]
-            else "(ingen träff — verifiera manuellt med monitor)"))
+        print(
+            "  %-16s %-14s %s"
+            % (
+                fido2_sanitize.sanitize(m["port"]),
+                m["roll"],
+                (
+                    fido2_sanitize.sanitize(m["bevis"])
+                    if m["bevis"]
+                    else "(ingen träff — verifiera manuellt med monitor)"
+                ),
+            )
+        )
     known = [m["roll"] for m in mapping if m["roll"] != "oidentifierad"]
-    if (len(set(known)) != len(known)
-            or any(m["roll"] == "oidentifierad" for m in mapping)):
-        print("Varning: dubblett eller oidentifierad roll — "
-              "verifiera manuellt med monitor innan PASS.")
-    result = {"timestamp": _ts(), "type": "bench", "action": "identify",
-              "baud": baud, "timeout_s": timeout, "mapping": mapping}
+    if len(set(known)) != len(known) or any(
+        m["roll"] == "oidentifierad" for m in mapping
+    ):
+        print(
+            "Varning: dubblett eller oidentifierad roll — "
+            "verifiera manuellt med monitor innan PASS."
+        )
+    result = {
+        "timestamp": _ts(),
+        "type": "bench",
+        "action": "identify",
+        "baud": baud,
+        "timeout_s": timeout,
+        "mapping": mapping,
+    }
     _emit(_log_path(log_path), result)
     return result
 
@@ -534,9 +554,16 @@ def _confirm_unoq(prompt: str) -> bool:
     return ans in ("j", "ja", "y", "yes")
 
 
-def run_unoq(port: str, cmd: str, baud: int = 115200, timeout: float = 20.0,
-             yes: bool = False, confirm_fn=None, serial_open_fn=None,
-             log_path: str | None = None) -> int:
+def run_unoq(
+    port: str,
+    cmd: str,
+    baud: int = 115200,
+    timeout: float = 20.0,
+    yes: bool = False,
+    confirm_fn=None,
+    serial_open_fn=None,
+    log_path: str | None = None,
+) -> int:
     """Skicka ett konsolkommando till UNO Q och fånga svaret som evidens.
 
     ``s`` = status (läsande, ingen bekräftelse). ``g``/``1``/``2`` ändrar
@@ -546,25 +573,31 @@ def run_unoq(port: str, cmd: str, baud: int = 115200, timeout: float = 20.0,
     saneras, visas och loggas till JSONL. Returnerar exit-kod.
     """
     from shallot_cli import fido2_sanitize
+
     cmd = (cmd or "").strip().lower()
     if cmd not in UNOQ_COMMANDS:
-        raise ValueError("okänt UNO Q-kommando: %r (välj: %s)"
-                         % (cmd, ", ".join(UNOQ_COMMANDS)))
+        raise ValueError(
+            "okänt UNO Q-kommando: %r (välj: %s)" % (cmd, ", ".join(UNOQ_COMMANDS))
+        )
     if not isinstance(port, str) or "\x00" in port or not port.strip():
         print("error: ogiltig --port.", file=sys.stderr)
         return 2
     if cmd != "s" and not yes:
         ask = confirm_fn or _confirm_unoq
-        print("Skickar '%s' till UNO Q på %s (ändrar enhetens tillstånd)."
-              % (cmd, port))
+        print(
+            "Skickar '%s' till UNO Q på %s (ändrar enhetens tillstånd)." % (cmd, port)
+        )
         if cmd in ("1", "2"):
-            print("Distribution kräver dessutom fysiskt tryck på A0-knappen — "
-                  "det steget kan inte automatiseras.")
+            print(
+                "Distribution kräver dessutom fysiskt tryck på A0-knappen — "
+                "det steget kan inte automatiseras."
+            )
         if not ask("Fortsätt"):
             print("Avbrutet — inget skickades.", file=sys.stderr)
             return 2
     if serial_open_fn is None:
         from shallot_cli import serial_adapters
+
         serial_open_fn = serial_adapters.open_console
     try:
         ser = serial_open_fn(port, baud=baud, timeout=1.0)
@@ -572,8 +605,10 @@ def run_unoq(port: str, cmd: str, baud: int = 115200, timeout: float = 20.0,
         print("error: %s" % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
         return 1
     except Exception as e:
-        print("error: kunde inte öppna port: %s"
-              % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
+        print(
+            "error: kunde inte öppna port: %s" % fido2_sanitize.sanitize(str(e)),
+            file=sys.stderr,
+        )
         return 1
     if cmd in ("1", "2"):
         print("Skickat '%s' — tryck nu på A0-knappen på UNO Q." % cmd)
@@ -588,20 +623,28 @@ def run_unoq(port: str, cmd: str, baud: int = 115200, timeout: float = 20.0,
                 if not raw:
                     continue
                 clean = fido2_sanitize.sanitize(
-                    raw.decode("utf-8", errors="replace").rstrip("\n"))
+                    raw.decode("utf-8", errors="replace").rstrip("\n")
+                )
                 lines.append(clean)
                 print("  %s" % clean)
     except KeyboardInterrupt:
         print("\nAvbrutet av användaren.")
-    result = {"timestamp": _ts(), "type": "bench", "action": "unoq",
-              "port": port, "cmd": cmd, "baud": baud,
-              "output": "\n".join(lines)}
+    result = {
+        "timestamp": _ts(),
+        "type": "bench",
+        "action": "unoq",
+        "port": port,
+        "cmd": cmd,
+        "baud": baud,
+        "output": "\n".join(lines),
+    }
     _emit(_log_path(log_path), result)
     return 0
 
 
-def record_step(step_id: str, resultat: str, evidence: str = "",
-                log_path: str | None = None) -> dict:
+def record_step(
+    step_id: str, resultat: str, evidence: str = "", log_path: str | None = None
+) -> dict:
     """Bokför en operatörsbekräftad dom för ett steg utanför run_verify.
 
     Ingen övergripande dom sätts här — posten är ett enskilt verifierat
@@ -612,13 +655,19 @@ def record_step(step_id: str, resultat: str, evidence: str = "",
     if step_id not in known:
         raise ValueError("okänt steg: %s" % step_id)
     if resultat not in ("PASS", "FAIL", "SKIP"):
-        raise ValueError("ogiltigt resultat: %r (välj PASS/FAIL/SKIP)"
-                         % (resultat,))
+        raise ValueError("ogiltigt resultat: %r (välj PASS/FAIL/SKIP)" % (resultat,))
     gname, step = known[step_id]
-    out = {"steg": step_id, "grupp": gname, "titel": step["title"],
-           "resultat": resultat, "evidence": evidence}
-    _emit(_log_path(log_path), {"timestamp": _ts(), "type": "bench",
-                                "action": "step", **out})
+    out = {
+        "steg": step_id,
+        "grupp": gname,
+        "titel": step["title"],
+        "resultat": resultat,
+        "evidence": evidence,
+    }
+    _emit(
+        _log_path(log_path),
+        {"timestamp": _ts(), "type": "bench", "action": "step", **out},
+    )
     return out
 
 
@@ -650,10 +699,13 @@ def _verdict_default(step: dict, index: int, total: int) -> dict:
     return {"resultat": resultat, "evidence": evidence}
 
 
-def run_verify(checklist=None, step_fn=None,
-               log_path: str | None = None,
-               summary_path: str | None = None,
-               only: list[str] | None = None) -> dict:
+def run_verify(
+    checklist=None,
+    step_fn=None,
+    log_path: str | None = None,
+    summary_path: str | None = None,
+    only: list[str] | None = None,
+) -> dict:
     """Kör checklistan steg-för-steg. Returnerar sammandrag.
 
     Varje steg skickas till step_fn och besvaras med PASS/FAIL/SKIP plus
@@ -670,8 +722,9 @@ def run_verify(checklist=None, step_fn=None,
         known = [s["id"] for _g, s in flat]
         unknown = [i for i in wanted if i not in known]
         if unknown:
-            raise ValueError("okänt steg: %s (välj: %s)"
-                             % (", ".join(unknown), ", ".join(known)))
+            raise ValueError(
+                "okänt steg: %s (välj: %s)" % (", ".join(unknown), ", ".join(known))
+            )
         flat = [(g, s) for g, s in flat if s["id"] in set(wanted)]
     log = _log_path(log_path)
     summary_file = _summary_path(summary_path)
@@ -686,12 +739,15 @@ def run_verify(checklist=None, step_fn=None,
             print("== %s ==" % gname)
             current = gname
         res = step_fn(step, i, total)
-        out = {"steg": step["id"], "grupp": gname, "titel": step["title"],
-               "resultat": res.get("resultat"),
-               "evidence": res.get("evidence", "")}
+        out = {
+            "steg": step["id"],
+            "grupp": gname,
+            "titel": step["title"],
+            "resultat": res.get("resultat"),
+            "evidence": res.get("evidence", ""),
+        }
         steps_out.append(out)
-        _emit(log, {"timestamp": _ts(), "type": "bench", "action": "step",
-                    **out})
+        _emit(log, {"timestamp": _ts(), "type": "bench", "action": "step", **out})
 
     fails = [s for s in steps_out if s["resultat"] == "FAIL"]
     verified = [s for s in steps_out if s["resultat"] == "PASS"]
@@ -708,8 +764,10 @@ def run_verify(checklist=None, step_fn=None,
         note = "fails: %s" % ", ".join(s["steg"] for s in fails)
     else:
         note = "verifierade %d/%d, skippade: %s" % (
-            len(verified), total, ", ".join(s["steg"] for s in skipped)
-            or "-")
+            len(verified),
+            total,
+            ", ".join(s["steg"] for s in skipped) or "-",
+        )
 
     summary = {
         "timestamp": _ts(),
@@ -742,17 +800,23 @@ def _render_summary(summary: dict) -> str:
     lines.append("Tid: %s" % summary["timestamp"])
     lines.append("Övergripande: %s" % summary["overall"])
     lines.append("Godkända: %d / %d" % (summary["godkända"], summary["total"]))
-    lines.append("Nekade: %d   Skippade: %d"
-                 % (summary["nekade"], summary["skippade"]))
+    lines.append("Nekade: %d   Skippade: %d" % (summary["nekade"], summary["skippade"]))
     lines.append("Not: %s" % summary["verification_note"])
     lines.append("")
     lines.append("Steg:")
     for s in summary.get("steps", []):
         mark = {"PASS": "OK", "FAIL": "NEKAD", "SKIP": "HOPP"}.get(
-            s.get("resultat"), "?")
-        lines.append("  %-9s %-6s %s%s" % (
-            s.get("steg"), mark, s.get("titel"),
-            (" — %s" % s["evidence"]) if s.get("evidence") else ""))
+            s.get("resultat"), "?"
+        )
+        lines.append(
+            "  %-9s %-6s %s%s"
+            % (
+                s.get("steg"),
+                mark,
+                s.get("titel"),
+                (" — %s" % s["evidence"]) if s.get("evidence") else "",
+            )
+        )
     lines.append("")
     lines.append("Inga hemligheter i denna export; evidens är loggutdrag/")
     lines.append("sökvägar, inte produktionsnycklar.")
@@ -769,8 +833,9 @@ def latest_result(log_path: str | None = None) -> dict | None:
     return last
 
 
-def show_latest(log_path: str | None = None,
-                summary_path: str | None = None) -> dict | None:
+def show_latest(
+    log_path: str | None = None, summary_path: str | None = None
+) -> dict | None:
     last = latest_result(log_path)
     if last is None:
         print("Inga tidigare bänkverifieringsresultat hittade.")

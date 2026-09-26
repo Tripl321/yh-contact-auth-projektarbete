@@ -5,6 +5,7 @@ C-harnesset `paw_session_host.c` kompileras mot den faktiska
 ProvisioningProtocol) på host och exekveras. Inga Python-speglar: allt
 tillstånd ägs av biblioteket och valideras C-seitigt.
 """
+
 import pathlib
 import subprocess
 import tempfile
@@ -22,12 +23,25 @@ def _build():
     tmp = tempfile.TemporaryDirectory()
     exe = str(pathlib.Path(tmp.name) / "paw_session_host")
     proc = subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-         "-I", str(PAW_HDR_DIR),
-         "-I", str(PROV_HDR_DIR),
-         "-I", str(CRYPTO_HDR_DIR),
-         str(HARNESS), "-o", exe],
-        capture_output=True, text=True, timeout=120,
+        [
+            "cc",
+            "-std=c99",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(PAW_HDR_DIR),
+            "-I",
+            str(PROV_HDR_DIR),
+            "-I",
+            str(CRYPTO_HDR_DIR),
+            str(HARNESS),
+            "-o",
+            exe,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     if proc.returncode != 0:
         tmp.cleanup()

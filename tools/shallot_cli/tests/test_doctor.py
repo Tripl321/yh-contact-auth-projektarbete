@@ -7,7 +7,6 @@ ofullständigt guard flaggas — se de negativa testerna nedan.
 """
 
 import pytest
-
 from shallot_cli.commands import doctor_cmd
 
 KEY_LINE = "static const uint8_t MASTER_KEY[16] = {0};\n"
@@ -41,9 +40,7 @@ def test_guard_accepts_real_fail_closed_guard(tmp_path, monkeypatch):
 
 
 def test_guard_accepts_if_not_defined_form(tmp_path, monkeypatch):
-    content = (
-        "#if !defined(EDGE_ALLOW_DEV_KEY)\n#error bench only\n#endif\n" + KEY_LINE
-    )
+    content = "#if !defined(EDGE_ALLOW_DEV_KEY)\n#error bench only\n#endif\n" + KEY_LINE
     assert _guard_result(tmp_path, monkeypatch, content) == []
 
 

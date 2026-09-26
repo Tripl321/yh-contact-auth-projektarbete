@@ -22,11 +22,23 @@ def _harness():
     tmp = tempfile.TemporaryDirectory()
     exe = str(pathlib.Path(tmp.name) / "pvect")
     proc = subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-         "-I", str(PROV_HDR.parent),
-         "-I", str(ROOT / "libraries/ShallotCrypto/src"),
-         str(ROOT / "tests/provisioning_vectors_host.c"), "-o", exe],
-        capture_output=True, text=True, timeout=120,
+        [
+            "cc",
+            "-std=c99",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(PROV_HDR.parent),
+            "-I",
+            str(ROOT / "libraries/ShallotCrypto/src"),
+            str(ROOT / "tests/provisioning_vectors_host.c"),
+            "-o",
+            exe,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     return tmp, exe
@@ -47,8 +59,9 @@ def test_corpus_ids_unique():
 def test_c_key_data_build_and_crc(pvect):
     """C-harness bygger KEY_DATA-paketet ur corpuset: CRC(matchar BE)."""
     vec = next(v for v in VECTORS if v["id"] == "key_data")
-    out = subprocess.run([pvect, "keydata", vec["key_hex"]],
-                         capture_output=True, text=True, timeout=30)
+    out = subprocess.run(
+        [pvect, "keydata", vec["key_hex"]], capture_output=True, text=True, timeout=30
+    )
     assert out.returncode == 0, out.stdout + out.stderr
     frame = out.stdout.strip()
     assert len(frame) == 44  # 22 byte
@@ -60,11 +73,19 @@ def test_c_key_data_build_and_crc(pvect):
 
 def test_c_crc_verifies_and_rejects(pvect):
     vec = next(v for v in VECTORS if v["id"] == "key_data")
-    ok = subprocess.run([pvect, "verify", vec["key_hex"], vec["expect_crc_be"]],
-                        capture_output=True, text=True, timeout=30)
+    ok = subprocess.run(
+        [pvect, "verify", vec["key_hex"], vec["expect_crc_be"]],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     assert ok.returncode == 0 and ok.stdout.strip() == "OK"
-    bad = subprocess.run([pvect, "verify", vec["key_hex"], "00000001"],
-                         capture_output=True, text=True, timeout=30)
+    bad = subprocess.run(
+        [pvect, "verify", vec["key_hex"], "00000001"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     assert bad.returncode != 0 and "ERR" in bad.stdout
 
 
@@ -72,6 +93,7 @@ def test_mockprov_crc_matches_corpus():
     """MockProv-mirrors (binascii) ger samma CRC som corpuset — båda
     sidor av 0xA-tråden låsta mot samma sanning."""
     import binascii
+
     vec = next(v for v in VECTORS if v["id"] == "key_data")
     crc = binascii.crc32(bytes.fromhex(vec["key_hex"])) & 0xFFFFFFFF
     assert "%08x" % crc == vec["expect_crc_be"]

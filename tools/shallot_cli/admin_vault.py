@@ -32,13 +32,15 @@ def backend_name() -> str:
         return "secret-tool"
     raise RuntimeError(
         "inget OS-säkert lager tillgängligt (kräver macOS Keychain eller "
-        "secret-tool) — vägrar lagra kodhash i fil")
+        "secret-tool) — vägrar lagra kodhash i fil"
+    )
 
 
 def _run(argv: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(argv, input=stdin, shell=False,
-                              capture_output=True, text=True, timeout=30)
+        return subprocess.run(
+            argv, input=stdin, shell=False, capture_output=True, text=True, timeout=30
+        )
     except FileNotFoundError:
         raise RuntimeError("OS-lagrets binär hittades inte.") from None
     except subprocess.TimeoutExpired:
@@ -52,13 +54,34 @@ def store_hash(record: dict) -> None:
     blob = json.dumps(record)
     name = backend_name()
     if name == "macos-keychain":
-        proc = _run(["security", "add-generic-password",
-                     "-a", ACCOUNT, "-s", SERVICE, "-w", blob, "-U"])
+        proc = _run(
+            [
+                "security",
+                "add-generic-password",
+                "-a",
+                ACCOUNT,
+                "-s",
+                SERVICE,
+                "-w",
+                blob,
+                "-U",
+            ]
+        )
         if proc.returncode != 0:
             raise RuntimeError("kunde inte lagra kodhash: %s" % proc.stderr.strip())
         return
-    proc = _run(["secret-tool", "store", "--label=SHALLOT admin-kodhash",
-                 "service", SERVICE, "account", ACCOUNT], stdin=blob)
+    proc = _run(
+        [
+            "secret-tool",
+            "store",
+            "--label=SHALLOT admin-kodhash",
+            "service",
+            SERVICE,
+            "account",
+            ACCOUNT,
+        ],
+        stdin=blob,
+    )
     if proc.returncode != 0:
         raise RuntimeError("kunde inte lagra kodhash: %s" % proc.stderr.strip())
 
@@ -67,8 +90,9 @@ def load_hash() -> dict | None:
     """Hämta hashpost, eller None om ingen finns."""
     name = backend_name()
     if name == "macos-keychain":
-        proc = _run(["security", "find-generic-password",
-                     "-a", ACCOUNT, "-s", SERVICE, "-w"])
+        proc = _run(
+            ["security", "find-generic-password", "-a", ACCOUNT, "-s", SERVICE, "-w"]
+        )
         if proc.returncode != 0:
             return None  # saknas (eller oläsbar) — anroparen avgör
         try:
@@ -76,8 +100,7 @@ def load_hash() -> dict | None:
         except ValueError:
             raise RuntimeError("korrupt kodhash i OS-lagret.") from None
         return data if isinstance(data, dict) else None
-    proc = _run(["secret-tool", "lookup", "service", SERVICE,
-                 "account", ACCOUNT])
+    proc = _run(["secret-tool", "lookup", "service", SERVICE, "account", ACCOUNT])
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     try:
@@ -91,7 +114,6 @@ def delete_hash() -> None:
     """Radera hashpost. Idempotent — saknad post är OK."""
     name = backend_name()
     if name == "macos-keychain":
-        _run(["security", "delete-generic-password",
-              "-a", ACCOUNT, "-s", SERVICE])
+        _run(["security", "delete-generic-password", "-a", ACCOUNT, "-s", SERVICE])
         return
     _run(["secret-tool", "clear", "service", SERVICE, "account", ACCOUNT])

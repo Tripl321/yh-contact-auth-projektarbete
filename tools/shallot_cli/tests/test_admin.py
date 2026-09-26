@@ -4,7 +4,6 @@ och getpass fakes — rör aldrig riktigt Keychain eller terminal."""
 import json
 
 import pytest
-
 from shallot_cli import admin, admin_vault, cli, fido2
 from shallot_cli import fido2_store as store
 
@@ -115,8 +114,7 @@ def test_reset_code_full_flow_with_physical_assertion(vault, monkeypatch, capsys
     _enroll(vault, "111111")
     _code(monkeypatch, "111111")
     assert admin.run_login("admin-01", mock=True, vault=vault) == 0
-    monkeypatch.setattr(admin, "_hardware_assertion_ok",
-                        lambda user: (True, "ok"))
+    monkeypatch.setattr(admin, "_hardware_assertion_ok", lambda user: (True, "ok"))
     monkeypatch.setattr(admin.secrets, "randbelow", lambda n: 654321)
     _code(monkeypatch, "654321")
     capsys.readouterr()
@@ -140,8 +138,7 @@ def test_reset_code_mismatch_stores_nothing(vault, monkeypatch):
     _enroll(vault, "111111")
     _code(monkeypatch, "111111")
     assert admin.run_login("admin-01", mock=True, vault=vault) == 0
-    monkeypatch.setattr(admin, "_hardware_assertion_ok",
-                        lambda user: (True, "ok"))
+    monkeypatch.setattr(admin, "_hardware_assertion_ok", lambda user: (True, "ok"))
     monkeypatch.setattr(admin.secrets, "randbelow", lambda n: 654321)
     _code(monkeypatch, "000000")
     assert admin.run_reset_code(confirm=True, vault=vault) == 1
@@ -150,8 +147,7 @@ def test_reset_code_mismatch_stores_nothing(vault, monkeypatch):
 
 def test_reset_code_bootstrap_without_session(vault, monkeypatch):
     _register_admin()
-    monkeypatch.setattr(admin, "_hardware_assertion_ok",
-                        lambda user: (True, "ok"))
+    monkeypatch.setattr(admin, "_hardware_assertion_ok", lambda user: (True, "ok"))
     monkeypatch.setattr(admin.secrets, "randbelow", lambda n: 222222)
     monkeypatch.setattr("builtins.input", lambda *a: "admin-01")
     _code(monkeypatch, "222222")
@@ -164,8 +160,9 @@ def test_reset_code_requires_physical_assertion(vault, monkeypatch):
     _enroll(vault, "111111")
     _code(monkeypatch, "111111")
     assert admin.run_login("admin-01", mock=True, vault=vault) == 0
-    monkeypatch.setattr(admin, "_hardware_assertion_ok",
-                        lambda user: (False, "device-error"))
+    monkeypatch.setattr(
+        admin, "_hardware_assertion_ok", lambda user: (False, "device-error")
+    )
     assert admin.run_reset_code(confirm=True, vault=vault) == 1
 
 
@@ -180,10 +177,12 @@ def test_hash_verify_and_corrupt_record():
 
 def test_admin_login_defaults_to_hardware(vault, monkeypatch, capsys):
     from shallot_cli import fido2_backend
+
     _register_admin()
     _enroll(vault)
-    monkeypatch.setattr(fido2_backend.CtapHidBackend, "describe_devices",
-                        lambda self: [])
+    monkeypatch.setattr(
+        fido2_backend.CtapHidBackend, "describe_devices", lambda self: []
+    )
     assert admin.run_login("admin-01", vault=vault) == 1
     assert "--mock" in capsys.readouterr().out
 

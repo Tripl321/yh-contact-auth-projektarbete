@@ -17,7 +17,11 @@ made before ACK and never depends on it.
 
 import hashlib
 import hmac as hmac_module
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 K_MAC = bytes(range(16))
 DEADLINE_MS = 2000
@@ -50,7 +54,7 @@ BLOCKLIST_ISSUER = b"SHALLOT-AUTH\x00\x00\x00\x00"
 BLOCKLIST_MAX_ENTRIES = 16
 KEY_HASH_SIZE = 4
 BLOCKLIST_SIGNATURE_SIZE = 64  # Ed25519
-ED25519_PUBLIC_KEY_SIZE = 32   # Ed25519 public key size (bytes)
+ED25519_PUBLIC_KEY_SIZE = 32  # Ed25519 public key size (bytes)
 
 # Test Ed25519 key pair for blocklist signing (generated once for testing).
 # Private key: 32 bytes, Public key: 32 bytes.
@@ -97,8 +101,9 @@ class MockDenSession:
     def __init__(self, key):
         self.key = key  # master key (for K_mac derivation in real firmware)
         self.k_mac = K_MAC  # PRO-49: derived HMAC key
-        self.provisioned = bool(key is not None and len(bytes(key)) == 16
-                                and any(bytes(key)))
+        self.provisioned = bool(
+            key is not None and len(bytes(key)) == 16 and any(bytes(key))
+        )
         self.blocklist_entries = None  # None = no valid list (unknown status)
         self.blocklist_valid = False
         self.nonce = None
@@ -448,6 +453,7 @@ def test_pro53_state_machine_transitions():
 # PRO-98: Ed25519 Signed Blocklist Tests
 # ============================================================================
 
+
 def test_pro98_ed25519_sign_verify():
     """Ed25519 sign/verify works with test vectors."""
     msg = b"test message"
@@ -472,9 +478,8 @@ def test_pro98_blocklist_signature_format():
 def test_pro98_blocklist_signature_verification():
     """Valid Ed25519 signature on blocklist is accepted."""
     bl = TEST_BLOCKLIST_V1
-    data_len = 1 + 16 + 1 + 1 * KEY_HASH_SIZE
-    signature = bl[18 + KEY_HASH_SIZE:]
-    data = bl[:18 + KEY_HASH_SIZE]
+    signature = bl[18 + KEY_HASH_SIZE :]
+    data = bl[: 18 + KEY_HASH_SIZE]
     assert ed25519_verify(data, signature, TEST_ED25519_PUBLIC_KEY)
 
 
@@ -502,10 +507,10 @@ def test_pro98_wrong_public_key_rejected():
     # Generate a different key pair
     other_sk = Ed25519PrivateKey.generate()
     other_pk = other_sk.public_key().public_bytes_raw()
-    
+
     msg = b"test"
     sig = other_sk.sign(msg)
-    
+
     # Should not verify with our test public key
     assert not ed25519_verify(msg, sig, TEST_ED25519_PUBLIC_KEY)
     # But should verify with its own public key
@@ -514,7 +519,7 @@ def test_pro98_wrong_public_key_rejected():
 
 def test_pro98_stolen_paw_cannot_sign():
     """A stolen PAW (which only has master key) cannot forge blocklist signatures.
-    
+
     The blocklist signing key is Ed25519 and never derived from the master key.
     Only MamaBear (UNO Q) holds the Ed25519 private key.
     """
@@ -530,7 +535,7 @@ def test_pro98_blocked_paw_denied():
     blocked_fp = b"deadbeef"
     non_blocked_fp = b"cafebabe"
     blocklist_entries = [blocked_fp]
-    
+
     assert blocked_fp in blocklist_entries
     assert non_blocked_fp not in blocklist_entries
 
@@ -538,22 +543,25 @@ def test_pro98_blocked_paw_denied():
 def test_pro98_source_guards_ed25519():
     """Firmware source contains Ed25519 blocklist support (not HMAC)."""
     import pathlib
+
     root = pathlib.Path(__file__).resolve().parent.parent
-    
+
     den_src = (root / "plc/den-main/den-main.ino").read_text()
-    uno_src = (root / "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino").read_text()
-    
+    uno_src = (
+        root / "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"
+    ).read_text()
+
     # DEN should have Ed25519 verification
     assert "ed25519_verify" in den_src
     assert "blocklist_public_key" in den_src
     assert "BLOCKLIST_SIGNATURE_SIZE" in den_src
     assert "BLOCKLIST_SIGNATURE_SIZE" in den_src and "64" in den_src
-    
+
     # UNO Q should have Ed25519 signing
     assert "ed25519_sign" in uno_src
     assert "blocklist_private_key" in uno_src
     assert "BLOCKLIST_SIGNATURE_SIZE" in uno_src and "64" in uno_src
-    
+
     # Old HMAC-based authority key should be gone
     assert "BLOCKLIST_AUTHORITY_KEY" not in den_src
     assert "BLOCKLIST_AUTHORITY_KEY" not in uno_src
@@ -567,6 +575,7 @@ def test_pro98_source_guards_ed25519():
 # PRO-98: Build-time Ed25519 trust root pinning (compile-time configuration)
 # ============================================================================
 
+
 def test_pro98_trust_root_build_config_guards():
     """DEN firmware sources support compile-time Ed25519 public key pinning.
 
@@ -577,8 +586,10 @@ def test_pro98_trust_root_build_config_guards():
     production key is missing — used in production CI pipelines.
     """
     import pathlib
-    den_src = (pathlib.Path(__file__).resolve().parent.parent /
-               "plc/den-main/den-main.ino").read_text()
+
+    den_src = (
+        pathlib.Path(__file__).resolve().parent.parent / "plc/den-main/den-main.ino"
+    ).read_text()
 
     # The build-flag macro must be present (configurable trust root).
     assert "SHALLOT_BLOCKLIST_PUBKEY" in den_src
@@ -587,7 +598,9 @@ def test_pro98_trust_root_build_config_guards():
     assert "#error" in den_src
 
     # The macro must conditionally set the array from the build flag.
-    assert "static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE]" in den_src
+    assert (
+        "static const uint8_t blocklist_public_key[ED25519_PUBLIC_KEY_SIZE]" in den_src
+    )
     assert "#ifdef SHALLOT_BLOCKLIST_PUBKEY" in den_src
 
     # Fail-closed default: all-zeros placeholder must be the #else branch.
@@ -615,8 +628,10 @@ def test_pro98_trust_root_build_config_guards():
 def test_pro98_trust_root_pinned_helper():
     """DEN firmware exposes blocklist_trust_root_pinned() for ops visibility."""
     import pathlib
-    den_src = (pathlib.Path(__file__).resolve().parent.parent /
-               "plc/den-main/den-main.ino").read_text()
+
+    den_src = (
+        pathlib.Path(__file__).resolve().parent.parent / "plc/den-main/den-main.ino"
+    ).read_text()
     assert "blocklist_trust_root_pinned" in den_src
     # The helper must scan all ED25519_PUBLIC_KEY_SIZE bytes, not early-exit
     # with memcmp/strcmp on the whole array.
@@ -627,15 +642,16 @@ def test_pro98_fail_closed_default_behavior():
     """With all-zero trust root (default), no signature verifies, so
     blocklist_valid stays 0 and every authentication is denied at the
     revocation gate. This is the verified fail-closed default."""
-    zero_key = b'\x00' * ED25519_PUBLIC_KEY_SIZE
+    zero_key = b"\x00" * ED25519_PUBLIC_KEY_SIZE
 
     # ed25519_verify with a zero public key should never succeed (RFC 8032:
     # all-zero public keys are not valid Ed25519 keys — verification fails).
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
     pk = Ed25519PublicKey.from_public_bytes(zero_key)
     try:
-        pk.verify(b'\x00' * 64, b"any message")
-        assert False, "all-zero public key should not verify any signature"
+        pk.verify(b"\x00" * 64, b"any message")
+        raise AssertionError("all-zero public key should not verify any signature")
     except Exception:
         pass  # Expected: verification fails
 
@@ -657,9 +673,7 @@ def test_pro98_valid_blocklist_accepted_with_pinned_key():
     s.install_blocklist([b"\xde\xad\xbe\xef"])  # valid list, our fp not on it
 
     # Clean HMAC → authenticated (blocklist gate passes because fp not listed)
-    ok, ack, reason = s.on_frame(
-        0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100)
     assert ok and ack == 0x01 and reason == REASON_OK
     assert s.state == "AUTHENTICATED"
 
@@ -673,9 +687,7 @@ def test_pro98_blocked_fp_denied_with_pinned_key():
     fp = s.fingerprint()  # SHA-256(DEV_KEY)[:4]
     s.install_blocklist([fp])  # our fingerprint IS on the list
 
-    ok, ack, reason = s.on_frame(
-        0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100)
     assert not ok and ack == 0x00 and reason == REASON_BLOCKLISTED
     assert s.state == "DENIED"
     assert s.done == (False, 0x00, REASON_BLOCKLISTED)
@@ -688,9 +700,7 @@ def test_pro98_empty_valid_list_allows_auth():
     s.send_challenge(bytes(range(0x10, 0x18)), 10000)
     s.install_blocklist([])  # valid list, no entries
 
-    ok, ack, reason = s.on_frame(
-        0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100)
     assert ok and ack == 0x01 and reason == REASON_OK
 
 
@@ -702,9 +712,7 @@ def test_pro98_missing_list_denies_all():
     s.send_challenge(bytes(range(0x10, 0x18)), 10000)
     # blocklist_valid defaults to False (no list installed)
 
-    ok, ack, reason = s.on_frame(
-        0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100)
     assert not ok and ack == 0x00 and reason == REASON_BLOCKLISTED
     assert s.state == "DENIED"
 
@@ -714,6 +722,7 @@ def test_pro98_invalid_signature_rejected():
     and if no prior valid list exists, all PAWs denied (fail closed)."""
     # Ed25519: tampering with signature always fails verification
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     sk = Ed25519PrivateKey.from_private_bytes(TEST_ED25519_PRIVATE_KEY)
     msg = b"blocklist_data"
     sig = bytearray(sk.sign(msg))
@@ -722,7 +731,7 @@ def test_pro98_invalid_signature_rejected():
     pk = Ed25519PublicKey.from_public_bytes(TEST_ED25519_PUBLIC_KEY)
     try:
         pk.verify(bytes(sig), msg)
-        assert False, "tampered signature should not verify"
+        raise AssertionError("tampered signature should not verify")
     except Exception:
         pass  # Expected
 
@@ -750,9 +759,7 @@ def test_pro98_bad_hmac_never_reaches_gate():
     # Install a blocklist that would deny this key if HMAC were valid
     s.install_blocklist([s.fingerprint()])
     # Bad HMAC: should fail with HMAC_MISMATCH, never reach BLOCKLISTED
-    ok, ack, reason = s.on_frame(
-        0x02, bytes(32), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, bytes(32), 10100)
     assert not ok and reason == REASON_HMAC_MISMATCH
     assert s.state == "DENIED"
 
@@ -764,9 +771,7 @@ def test_pro98_deny_chain_never_shows_authenticated():
     s.send_challenge(bytes(range(0x10, 0x18)), 10000)
     s.install_blocklist([s.fingerprint()])  # would deny
 
-    ok, ack, reason = s.on_frame(
-        0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100
-    )
+    ok, ack, reason = s.on_frame(0x02, hmac16(K_MAC, bytes(range(0x10, 0x18))), 10100)
     assert ack == 0x00  # deny ACK
     assert s.state == "DENIED"
     assert s.done == (False, 0x00, REASON_BLOCKLISTED)

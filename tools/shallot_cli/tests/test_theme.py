@@ -52,11 +52,11 @@ def test_menu_text_plain_when_no_color(monkeypatch):
 
 def test_demo_header_respects_no_color(monkeypatch):
     from shallot_cli import demo
+
     monkeypatch.setattr(theme, "USE_COLOR", True)
     colored = demo.render_header()
     monkeypatch.setattr(theme, "USE_COLOR", False)
     plain = demo.render_header()
     assert "\x1b[" in colored
     assert "\x1b[" not in plain
-    assert colored.replace("\x1b[38;2;255;140;0m", "").replace("\x1b[0m", "") \
-        == plain
+    assert colored.replace("\x1b[38;2;255;140;0m", "").replace("\x1b[0m", "") == plain

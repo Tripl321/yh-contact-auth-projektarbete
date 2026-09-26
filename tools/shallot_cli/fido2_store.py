@@ -32,10 +32,20 @@ STATUS_REVOKED = "revoked"
 
 #: Fält som aldrig får förekomma i lagrad metadata — på någon nivå.
 #: "public_key" är avsiktligt tillåten (publik HW-nyckel, behövs för verify).
-FORBIDDEN_FIELDS = ("private_key", "secret", "seed", "attestation_raw",
-                    "attestation_object", "cbor", "authenticator_data",
-                    "authenticator_data_raw", "client_data_json",
-                    "signature", "token", "password")
+FORBIDDEN_FIELDS = (
+    "private_key",
+    "secret",
+    "seed",
+    "attestation_raw",
+    "attestation_object",
+    "cbor",
+    "authenticator_data",
+    "authenticator_data_raw",
+    "client_data_json",
+    "signature",
+    "token",
+    "password",
+)
 
 
 def _credential_type():
@@ -43,6 +53,7 @@ def _credential_type():
     så toppimport här skulle bli en cykel). Upprätthållandet av förbudet
     bor i posten; dessa wrappers delegerar dit."""
     from shallot_cli.fido2 import Credential
+
     return Credential
 
 
@@ -55,8 +66,9 @@ def _reject_forbidden_fields(mapping: dict, where: str) -> None:
 #: slutliga sökvägen stannar inne i roten (S2083: path injection).
 #: Admin-session/audit bor här (innehåller aldrig hemligheter — endast
 #: kodhashen ligger i OS-lagret, se admin_vault).
-_ALLOWED_FILES = frozenset({CREDENTIALS_FILE, AUDIT_FILE,
-                            "admin-session.json", "admin-audit.jsonl"})
+_ALLOWED_FILES = frozenset(
+    {CREDENTIALS_FILE, AUDIT_FILE, "admin-session.json", "admin-audit.jsonl"}
+)
 
 
 def store_root() -> Path:
@@ -225,12 +237,16 @@ def set_status(credential_id: str, status: str, root: Path | None = None) -> dic
     return Store(root).set_status(credential_id, status)
 
 
-def update_sign_count(credential_id: str, sign_count: int, root: Path | None = None) -> dict:
+def update_sign_count(
+    credential_id: str, sign_count: int, root: Path | None = None
+) -> dict:
     """Spara ny sign-counter (HW-klondetektion). Returnerar uppdaterad metadata."""
     return Store(root).update_sign_count(credential_id, sign_count)
 
 
-def update_policy(credential_id: str, policy_updates: dict, root: Path | None = None) -> dict:
+def update_policy(
+    credential_id: str, policy_updates: dict, root: Path | None = None
+) -> dict:
     """Slå samman policyfält. Returnerar uppdaterad metadata."""
     return Store(root).update_policy(credential_id, policy_updates)
 

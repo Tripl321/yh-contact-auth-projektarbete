@@ -11,7 +11,22 @@ from __future__ import annotations
 
 import sys
 
-from shallot_cli import admin, bench, demo, explain, fido2, fido2_sanitize, incident, ollama, provision, registry, serial_adapters, sim, theme, uart
+from shallot_cli import (
+    admin,
+    bench,
+    demo,
+    explain,
+    fido2,
+    fido2_sanitize,
+    incident,
+    ollama,
+    provision,
+    registry,
+    serial_adapters,
+    sim,
+    theme,
+    uart,
+)
 from shallot_cli.commands import (
     admin_cmd,
     build_cmd,
@@ -55,8 +70,9 @@ def _menu_max() -> int:
 
 
 def _menu_text() -> str:
-    lines = [theme.orange(" %d  %s" % (n, label))
-             for n, label in registry.menu_entries()]
+    lines = [
+        theme.orange(" %d  %s" % (n, label)) for n, label in registry.menu_entries()
+    ]
     lines.append(theme.orange(" 0  Avsluta"))
     return "\n".join(lines)
 
@@ -86,6 +102,7 @@ def _arrow_pick(display: list[str]) -> int | None:
     """
     import os
     import sys
+
     if not display or os.name != "posix":
         return None
     stdin, stdout = sys.stdin, sys.stdout
@@ -110,8 +127,10 @@ def _arrow_pick(display: list[str]) -> int | None:
         for i, line in enumerate(display):
             prefix = "\u25b6 " if i == selected else "  "
             text = prefix + line
-            out.append("\r\x1b[K%s" % (
-                theme.accent(text) if i == selected else theme.orange(text)))
+            out.append(
+                "\r\x1b[K%s"
+                % (theme.accent(text) if i == selected else theme.orange(text))
+            )
         out.append("\r\x1b[K%s" % theme.dim(hint))
         stdout.write("\n".join(out) + "\n")
         stdout.flush()
@@ -134,21 +153,32 @@ def _arrow_pick(display: list[str]) -> int | None:
     try:
         # Som tty.setraw, men TCSANOW: TCSADRAIN kan blockera på dränering.
         raw = termios.tcgetattr(fd)
-        raw[0] = raw[0] & ~(termios.BRKINT | termios.ICRNL | termios.INPCK
-                            | termios.ISTRIP | termios.IXON)
+        raw[0] = raw[0] & ~(
+            termios.BRKINT
+            | termios.ICRNL
+            | termios.INPCK
+            | termios.ISTRIP
+            | termios.IXON
+        )
         raw[1] = raw[1] & ~termios.OPOST
         raw[2] = raw[2] & ~(termios.CSIZE | termios.PARENB)
         raw[2] = raw[2] | termios.CS8
-        raw[3] = raw[3] & ~(termios.ECHO | termios.ICANON | termios.IEXTEN
-                            | termios.ISIG)
+        raw[3] = raw[3] & ~(
+            termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG
+        )
         raw[6][termios.VMIN] = 1
         raw[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, raw)
         for i, line in enumerate(display):
             prefix = "\u25b6 " if i == selected else "  "
-            stdout.write("%s\n" % (
-                theme.accent(prefix + line) if i == selected
-                else theme.orange(prefix + line)))
+            stdout.write(
+                "%s\n"
+                % (
+                    theme.accent(prefix + line)
+                    if i == selected
+                    else theme.orange(prefix + line)
+                )
+            )
         stdout.write("%s\n" % theme.dim(hint))
         stdout.flush()
         while True:
@@ -269,7 +299,11 @@ def _flow_bench_identify() -> None:
 
 def _flow_bench_unoq() -> None:
     port = input("UNO Q-port (t.ex. /dev/cu.usbmodemXXXX): ").strip()
-    cmd = input("Kommando (s=status, g=generera, 1=till DEN, 2=till PAW): ").strip().lower()
+    cmd = (
+        input("Kommando (s=status, g=generera, 1=till DEN, 2=till PAW): ")
+        .strip()
+        .lower()
+    )
     try:
         report(bench.run_unoq(port, cmd))
     except ValueError as e:
@@ -278,8 +312,10 @@ def _flow_bench_unoq() -> None:
 
 DEMO_SUITES = ("protocol", "den", "paw")
 DEMO_DEN_NEEDLES = ("[DEN] AUTHENTICATED (code 0)", "[DEN] FAILED: ")
-DEMO_PAW_NEEDLES = ("[PRO-84] DEN acknowledged success",
-                    "[PRO-84] DEN denied (ACK 0x00)")
+DEMO_PAW_NEEDLES = (
+    "[PRO-84] DEN acknowledged success",
+    "[PRO-84] DEN denied (ACK 0x00)",
+)
 DEMO_OBSERVE_TIMEOUT_S = 60.0
 
 
@@ -321,8 +357,7 @@ def _demo_provision(role: str, port: str, target: str) -> None:
         raise _DemoAbort("%s fel vid provisionering: %s" % (role, e))
     for entry in entries:
         admin.audit_admin(entry["action"], entry["details"])
-    print("%s provisionerad (fingeravtryck %s)."
-          % (role, res["fingerprint"].hex()))
+    print("%s provisionerad (fingeravtryck %s)." % (role, res["fingerprint"].hex()))
 
 
 def _flow_demo_presentation() -> None:
@@ -353,16 +388,21 @@ def _flow_demo_presentation() -> None:
         _demo_provision("DEN", den_port, "den")
         print("Starta om eller docka enheterna för handshake.")
         den_hit, den_line = monitor_cmd.read_until(
-            den_port, 115200, list(DEMO_DEN_NEEDLES), DEMO_OBSERVE_TIMEOUT_S)
+            den_port, 115200, list(DEMO_DEN_NEEDLES), DEMO_OBSERVE_TIMEOUT_S
+        )
         paw_hit, paw_line = monitor_cmd.read_until(
-            paw_port, 115200, list(DEMO_PAW_NEEDLES), DEMO_OBSERVE_TIMEOUT_S)
+            paw_port, 115200, list(DEMO_PAW_NEEDLES), DEMO_OBSERVE_TIMEOUT_S
+        )
         for line in (den_line, paw_line):
             if line:
                 print("logg: %s" % fido2_sanitize.sanitize(line))
         manual = confirm("Visar PAW-displayen AUTHENTICATED?")
-        grant = (den_hit == DEMO_DEN_NEEDLES[0]
-                 and paw_hit == DEMO_PAW_NEEDLES[0] and manual)
-        admin.audit_admin("demo-verdict", {"result": "GODKÄND" if grant else "UNDERKÄND"})
+        grant = (
+            den_hit == DEMO_DEN_NEEDLES[0] and paw_hit == DEMO_PAW_NEEDLES[0] and manual
+        )
+        admin.audit_admin(
+            "demo-verdict", {"result": "GODKÄND" if grant else "UNDERKÄND"}
+        )
         if grant:
             print("Demo: GODKÄND.")
         else:
@@ -380,24 +420,31 @@ def _flow_explain() -> None:
     use_ai = confirm("Utveckla med lokal Ollama-modell")
     model = host = None
     if use_ai:
-        model = input("Ollama-modell (tomt = %s): " % ollama.DEFAULT_MODEL).strip() or None
+        model = (
+            input("Ollama-modell (tomt = %s): " % ollama.DEFAULT_MODEL).strip() or None
+        )
         host = input("Ollama-host (tomt = localhost): ").strip() or None
-    report(explain_cmd.run(topic, ai=use_ai,
-                           model=model or ollama.DEFAULT_MODEL,
-                           host=host))
+    report(
+        explain_cmd.run(
+            topic, ai=use_ai, model=model or ollama.DEFAULT_MODEL, host=host
+        )
+    )
 
 
 def _flow_build() -> None:
-    target = _pick("Firmware-mål (endast dry-run — inget byggs):",
-                   sorted(build_cmd.TARGETS))
+    target = _pick(
+        "Firmware-mål (endast dry-run — inget byggs):", sorted(build_cmd.TARGETS)
+    )
     if target is None:
         return
     report(build_cmd.run(target, dry_run=True))
 
 
 def _flow_mamabear() -> None:
-    what = _pick("MamaBear fjärrläge (läsande — ingen skrivning på MamaBear):",
-                 ["status", "test"])
+    what = _pick(
+        "MamaBear fjärrläge (läsande — ingen skrivning på MamaBear):",
+        ["status", "test"],
+    )
     if what is None:
         return
     host = input("SSH-alias från ~/.ssh/config: ").strip()
@@ -426,8 +473,9 @@ def _flow_fido2_register() -> None:
     user = input("Användar-ID (t.ex. admin-01): ").strip()
     mock = _pick_mock()
     require_uv = confirm("Kräv PIN/biometri (user verification)")
-    report(fido2_cmd.run_register(user, mock=mock,
-                                   require_uv=require_uv, confirm=confirm))
+    report(
+        fido2_cmd.run_register(user, mock=mock, require_uv=require_uv, confirm=confirm)
+    )
 
 
 def _flow_fido2_authenticate() -> None:
@@ -435,8 +483,11 @@ def _flow_fido2_authenticate() -> None:
     credential = input("Credential-ID (tomt = aktiv credential): ").strip() or None
     mock = _pick_mock()
     require_uv = confirm("Kräv PIN/biometri för detta beslut")
-    report(fido2_cmd.run_authenticate(user, credential=credential, mock=mock,
-                                      require_uv=require_uv))
+    report(
+        fido2_cmd.run_authenticate(
+            user, credential=credential, mock=mock, require_uv=require_uv
+        )
+    )
 
 
 def _flow_fido2_simulate() -> None:
@@ -463,8 +514,7 @@ def _flow_fido2_set_policy() -> None:
     policy = _pick("Ny UV-policy:", list(fido2.UV_POLICIES))
     if policy is None:
         return
-    report(fido2_cmd.run_credential_set_policy(credential, policy,
-                                                confirm=confirm))
+    report(fido2_cmd.run_credential_set_policy(credential, policy, confirm=confirm))
 
 
 def _flow_fido2_export() -> None:
@@ -520,8 +570,10 @@ def _flow_monitor() -> None:
             print("Ingen port angiven och inga portar hittades. Tillbaka i huvudmenyn.")
             return
         port = ports[0]
-    print("Monitor öppnar %s för läsning. Skriver aldrig till enheten; "
-          "kan inte styra den." % port)
+    print(
+        "Monitor öppnar %s för läsning. Skriver aldrig till enheten; "
+        "kan inte styra den." % port
+    )
     if not confirm("Fortsätt med skrivskyddad läsning av %s" % port):
         print("Avbrutet av användaren. Tillbaka i huvudmenyn.")
         return

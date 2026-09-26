@@ -1,25 +1,25 @@
-"""Manusstyrd demo-inspelning: NEKAD + ÅTKOMST (TEST-ONLY bänk).
+"""Scripted demo recording: DENIED + GRANTED (TEST-ONLY bench).
 
-Körs på bänkvärden (serieportar lokala där), via stdin-pipe — inga filer
-skrivs på värden:
+Runs on the bench host (serial ports are local there), via stdin pipe —
+no files are written on the host:
   ssh <ssh-alias> "python3 -" < tools/bench/record-demo.py | \
-    tee demo-inspelning-$(date -u +%Y%m%dT%H%M%SZ).txt
+    tee demo-recording-$(date -u +%Y%m%dT%H%M%SZ).txt
 
-Läge som argument efter '-': 'akt1' = endast Akt 1 (NEKAD), 'akt2' =
-endast Akt 2 (ÅTKOMST), inget argument = båda akterna. En akt som matchar
-förväntningen avslutas med ASCII-verdict (FAILED/AUTHENTICATED).
+Mode as argument after '-': 'act1' = only Act 1 (DENIED), 'act2' = only
+Act 2 (GRANTED), no argument = both acts. An act that matches the
+expectation ends with an ASCII verdict (FAILED/AUTHENTICATED).
 
-Flöde (allt med fasta testvektorer, aldrig hemligheter):
-  0. Beredskap: väntar loop-rader från båda (bevis att båda lever).
-  1. Provisionerar DEN (testnyckel) + levererar signerad tom testlista.
-  2. Akt 1: PAW med FEL nyckel -> DENIED (fail closed), PAW FAILED.
-     Titta på e-paper: ska visa FAILED (X + ord).
-  3. Akt 2: PAW med RÄTT nyckel -> AUTHENTICATED (code 0).
-     Titta på e-paper: ska visa AUTHENTICATED (bock + ord).
-All output = transcriptet. Exit 0 = körda akter som förväntat.
+Flow (all with fixed test vectors, never secrets):
+  0. Readiness: waits for loop lines from both (proof both are alive).
+  1. Provisions DEN (test key) + delivers a signed empty test list.
+  2. Act 1: PAW with WRONG key -> DENIED (fail closed), PAW FAILED.
+     Watch the e-paper: should show FAILED (X + word).
+  3. Act 2: PAW with RIGHT key -> AUTHENTICATED (code 0).
+     Watch the e-paper: should show AUTHENTICATED (checkmark + word).
+All output is the transcript. Exit 0 = every executed act as expected.
 
-Kräver: DEN med pinnad TEST-ONLY trust root + PAW med panel-drivers
-(se flash-log-den-paw-20260923.md). Pyserial på värden, inget annat.
+Requires: DEN with pinned TEST-ONLY trust root + PAW with panel drivers
+(see flash-log-den-paw-20260923.md). Pyserial on the host, nothing else.
 """
 
 import hashlib
@@ -32,8 +32,8 @@ import serial
 RIGHT_KEY = bytes(range(16))
 WRONG_KEY = bytes(range(16, 32))
 
-# Tom signerad lista (TEST-ONLY): version(1)+issuer(16)+count(0)+sig(64).
-# Gäller endast mot DEN-bygge med pinnad TEST-ONLY trust root.
+# Signed empty list (TEST-ONLY): version(1)+issuer(16)+count(0)+sig(64).
+# Valid only against a DEN build with the pinned TEST-ONLY trust root.
 EMPTY_SIGNED_LIST = bytes.fromhex(
     "015348414c4c4f542d415554480000000000"
     "231c0719bf0780950b819d2c9dcfc30db9432e3535aef58b2d00f8e260e"
@@ -97,22 +97,22 @@ def provision(ser, target_code, key, name):
     ser.write(keydata(key))
     first = sync(ser, (0xA4, 0xA5), deadline)
     if first == 0xA5:
-        raise RuntimeError("%s svarade ERROR" % name)
+        raise RuntimeError("%s answered ERROR" % name)
     rest = read_exact(ser, 4, deadline)
     if bytes(rest) != fp(key):
-        raise RuntimeError("%s fingerprint-matchning" % name)
-    print("  %s provisionerad fp=%s" % (name, fp(key).hex()), flush=True)
+        raise RuntimeError("%s fingerprint mismatch" % name)
+    print("  %s provisioned fp=%s" % (name, fp(key).hex()), flush=True)
 
 
 def wait_loop(ser, needle, tag, timeout=20.0):
-    print("väntar %s-loop (max %d s)..." % (tag, timeout), flush=True)
+    print("waiting for %s loop (max %d s)..." % (tag, timeout), flush=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         raw = ser.readline()
         if raw and needle in raw:
-            print("%s-loop lever" % tag, flush=True)
+            print("%s loop alive" % tag, flush=True)
             return
-    raise RuntimeError("%s-loopen sågs aldrig" % tag)
+    raise RuntimeError("%s loop never seen" % tag)
 
 
 def observe(den, paw, seconds, tag):
@@ -123,7 +123,7 @@ def observe(den, paw, seconds, tag):
             try:
                 raw = ser.readline()
             except Exception as e:
-                print("[%s] LÄSFEL %s" % (label, e), flush=True)
+                print("[%s] READ ERROR %s" % (label, e), flush=True)
                 continue
             if not raw:
                 continue
@@ -133,21 +133,21 @@ def observe(den, paw, seconds, tag):
                 granted += 1
             if "code 5" in line or "code 1" in line or "DEN denied" in line:
                 denied += 1
-    print("  [%s] code 0: %d, nekade: %d" % (tag, granted, denied), flush=True)
+    print("  [%s] code 0: %d, denied: %d" % (tag, granted, denied), flush=True)
     return granted, denied
 
 
-def akt1(den, paw):
-    print("--- AKT 1: fel nyckel -> ska NEKAS (fail closed) ---", flush=True)
-    provision(paw, 0x02, WRONG_KEY, "PAW(fel)")
+def act1(den, paw):
+    print("--- ACT 1: wrong key -> must be DENIED (fail closed) ---", flush=True)
+    provision(paw, 0x02, WRONG_KEY, "PAW(wrong)")
     den.reset_input_buffer()
     paw.reset_input_buffer()
-    time.sleep(4.0)  # låt första sessionen efter omprovisionering passera
-    print("  Titta på e-paper: ska visa FAILED.", flush=True)
-    g, d = observe(den, paw, 14, "AKT1")
+    time.sleep(4.0)  # let the first post-reprovision session pass
+    print("  Watch the e-paper: should show FAILED.", flush=True)
+    g, d = observe(den, paw, 14, "ACT1")
     ok = g == 0 and d >= 1
     print(
-        "  AKT 1 VERDIKT: %s" % ("NEKAD (förväntat)" if ok else "AVVIKELSE!"),
+        "  ACT 1 VERDICT: %s" % ("DENIED (expected)" if ok else "DEVIATION!"),
         flush=True,
     )
     if ok:
@@ -155,17 +155,17 @@ def akt1(den, paw):
     return ok
 
 
-def akt2(den, paw):
-    print("--- AKT 2: rätt nyckel -> ska BEVILJAS ---", flush=True)
-    provision(paw, 0x02, RIGHT_KEY, "PAW(rätt)")
+def act2(den, paw):
+    print("--- ACT 2: right key -> must be GRANTED ---", flush=True)
+    provision(paw, 0x02, RIGHT_KEY, "PAW(right)")
     den.reset_input_buffer()
     paw.reset_input_buffer()
-    time.sleep(4.0)  # låt första sessionen efter omprovisionering passera
-    print("  Titta på e-paper: ska visa AUTHENTICATED.", flush=True)
-    g, d = observe(den, paw, 14, "AKT2")
+    time.sleep(4.0)  # let the first post-reprovision session pass
+    print("  Watch the e-paper: should show AUTHENTICATED.", flush=True)
+    g, d = observe(den, paw, 14, "ACT2")
     ok = g >= 1
     print(
-        "  AKT 2 VERDIKT: %s" % ("ÅTKOMST (förväntat)" if ok else "AVVIKELSE!"),
+        "  ACT 2 VERDICT: %s" % ("GRANTED (expected)" if ok else "DEVIATION!"),
         flush=True,
     )
     if ok:
@@ -173,16 +173,16 @@ def akt2(den, paw):
     return ok
 
 
-MODES = ("akt1", "akt2", "alla")
+MODES = ("act1", "act2", "all")
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "alla"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
     if mode not in MODES:
-        print("användning: python3 - [akt1|akt2]", file=sys.stderr)
+        print("usage: python3 - [act1|act2]", file=sys.stderr)
         sys.exit(2)
     print(
-        "=== SHALLOT DEMO-INSPELNING (TEST-ONLY bänk, MVP: NEKAD + ÅTKOMST) ===",
+        "=== SHALLOT DEMO RECORDING (TEST-ONLY bench, MVP: DENIED + GRANTED) ===",
         flush=True,
     )
     den = serial.Serial(
@@ -196,19 +196,19 @@ def main():
     den.reset_input_buffer()
     paw.reset_input_buffer()
 
-    print("--- Baslinje: provisionera DEN + signerad tom lista ---", flush=True)
+    print("--- Baseline: provision DEN + signed empty list ---", flush=True)
     provision(den, 0x01, RIGHT_KEY, "DEN")
     den.write(bytes([0xA6]) + EMPTY_SIGNED_LIST)
-    print("  blocklista sänd", flush=True)
+    print("  blocklist sent", flush=True)
 
     ok = {}
-    if mode in ("alla", "akt1"):
-        ok["akt1"] = akt1(den, paw)
-    if mode in ("alla", "akt2"):
-        ok["akt2"] = akt2(den, paw)
+    if mode in ("all", "act1"):
+        ok["act1"] = act1(den, paw)
+    if mode in ("all", "act2"):
+        ok["act2"] = act2(den, paw)
 
-    parts = ["%s=%s" % (k, "OK" if v else "AVVIKELSE") for k, v in ok.items()]
-    print("=== SLUT: %s ===" % " ".join(parts), flush=True)
+    parts = ["%s=%s" % (k, "OK" if v else "DEVIATION") for k, v in ok.items()]
+    print("=== END: %s ===" % " ".join(parts), flush=True)
     den.close()
     paw.close()
     if not all(ok.values()):

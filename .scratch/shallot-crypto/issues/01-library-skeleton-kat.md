@@ -13,5 +13,5 @@ beteendeförändring.
 - [ ] KAT-vektorer bevisar HMAC/KDF/jämförelse mot oberoende oracle
 - [ ] Wipe-garantin är testlåst i modulen
 - [ ] Jämförelse dupliceras INTE: `den_ct_compare` har redan ett hem i
-  DenUartProtocol (verifierat) — modulen dokumenterar återanvändning
+      DenUartProtocol (verifierat) — modulen dokumenterar återanvändning
 - [ ] Ingen firmware-fil importerar det ännu

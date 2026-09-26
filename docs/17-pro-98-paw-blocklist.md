@@ -30,13 +30,13 @@ the DEN denies access even though the HMAC is valid.
 
 ## 3. Blocklist format (MSG_BLOCKLIST = 0xA6)
 
-| Field       | Size                    | Description                                                          |
-| ----------- | ----------------------- | -------------------------------------------------------------------- |
-| version     | 1 byte                  | Format version (currently 1)                                         |
-| issuer      | 16 bytes                | Null-padded ASCII issuer identifier                                  |
-| entry_count | 1 byte                  | Number of blocked entries (0–16)                                     |
-| entries     | 4 × `entry_count` bytes | SHA-256(shared_key)\[:4\] fingerprints                               |
-| signature   | 64 bytes                | Ed25519 over (version \|\| issuer \|\| entry_count \|\| entries)       |
+| Field       | Size                    | Description                                                      |
+| ----------- | ----------------------- | ---------------------------------------------------------------- |
+| version     | 1 byte                  | Format version (currently 1)                                     |
+| issuer      | 16 bytes                | Null-padded ASCII issuer identifier                              |
+| entry_count | 1 byte                  | Number of blocked entries (0–16)                                 |
+| entries     | 4 × `entry_count` bytes | SHA-256(shared_key)\[:4\] fingerprints                           |
+| signature   | 64 bytes                | Ed25519 over (version \|\| issuer \|\| entry_count \|\| entries) |
 
 Total size: `18 + 4*N + 64` bytes (82–146 bytes for 0–16 entries).
 
@@ -91,14 +91,14 @@ on unauthenticated input, preventing probing attacks.
 
 ## 7. Fail-closed guarantees
 
-| Failure mode                              | Response                               |
-| ----------------------------------------- | -------------------------------------- |
-| Invalid signature                         | Blocklist not activated; old list kept |
-| Wrong issuer                              | Blocklist not activated; old list kept |
-| Version too old                           | Blocklist not activated; old list kept |
-| Truncated/corrupt data                    | Blocklist not activated; old list kept |
-| `blocklist_valid = 0` (no valid list yet) | **All PAWs denied** (`DEN_REASON_BLOCKLISTED`, fail closed) |
-| PAW with blocklisted key                  | Denied after HMAC verification (`DEN_REASON_BLOCKLISTED`) |
+| Failure mode                              | Response                                                                                                   |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Invalid signature                         | Blocklist not activated; old list kept                                                                     |
+| Wrong issuer                              | Blocklist not activated; old list kept                                                                     |
+| Version too old                           | Blocklist not activated; old list kept                                                                     |
+| Truncated/corrupt data                    | Blocklist not activated; old list kept                                                                     |
+| `blocklist_valid = 0` (no valid list yet) | **All PAWs denied** (`DEN_REASON_BLOCKLISTED`, fail closed)                                                |
+| PAW with blocklisted key                  | Denied after HMAC verification (`DEN_REASON_BLOCKLISTED`)                                                  |
 | Trust root not pinned (all-zeros)         | No signature verifies; no list activates; **all PAWs denied** — pin production key to activate (see §11.6) |
 
 ## 8. PAW identity binding
@@ -115,25 +115,25 @@ because:
 
 ### What is simulated in tests (`tests/test_pro88_den.py`, `tests/test_pro98_den_blocklist.py`)
 
-| Test                                        | What it verifies                               |
-| ------------------------------------------- | ---------------------------------------------- |
-| `test_pro98_ed25519_sign_verify` (pro88)    | Ed25519 sign/verify with test vectors          |
-| `test_pro98_blocklist_signature_format` (pro88) | Format: version, issuer, entries, 64 B sig  |
-| `test_pro98_*_rejected` (pro88)             | Manipulated sig / rollback / wrong key rejected |
-| `test_pro98_valid_list_unlisted_fp_grants`  | Valid list + clean key → authenticated         |
-| `test_pro98_empty_valid_list_grants`        | Zero-entry valid list → authenticated          |
-| `test_pro98_blocked_fp_denied_before_grant` | Blocked key → DENIED + code 8, never grant     |
-| `test_pro98_missing_list_denies_unknown_status` | No list → DENIED + code 8 (fail closed)    |
-| `test_pro98_invalid_signature/rollback/truncated/oversize/issuer/wrong-trust-root_rejected` | Bad lists never activate → DENIED |
-| `test_pro98_keeps_last_valid_on_error`      | Failed update keeps previous valid list        |
-| `test_pro98_bad_hmac_never_reaches_gate`    | HMAC checked before blocklist gate             |
-| `test_pro98_deny_chain_never_shows_authenticated` | ACK 0x00 → PAW FAILED, never grant         |
-| `test_pro98_trust_root_build_config_guards` | Build-time pinning macros present in source    |
-| `test_pro98_trust_root_pinned_helper`       | Runtime `blocklist_trust_root_pinned()` helper |
-| `test_pro98_fail_closed_default_behavior`   | All-zero key never verifies any signature      |
-| `test_pro98_valid_blocklist_accepted_with_pinned_key` | Pinned key + valid sig → authenticated |
-| `test_pro98_blocked_fp_denied_with_pinned_key` | Listed fp → BLOCKLISTED before grant       |
-| `test_pro98_source_*`                       | Reason code 8, gate placement, fp hygiene, issuer check, build-config scope |
+| Test                                                                                        | What it verifies                                                            |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `test_pro98_ed25519_sign_verify` (pro88)                                                    | Ed25519 sign/verify with test vectors                                       |
+| `test_pro98_blocklist_signature_format` (pro88)                                             | Format: version, issuer, entries, 64 B sig                                  |
+| `test_pro98_*_rejected` (pro88)                                                             | Manipulated sig / rollback / wrong key rejected                             |
+| `test_pro98_valid_list_unlisted_fp_grants`                                                  | Valid list + clean key → authenticated                                      |
+| `test_pro98_empty_valid_list_grants`                                                        | Zero-entry valid list → authenticated                                       |
+| `test_pro98_blocked_fp_denied_before_grant`                                                 | Blocked key → DENIED + code 8, never grant                                  |
+| `test_pro98_missing_list_denies_unknown_status`                                             | No list → DENIED + code 8 (fail closed)                                     |
+| `test_pro98_invalid_signature/rollback/truncated/oversize/issuer/wrong-trust-root_rejected` | Bad lists never activate → DENIED                                           |
+| `test_pro98_keeps_last_valid_on_error`                                                      | Failed update keeps previous valid list                                     |
+| `test_pro98_bad_hmac_never_reaches_gate`                                                    | HMAC checked before blocklist gate                                          |
+| `test_pro98_deny_chain_never_shows_authenticated`                                           | ACK 0x00 → PAW FAILED, never grant                                          |
+| `test_pro98_trust_root_build_config_guards`                                                 | Build-time pinning macros present in source                                 |
+| `test_pro98_trust_root_pinned_helper`                                                       | Runtime `blocklist_trust_root_pinned()` helper                              |
+| `test_pro98_fail_closed_default_behavior`                                                   | All-zero key never verifies any signature                                   |
+| `test_pro98_valid_blocklist_accepted_with_pinned_key`                                       | Pinned key + valid sig → authenticated                                      |
+| `test_pro98_blocked_fp_denied_with_pinned_key`                                              | Listed fp → BLOCKLISTED before grant                                        |
+| `test_pro98_source_*`                                                                       | Reason code 8, gate placement, fp hygiene, issuer check, build-config scope |
 
 All tests are **Python mock simulations** of the firmware logic. The HMAC
 verification, version checking, and truncation handling are mirrored in Python.
@@ -168,20 +168,20 @@ verification, version checking, and truncation handling are mirrored in Python.
 
 ### 11.1 Private Key Handling
 
-| Check | Status | Notes |
-|-------|--------|-------|
-| Private key hardcoded in firmware | ✅ PASS | `blocklist_private_key` is zero-initialized static array; no hardcoded value |
-| Private key in test data | ✅ PASS | Test key only in `tests/test_pro88_den.py`, clearly marked `TEST_ED25519_PRIVATE_KEY` |
-| Private key in build config / repo | ✅ PASS | No private key material in any `.ino`, `.h`, `.cpp`, or build files |
-| Private key provisioning | ⚠️ TODO | `blocklist_key_provisioned = 0` flag; production must provision via secure out-of-band channel |
-| Private key zeroization | ✅ PASS | SRAM only; cleared on reset; no flash persistence |
+| Check                              | Status  | Notes                                                                                          |
+| ---------------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| Private key hardcoded in firmware  | ✅ PASS | `blocklist_private_key` is zero-initialized static array; no hardcoded value                   |
+| Private key in test data           | ✅ PASS | Test key only in `tests/test_pro88_den.py`, clearly marked `TEST_ED25519_PRIVATE_KEY`          |
+| Private key in build config / repo | ✅ PASS | No private key material in any `.ino`, `.h`, `.cpp`, or build files                            |
+| Private key provisioning           | ⚠️ TODO | `blocklist_key_provisioned = 0` flag; production must provision via secure out-of-band channel |
+| Private key zeroization            | ✅ PASS | SRAM only; cleared on reset; no flash persistence                                              |
 
 ### 11.2 Public Key Handling
 
-| Check | Status | Notes |
-|-------|--------|-------|
+| Check                        | Status  | Notes                                                             |
+| ---------------------------- | ------- | ----------------------------------------------------------------- |
 | DEN contains only public key | ✅ PASS | `blocklist_public_key[32]` embedded in DEN via build-time pinning |
-| PAW has neither key | ✅ PASS | PAW firmware has no Ed25519 code or keys |
+| PAW has neither key          | ✅ PASS | PAW firmware has no Ed25519 code or keys                          |
 
 **Build-time pinning mechanism (implemented):**
 
@@ -195,16 +195,17 @@ arduino-cli compile -e \
   plc/den-main
 ```
 
-| Variant | `SHALLOT_BLOCKLIST_PUBKEY` | `SHALLOT_BLOCKLIST_REQUIRE_KEY` | Trust root | Behavior |
-|---|---|---|---|---|
-| Default (no flags) | not defined | not defined | all-zeros | Fail-closed: all PAWs denied |
-| Test build | test key bytes | not defined | test key | Dev/test only — test key verifies |
-| Production build | real key bytes | defined | real key | Production signing key required |
-| Broken production | not defined | defined | — | `#error` at compile time |
+| Variant            | `SHALLOT_BLOCKLIST_PUBKEY` | `SHALLOT_BLOCKLIST_REQUIRE_KEY` | Trust root | Behavior                          |
+| ------------------ | -------------------------- | ------------------------------- | ---------- | --------------------------------- |
+| Default (no flags) | not defined                | not defined                     | all-zeros  | Fail-closed: all PAWs denied      |
+| Test build         | test key bytes             | not defined                     | test key   | Dev/test only — test key verifies |
+| Production build   | real key bytes             | defined                         | real key   | Production signing key required   |
+| Broken production  | not defined                | defined                         | —          | `#error` at compile time          |
 
 When the macro is absent, the trust root defaults to all-zeros (fail-closed). All-zeros is not a valid Ed25519 public key — `ed25519_verify()` rejects every signature, so `blocklist_valid` stays 0 and the revocation gate denies all authentication. The DEN logs its trust root status over USB serial at boot (`[PRO-98] Blocklist trust root PINNED/unpinned`).
 
 **Key pinning workflow:**
+
 1. UNO Q (MamaBear) generates an Ed25519 key pair using the STM32U585 hardware RNG
 2. The private key is stored on UNO Q only (SRAM, never exposed to MPU)
 3. The public key is pinned in DEN at build time via `-DSHALLOT_BLOCKLIST_PUBKEY`
@@ -214,47 +215,47 @@ When the macro is absent, the trust root defaults to all-zeros (fail-closed). Al
 
 ### 11.3 Implementation Verification
 
-| Check | Status | Notes |
-|-------|--------|-------|
-| Signature size (64 bytes) | ✅ PASS | `BLOCKLIST_SIGNATURE_SIZE = 64` |
-| Private key size (32 bytes) | ✅ PASS | `ED25519_PRIVATE_KEY_SIZE = 32` |
-| Public key size (32 bytes) | ✅ PASS | `ED25519_PUBLIC_KEY_SIZE = 32` |
-| RFC 8032 test vectors | ✅ PASS | Empty msg, short msg, long msg, wrong msg, wrong pk all verified |
-| Custom implementation vs. cryptography | ✅ PASS | Custom tweetnacl-based impl matches cryptography library |
-| Constant-time operations | ✅ PASS | tweetnacl/ref10 reference implementation is constant-time |
-| Sensitive data logging | ✅ PASS | All blocklist debug under `SECURE_DEBUG`; no private key logging |
+| Check                                  | Status  | Notes                                                            |
+| -------------------------------------- | ------- | ---------------------------------------------------------------- |
+| Signature size (64 bytes)              | ✅ PASS | `BLOCKLIST_SIGNATURE_SIZE = 64`                                  |
+| Private key size (32 bytes)            | ✅ PASS | `ED25519_PRIVATE_KEY_SIZE = 32`                                  |
+| Public key size (32 bytes)             | ✅ PASS | `ED25519_PUBLIC_KEY_SIZE = 32`                                   |
+| RFC 8032 test vectors                  | ✅ PASS | Empty msg, short msg, long msg, wrong msg, wrong pk all verified |
+| Custom implementation vs. cryptography | ✅ PASS | Custom tweetnacl-based impl matches cryptography library         |
+| Constant-time operations               | ✅ PASS | tweetnacl/ref10 reference implementation is constant-time        |
+| Sensitive data logging                 | ✅ PASS | All blocklist debug under `SECURE_DEBUG`; no private key logging |
 
 ### 11.4 Test Coverage
 
-| Test | Status |
-|------|--------|
-| `test_pro98_ed25519_sign_verify` | ✅ PASS |
-| `test_pro98_blocklist_signature_format` | ✅ PASS |
-| `test_pro98_blocklist_signature_verification` | ✅ PASS |
-| `test_pro98_manipulated_blocklist_rejected` | ✅ PASS |
-| `test_pro98_rollback_rejected` | ✅ PASS |
-| `test_pro98_wrong_public_key_rejected` | ✅ PASS |
-| `test_pro98_stolen_paw_cannot_sign` | ✅ PASS |
-| `test_pro98_blocked_paw_denied` | ✅ PASS |
-| `test_pro98_source_guards_ed25519` | ✅ PASS |
-| `test_pro98_trust_root_build_config_guards` | ✅ PASS | Build-time pinning pattern verified in source |
-| `test_pro98_trust_root_pinned_helper` | ✅ PASS | Runtime helper `blocklist_trust_root_pinned()` present |
-| `test_pro98_fail_closed_default_behavior` | ✅ PASS | All-zero key never verifies any signature |
-| `test_pro98_valid_blocklist_accepted_with_pinned_key` | ✅ PASS | Pinned key + valid sig → authenticated |
-| `test_pro98_blocked_fp_denied_with_pinned_key` | ✅ PASS | Listed fingerprint → BLOCKLISTED before grant |
-| `test_pro98_empty_valid_list_allows_auth` | ✅ PASS | Zero-entry signed list → authenticated |
-| `test_pro98_missing_list_denies_all` | ✅ PASS | No list → deny-all (fail closed) |
-| `test_pro98_invalid_signature_rejected` | ✅ PASS | Tampered signature → verification fails |
-| `test_pro98_replay_attack_rejected` | ✅ PASS | Version rollback → rejected |
-| `test_pro98_bad_hmac_never_reaches_gate` | ✅ PASS | HMAC checked before blocklist gate |
-| `test_pro98_deny_chain_never_shows_authenticated` | ✅ PASS | ACK 0x00 → PAW FAILED, never grant |
+| Test                                                  | Status  |
+| ----------------------------------------------------- | ------- |
+| `test_pro98_ed25519_sign_verify`                      | ✅ PASS |
+| `test_pro98_blocklist_signature_format`               | ✅ PASS |
+| `test_pro98_blocklist_signature_verification`         | ✅ PASS |
+| `test_pro98_manipulated_blocklist_rejected`           | ✅ PASS |
+| `test_pro98_rollback_rejected`                        | ✅ PASS |
+| `test_pro98_wrong_public_key_rejected`                | ✅ PASS |
+| `test_pro98_stolen_paw_cannot_sign`                   | ✅ PASS |
+| `test_pro98_blocked_paw_denied`                       | ✅ PASS |
+| `test_pro98_source_guards_ed25519`                    | ✅ PASS |
+| `test_pro98_trust_root_build_config_guards`           | ✅ PASS | Build-time pinning pattern verified in source          |
+| `test_pro98_trust_root_pinned_helper`                 | ✅ PASS | Runtime helper `blocklist_trust_root_pinned()` present |
+| `test_pro98_fail_closed_default_behavior`             | ✅ PASS | All-zero key never verifies any signature              |
+| `test_pro98_valid_blocklist_accepted_with_pinned_key` | ✅ PASS | Pinned key + valid sig → authenticated                 |
+| `test_pro98_blocked_fp_denied_with_pinned_key`        | ✅ PASS | Listed fingerprint → BLOCKLISTED before grant          |
+| `test_pro98_empty_valid_list_allows_auth`             | ✅ PASS | Zero-entry signed list → authenticated                 |
+| `test_pro98_missing_list_denies_all`                  | ✅ PASS | No list → deny-all (fail closed)                       |
+| `test_pro98_invalid_signature_rejected`               | ✅ PASS | Tampered signature → verification fails                |
+| `test_pro98_replay_attack_rejected`                   | ✅ PASS | Version rollback → rejected                            |
+| `test_pro98_bad_hmac_never_reaches_gate`              | ✅ PASS | HMAC checked before blocklist gate                     |
+| `test_pro98_deny_chain_never_shows_authenticated`     | ✅ PASS | ACK 0x00 → PAW FAILED, never grant                     |
 
 ### 11.5 What is Verified vs. Simulated vs. Requires Independent Review
 
-| Category | Items |
-|----------|-------|
-| **Verified (automated tests)** | Ed25519 sign/verify with RFC 8032 vectors; blocklist format; manipulated signature rejection; rollback rejection; wrong public key rejection; stolen PAW cannot sign; firmware source guards |
-| **Simulated (Python mock)** | Full blocklist distribution flow; DEN session state machine; HMAC-SHA256 challenge-response; UART framing/CRC |
+| Category                                    | Items                                                                                                                                                                                                                         |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verified (automated tests)**              | Ed25519 sign/verify with RFC 8032 vectors; blocklist format; manipulated signature rejection; rollback rejection; wrong public key rejection; stolen PAW cannot sign; firmware source guards                                  |
+| **Simulated (Python mock)**                 | Full blocklist distribution flow; DEN session state machine; HMAC-SHA256 challenge-response; UART framing/CRC                                                                                                                 |
 | **Requires independent crypto code review** | Custom tweetnacl/ref10 Ed25519 implementation in `libraries/Ed25519/`; SRAM-only private key storage; side-channel resistance on target hardware (STM32U585 / RP2350); secure provisioning channel for production private key |
 
 ### 11.6 Open Items for Production Deployment

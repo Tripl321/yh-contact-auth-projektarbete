@@ -1,7 +1,7 @@
 # Edge challenge-response (PLC, LoRa P2P)
 
 Bänknod för PRO-52/PRO-81 challenge-response över LoRa P2P (868,1 MHz).
- scope: LoRa är explicit ur aktivt MVP-scope (`docs/00-scope.md`) — denna
+scope: LoRa är explicit ur aktivt MVP-scope (`docs/00-scope.md`) — denna
 nod är ett bänkverktyg, ingen produktionsfirmware.
 
 ## Utvecklingsnyckel (TEST-ONLY)

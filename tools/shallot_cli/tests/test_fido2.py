@@ -1,15 +1,21 @@
 """Tester för FIDO2-ceremonier: varje scenario, regel och fail-closed-beslut."""
 
 import pytest
-
 from shallot_cli import fido2
 from shallot_cli import fido2_store as store
 from shallot_cli.fido2 import Credential
 
 
 def test_all_scenarios_known():
-    assert set(fido2.SCENARIOS) == {"success", "unknown-credential", "revoked-credential",
-                                    "wrong-origin", "replay", "timeout", "invalid-signature"}
+    assert set(fido2.SCENARIOS) == {
+        "success",
+        "unknown-credential",
+        "revoked-credential",
+        "wrong-origin",
+        "replay",
+        "timeout",
+        "invalid-signature",
+    }
 
 
 def test_success_allows_rest_deny():
@@ -47,10 +53,18 @@ def test_wrong_rp_id_denied():
     cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
     cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE}
     ch = cer.begin()
-    sig = cer.backend.sign(credential_id=b"abc",
-                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, "evil.example", True))
-    allow, reason = cer.verify_assertion(credential=cred, challenge=ch, origin=fido2.ORIGIN,
-                                         rp_id="evil.example", user_presence=True, signature=sig)
+    sig = cer.backend.sign(
+        credential_id=b"abc",
+        signed_data=fido2.signed_data(ch, fido2.ORIGIN, "evil.example", True),
+    )
+    allow, reason = cer.verify_assertion(
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id="evil.example",
+        user_presence=True,
+        signature=sig,
+    )
     assert (allow, reason) == (False, "wrong-rp-id")
 
 
@@ -58,46 +72,84 @@ def test_missing_user_presence_denied():
     cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
     cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE}
     ch = cer.begin()
-    sig = cer.backend.sign(credential_id=b"abc",
-                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, False))
-    allow, reason = cer.verify_assertion(credential=cred, challenge=ch, origin=fido2.ORIGIN,
-                                         rp_id=fido2.RP_ID, user_presence=False, signature=sig)
+    sig = cer.backend.sign(
+        credential_id=b"abc",
+        signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, False),
+    )
+    allow, reason = cer.verify_assertion(
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=False,
+        signature=sig,
+    )
     assert (allow, reason) == (False, "no-user-presence")
 
 
 def test_unknown_challenge_is_replay_deny():
     cer = fido2.Ceremony(now_fn=lambda: 500.0)
     cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE}
-    allow, reason = cer.verify_assertion(credential=cred, challenge=b"\x00" * 32,
-                                         origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
-                                         user_presence=True, signature=b"\x00" * 32)
+    allow, reason = cer.verify_assertion(
+        credential=cred,
+        challenge=b"\x00" * 32,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=b"\x00" * 32,
+    )
     assert (allow, reason) == (False, "replay")
 
 
 def test_expected_backend_mismatch_does_not_consume_challenge():
     cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
-    cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE,
-            "policy": {"backend": "hardware"}}
+    cred = {
+        "credential_id": "abc",
+        "status": store.STATUS_ACTIVE,
+        "policy": {"backend": "hardware"},
+    }
     ch = cer.begin()
-    sig = cer.backend.sign(credential_id=b"abc",
-                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True))
+    sig = cer.backend.sign(
+        credential_id=b"abc",
+        signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True),
+    )
     assert cer.verify_assertion(
-        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
-        user_presence=True, signature=sig, expected_backend="mock") == (False, "wrong-backend")
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=sig,
+        expected_backend="mock",
+    ) == (False, "wrong-backend")
     assert cer.verify_assertion(
-        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
-        user_presence=True, signature=sig, expected_backend="hardware") == (True, "ok")
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=sig,
+        expected_backend="hardware",
+    ) == (True, "ok")
 
 
 def test_expected_backend_requires_credential_policy():
     cer = fido2.Ceremony(rng=lambda n: b"\x07" * n, now_fn=lambda: 500.0)
     cred = {"credential_id": "abc", "status": store.STATUS_ACTIVE}
     ch = cer.begin()
-    sig = cer.backend.sign(credential_id=b"abc",
-                           signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True))
+    sig = cer.backend.sign(
+        credential_id=b"abc",
+        signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True),
+    )
     allow, reason = cer.verify_assertion(
-        credential=cred, challenge=ch, origin=fido2.ORIGIN, rp_id=fido2.RP_ID,
-        user_presence=True, signature=sig, expected_backend="mock")
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=sig,
+        expected_backend="mock",
+    )
     assert (allow, reason) == (False, "wrong-backend")
 
 
@@ -106,7 +158,10 @@ def test_register_stores_metadata_only(tmp_path):
     assert meta["user_id"] == "admin-01" and meta["status"] == "active"
     assert meta["policy"]["mode"] == "simulated-test"
     assert "private_key" not in meta and "secret" not in str(meta).lower()
-    assert store.load_credentials(root=tmp_path)[meta["credential_id"]]["user_id"] == "admin-01"
+    assert (
+        store.load_credentials(root=tmp_path)[meta["credential_id"]]["user_id"]
+        == "admin-01"
+    )
     actions = [e["action"] for e in store.read_audit(root=tmp_path)]
     assert "register" in actions
 
@@ -122,6 +177,7 @@ def test_register_rejects_bad_user_and_duplicates(tmp_path):
 def test_registered_credential_authenticates():
     import tempfile
     from pathlib import Path
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         meta = fido2.register_user("op-02", rng=lambda n: b"\x0b" * n, root=root)
@@ -130,10 +186,16 @@ def test_registered_credential_authenticates():
         ch = cer.begin()
         sig = cer.backend.sign(
             credential_id=meta["credential_id"].encode(),
-            signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True))
+            signed_data=fido2.signed_data(ch, fido2.ORIGIN, fido2.RP_ID, True),
+        )
         allow, reason = cer.verify_assertion(
-            credential=creds[meta["credential_id"]], challenge=ch,
-            origin=fido2.ORIGIN, rp_id=fido2.RP_ID, user_presence=True, signature=sig)
+            credential=creds[meta["credential_id"]],
+            challenge=ch,
+            origin=fido2.ORIGIN,
+            rp_id=fido2.RP_ID,
+            user_presence=True,
+            signature=sig,
+        )
         assert (allow, reason) == (True, "ok")
 
 
@@ -146,17 +208,18 @@ def test_approval_fingerprint_stable_and_scoped():
 
 
 def test_credential_create_validates_and_roundtrips():
-    cred = Credential.create(credential_id="c1", user_id="u",
-                             policy={"user_presence": True})
+    cred = Credential.create(
+        credential_id="c1", user_id="u", policy={"user_presence": True}
+    )
     d = cred.to_dict()
     assert d["status"] == store.STATUS_ACTIVE and d["created"]
     assert d["policy"] == {"user_presence": True}
     with pytest.raises(ValueError, match="förbjudet fält"):
-        Credential.create(credential_id="c2", user_id="u",
-                          policy={"private_key": "x"})
+        Credential.create(credential_id="c2", user_id="u", policy={"private_key": "x"})
     with pytest.raises(ValueError, match="förbjudet fält"):
-        Credential.create(credential_id="c3", user_id="u", policy={},
-                          extra={"signature": "x"})
+        Credential.create(
+            credential_id="c3", user_id="u", policy={}, extra={"signature": "x"}
+        )
     incomplete = {"credential_id": "c4"}
     with pytest.raises(ValueError, match="obligatoriskt fält"):
         Credential.check_record(incomplete)
@@ -166,6 +229,5 @@ def test_credential_builders_match_register_shape(tmp_path, monkeypatch):
     monkeypatch.setenv(store.STORE_ENV, str(tmp_path))
     meta = fido2.register_user("cred-shape-01")
     stored = store.load_credentials()[meta["credential_id"]]
-    assert set(stored) == {"credential_id", "user_id", "created",
-                           "status", "policy"}
+    assert set(stored) == {"credential_id", "user_id", "created", "status", "policy"}
     assert stored == Credential(stored).to_dict()

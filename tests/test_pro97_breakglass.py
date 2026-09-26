@@ -20,15 +20,18 @@ GRANT_WINDOW = int(re.search(r"#define BG_GRANT_WINDOW_MS\s+(\d+)", DEN).group(1
 
 def _den_on_response_body():
     lines = DEN.splitlines()
-    start = next(i for i, l in enumerate(lines) if "den_on_response(" in l
-                 and "static void" in l)
+    start = next(
+        i
+        for i, line in enumerate(lines)
+        if "den_on_response(" in line and "static void" in line
+    )
     depth, begun = 0, False
     for i in range(start, len(lines)):
         depth += lines[i].count("{") - lines[i].count("}")
         if "{" in lines[i]:
             begun = True
         if begun and depth == 0:
-            return "\n".join(lines[start:i + 1])
+            return "\n".join(lines[start : i + 1])
     raise AssertionError("unbalanced: den_on_response")
 
 
@@ -57,7 +60,7 @@ def test_pro97_no_input_echo():
 
 
 def test_pro97_boot_locked_and_audited():
-    setup = DEN[DEN.find("void setup()"):]
+    setup = DEN[DEN.find("void setup()") :]
     assert "bg_audit(BG_EV_BOOT)" in setup
     assert "BOOT locked (DENIED)" in setup
 

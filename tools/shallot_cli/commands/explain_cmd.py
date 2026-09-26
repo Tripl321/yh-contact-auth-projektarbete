@@ -19,11 +19,17 @@ def run_list() -> int:
     return 0
 
 
-def run(topic: str, ai: bool = False, model: str = ollama.DEFAULT_MODEL,
-        host: str | None = None) -> int:
+def run(
+    topic: str,
+    ai: bool = False,
+    model: str = ollama.DEFAULT_MODEL,
+    host: str | None = None,
+) -> int:
     if topic not in explain.TOPICS:
-        print("okänt ämne: %r (välj: %s)" % (topic, "|".join(explain.topic_names())),
-              file=sys.stderr)
+        print(
+            "okänt ämne: %r (välj: %s)" % (topic, "|".join(explain.topic_names())),
+            file=sys.stderr,
+        )
         return 2
     print(explain.render(topic))
     if not ai:
@@ -35,9 +41,11 @@ def run(topic: str, ai: bool = False, model: str = ollama.DEFAULT_MODEL,
         return 2
     try:
         if not ollama.model_available(base, model):
-            print("AI-utveckling avbruten: modellen %r saknas lokalt — "
-                  "hämta med `ollama pull %s`" % (model, model.split(":")[0]),
-                  file=sys.stderr)
+            print(
+                "AI-utveckling avbruten: modellen %r saknas lokalt — "
+                "hämta med `ollama pull %s`" % (model, model.split(":")[0]),
+                file=sys.stderr,
+            )
             return 2
         answer = ollama.generate(base, model, explain.build_prompt(topic))
     except ollama.OllamaError as e:

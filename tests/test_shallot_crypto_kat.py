@@ -33,9 +33,21 @@ def _run_kat():
     with tempfile.TemporaryDirectory() as tmp:
         exe = str(pathlib.Path(tmp) / "kat")
         compile_proc = subprocess.run(
-            ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-             "-I", str(HDR.parent), str(HARNESS), "-o", exe],
-            capture_output=True, text=True, timeout=120,
+            [
+                "cc",
+                "-std=c99",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(HDR.parent),
+                str(HARNESS),
+                "-o",
+                exe,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         assert compile_proc.returncode == 0, compile_proc.stderr
         run = subprocess.run([exe], capture_output=True, text=True, timeout=60)
@@ -59,7 +71,9 @@ def test_shallot_crypto_adoption_state():
     assert "static void den_sha256(" not in den
     assert "static void den_hmac_sha256(" not in den
     assert "static void den_derive_k_mac(" not in den
-    uno = (ROOT / "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino").read_text()
+    uno = (
+        ROOT / "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"
+    ).read_text()
     assert "#include <ShallotCrypto.h>" in uno
     assert "static void sha256(" not in uno
     assert "sha256_k" not in uno

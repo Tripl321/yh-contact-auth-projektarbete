@@ -4,13 +4,16 @@ import json
 import pathlib
 
 import pytest
-
 from shallot_cli import uart
 
 VECTORS = {
     v["frame"]: (v["type"], v["payload"])
-    for v in json.loads((pathlib.Path(__file__).resolve().parent.parent.parent.parent
-                         / "tests/vectors/uart.json").read_text())["frames"]
+    for v in json.loads(
+        (
+            pathlib.Path(__file__).resolve().parent.parent.parent.parent
+            / "tests/vectors/uart.json"
+        ).read_text()
+    )["frames"]
 }
 
 
@@ -45,6 +48,7 @@ def test_decode_bad_length():
 
 def test_decode_unknown_type():
     import struct
+
     body = struct.pack("<H", 0) + bytes([0x09])
     frame = bytes([uart.SYNC]) + body + struct.pack("<I", uart.crc32(body))
     with pytest.raises(uart.UartError) as e:

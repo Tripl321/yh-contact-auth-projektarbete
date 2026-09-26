@@ -5,6 +5,7 @@
 This leaks whether a key is provisioned through the non-secret USB-observable reason code.
 
 **Current code:** `plc/den-main/den-main.ino:846-848`
+
 ```c
 if (!den_key_valid()) {
     den_fail(DEN_REASON_HMAC_MISMATCH);  // should be DEN_REASON_NO_KEY

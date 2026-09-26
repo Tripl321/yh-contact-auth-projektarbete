@@ -92,17 +92,17 @@ och verkställs mot enhetens UV-flagg (fail closed utan den).
 
 ## 6. Kända restrisker
 
-| Risk | Läge |
-|---|---|
+| Risk                                                                       | Läge                                                                                        |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Mock-backend (HMAC) är ingen säkerhetsmekanism; PoC övar endast ceremonier | Fysisk authenticator är standardläge; mock kräver explicit `--mock` (SIMULATED / TEST-ONLY) |
-| HW: self-attestation accepteras (ingen vendor-CA); `none` accepteras | Explicit policy, dokumenterad; x5c/BASIC och övriga format avvisas (inga trust anchors) |
-| HW: enhet utan sign-counter ger ingen klondetektion | Accepterat, loggas implicit (counter 0/0); regression vid counter>0 = DENY |
-| HW: stulen admin-token kan flash-dumpas utan Secure Boot | Rekommendation: Secure Boot + OTP på ESP32-S3; RP2040 saknar skyddet |
-| Pico Fido är AGPL-3.0 | Stock-firmware internt bruk OK; inga modifierade byggen distribueras utan licensprövning |
-| Ingen HW-nyckelförvaring; mock-nycklar deriveras i mjukvara | Accepterat i PoC (inga riktiga hemligheter hanteras) |
-| Lokal JSON-lagring utan åtkomstkontroll utöver filrättigheter | Accepterat i PoC (inga hemligheter lagras; HW lagrar endast publik nyckel + counter) |
-| RP-ID/origin är PoC-värden (`shallot.local`) | Måste bindas till verklig RP vid produktionssättning |
-| FIDO2-beslut verkställs ännu inte mot adminfunktioner (endast text) | Framtida arbete; idag ingen koppling till DEN/PAW |
+| HW: self-attestation accepteras (ingen vendor-CA); `none` accepteras       | Explicit policy, dokumenterad; x5c/BASIC och övriga format avvisas (inga trust anchors)     |
+| HW: enhet utan sign-counter ger ingen klondetektion                        | Accepterat, loggas implicit (counter 0/0); regression vid counter>0 = DENY                  |
+| HW: stulen admin-token kan flash-dumpas utan Secure Boot                   | Rekommendation: Secure Boot + OTP på ESP32-S3; RP2040 saknar skyddet                        |
+| Pico Fido är AGPL-3.0                                                      | Stock-firmware internt bruk OK; inga modifierade byggen distribueras utan licensprövning    |
+| Ingen HW-nyckelförvaring; mock-nycklar deriveras i mjukvara                | Accepterat i PoC (inga riktiga hemligheter hanteras)                                        |
+| Lokal JSON-lagring utan åtkomstkontroll utöver filrättigheter              | Accepterat i PoC (inga hemligheter lagras; HW lagrar endast publik nyckel + counter)        |
+| RP-ID/origin är PoC-värden (`shallot.local`)                               | Måste bindas till verklig RP vid produktionssättning                                        |
+| FIDO2-beslut verkställs ännu inte mot adminfunktioner (endast text)        | Framtida arbete; idag ingen koppling till DEN/PAW                                           |
 
 ## 7b. Standardläge + installationskrav (2026-09-22)
 
@@ -122,6 +122,7 @@ och verkställs mot enhetens UV-flagg (fail closed utan den).
   authenticate → ALLOW/DENY mot minneslagring, alltid TEST-ONLY).
 
 ## 8. Bänkverifiering (2026-09-14, Pico Fido @ ESP32-S3 Nano)
+
 - Enhet syns som `Pico Key` över USB HID, CTAP 2. `device list` bekräftar.
 - Registrering OK: `packed` self-attestation accepterad enligt policy.
 - 2× assertion ger ALLOW med sign_count 7 → 9 (monoton, steg >1 —
@@ -135,13 +136,13 @@ och verkställs mot enhetens UV-flagg (fail closed utan den).
 
 ## 7. Relation till UART/HMAC
 
-| Aspekt | UART/HMAC (MVP) | FIDO2-spåret (PoC) |
-|---|---|---|
-| Skyddar | PAW–DEN-kommunikation (brickans äkthet) | Användar-/adminidentitet + närvaro |
-| Beslutsfattare | DEN, lokalt fail-closed | RP-verifiering, ALLOW/DENY-text |
-| Hemlighet | Delad nyckel i SRAM | Inga lagrade hemligheter (mock) |
-| Transport | Dockad UART (Serial1) | Lokal CLI-ceremoni |
-| Status | Aktiv MVP | Isolerad PoC, ej verkställande |
+| Aspekt         | UART/HMAC (MVP)                         | FIDO2-spåret (PoC)                 |
+| -------------- | --------------------------------------- | ---------------------------------- |
+| Skyddar        | PAW–DEN-kommunikation (brickans äkthet) | Användar-/adminidentitet + närvaro |
+| Beslutsfattare | DEN, lokalt fail-closed                 | RP-verifiering, ALLOW/DENY-text    |
+| Hemlighet      | Delad nyckel i SRAM                     | Inga lagrade hemligheter (mock)    |
+| Transport      | Dockad UART (Serial1)                   | Lokal CLI-ceremoni                 |
+| Status         | Aktiv MVP                               | Isolerad PoC, ej verkställande     |
 
 ## 9. MamaBear-godkännande (manuell procedur v1)
 

@@ -3,15 +3,24 @@
 import json
 
 import pytest
-
-from shallot_cli import cli
-from shallot_cli import serial_adapters
+from shallot_cli import cli, serial_adapters
 from shallot_cli.sim import SCENARIOS
 
 
 def test_protocol_encode_decode_roundtrip(capsys):
-    assert cli.main(["protocol", "encode", "--type", "challenge",
-                     "--payload", "0001020304050607"]) == 0
+    assert (
+        cli.main(
+            [
+                "protocol",
+                "encode",
+                "--type",
+                "challenge",
+                "--payload",
+                "0001020304050607",
+            ]
+        )
+        == 0
+    )
     frame = capsys.readouterr().out.strip()
     assert frame == "aa08000100010203040506071cf3b72b"
     assert cli.main(["protocol", "decode", "--frame", frame]) == 0
@@ -21,8 +30,12 @@ def test_protocol_encode_decode_roundtrip(capsys):
 
 def test_protocol_errors(capsys):
     assert cli.main(["protocol", "encode", "--type", "unlock", "--payload", ""]) == 2
-    assert cli.main(["protocol", "encode", "--type", "challenge", "--payload", "00"]) == 2
-    assert cli.main(["protocol", "encode", "--type", "challenge", "--payload", "zz"]) == 2
+    assert (
+        cli.main(["protocol", "encode", "--type", "challenge", "--payload", "00"]) == 2
+    )
+    assert (
+        cli.main(["protocol", "encode", "--type", "challenge", "--payload", "zz"]) == 2
+    )
     bad = bytearray.fromhex("aa0100ff019d75db7d")
     bad[-1] ^= 0x01
     assert cli.main(["protocol", "decode", "--frame", bytes(bad).hex()]) == 1
@@ -40,7 +53,11 @@ def test_simulate_all_scenarios(capsys):
 def test_build_dry_run_shows_without_running(capsys):
     assert cli.main(["build", "paw", "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "arduino-cli" in out and "compile" in out and "upload" not in out.split("kommando:")[1].split("\n")[0]
+    assert (
+        "arduino-cli" in out
+        and "compile" in out
+        and "upload" not in out.split("kommando:")[1].split("\n")[0]
+    )
     assert cli.main(["build", "den", "--dry-run"]) == 0
     assert "rpipico2" in capsys.readouterr().out
 
@@ -94,6 +111,7 @@ def test_monitor_reads_without_writing(capsys, monkeypatch):
 
 def test_read_until_matches_split_lines_and_times_out(monkeypatch):
     from shallot_cli.commands import monitor_cmd
+
     chunks = [b"[DEN] AUTHENT", b"ICATED (code 0)\nrest\n"]
 
     class FakeSerial:
@@ -108,15 +126,18 @@ def test_read_until_matches_split_lines_and_times_out(monkeypatch):
                 return b""
             return chunks.pop(0)
 
-    monkeypatch.setattr(monitor_cmd.serial_adapters, "open_read_only",
-                        lambda *a, **k: FakeSerial())
-    hit, line = monitor_cmd.read_until("/dev/ttyX", 115200,
-                                       ["[DEN] AUTHENTICATED (code 0)"],
-                                       timeout=5.0)
+    monkeypatch.setattr(
+        monitor_cmd.serial_adapters, "open_read_only", lambda *a, **k: FakeSerial()
+    )
+    hit, line = monitor_cmd.read_until(
+        "/dev/ttyX", 115200, ["[DEN] AUTHENTICATED (code 0)"], timeout=5.0
+    )
     assert hit == "[DEN] AUTHENTICATED (code 0)"
     assert "AUTHENTICATED" in line
-    assert monitor_cmd.read_until("/dev/ttyX", 115200, ["NEVER"],
-                                  timeout=0.05) == (None, None)
+    assert monitor_cmd.read_until("/dev/ttyX", 115200, ["NEVER"], timeout=0.05) == (
+        None,
+        None,
+    )
     assert monitor_cmd.read_until("", 115200, ["x"]) == (None, None)
     assert monitor_cmd.read_until("/dev/ttyX", 0, ["x"]) == (None, None)
 
@@ -141,8 +162,12 @@ def test_monitor_sanitizes_secrets_and_validates_baud(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "supersecretvalue" not in out and "169.254.169.254" not in out
     assert "[REDACTED" in out
-    assert cli.main(["monitor", "--device", "den", "--port", "/dev/ttyFAKE",
-                     "--baud", "0"]) == 2
+    assert (
+        cli.main(
+            ["monitor", "--device", "den", "--port", "/dev/ttyFAKE", "--baud", "0"]
+        )
+        == 2
+    )
 
 
 def test_doctor_runs(capsys):
@@ -166,8 +191,9 @@ def test_test_unknown_suite_exits_2():
 
 def test_stream_pytest_prints_live_and_returns_output(capsys):
     import sys
+
     from shallot_cli.commands import test_cmd
-    out, rc = test_cmd._stream_pytest(
-        [sys.executable, "-c", "print('live-rad')"])
+
+    out, rc = test_cmd._stream_pytest([sys.executable, "-c", "print('live-rad')"])
     assert rc == 0 and "live-rad" in out
     assert "live-rad" in capsys.readouterr().out  # strömmad, inte buffrad

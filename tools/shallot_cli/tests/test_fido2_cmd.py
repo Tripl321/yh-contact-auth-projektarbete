@@ -1,7 +1,6 @@
 """Tester för FIDO2-kommandolagret. Lagring isoleras via SHALLOT_FIDO2_STORE."""
 
 import pytest
-
 from shallot_cli import cli, fido2
 from shallot_cli import fido2_store as store
 from shallot_cli.commands import fido2_cmd
@@ -63,8 +62,11 @@ def test_authenticate_ambiguous_without_credential_denies(isolated, capsys):
     fido2_cmd.run_register("op-03b", yes=True, mock=True)
     # op-03 har exakt en aktiv credential -> ALLOW med eller utan explicit val
     assert fido2_cmd.run_authenticate("op-03", mock=True) == 0
-    cid = [c for c, m in store.load_credentials(root=isolated).items()
-           if m["user_id"] == "op-03b"][0]
+    cid = [
+        c
+        for c, m in store.load_credentials(root=isolated).items()
+        if m["user_id"] == "op-03b"
+    ][0]
     capsys.readouterr()
     assert fido2_cmd.run_authenticate("op-03b", credential=cid, mock=True) == 0
     assert "ALLOW" in capsys.readouterr().out
@@ -148,6 +150,7 @@ def test_cli_wiring_register_authenticate_simulate(isolated, capsys):
 def test_export_writes_public_metadata_only(isolated, capsys, tmp_path):
     import hashlib
     import json
+
     fido2_cmd.run_register("op-08", yes=True, mock=True)
     cid = next(iter(store.load_credentials(root=isolated)))
     out_file = tmp_path / "op-08.approval.json"
@@ -159,8 +162,9 @@ def test_export_writes_public_metadata_only(isolated, capsys, tmp_path):
     assert doc["status"] == "active" and doc["exported_at"]
     blob = out_file.read_text(encoding="utf-8").lower()
     assert "private" not in blob and "secret" not in blob
-    expect = hashlib.sha256(("%s|%s" % (cid, doc["public_key"] or "")).encode()
-                            ).hexdigest()[:16]
+    expect = hashlib.sha256(
+        ("%s|%s" % (cid, doc["public_key"] or "")).encode()
+    ).hexdigest()[:16]
     assert doc["fingerprint"] == expect
     out = capsys.readouterr().out
     assert "Exporterad" in out and expect in out and cid not in out
@@ -172,7 +176,9 @@ def test_export_unknown_credential_and_missing_dir(isolated, capsys, tmp_path):
     assert fido2_cmd.run_credential_export("finns-inte", str(tmp_path / "x.json")) == 2
     fido2_cmd.run_register("op-09", yes=True, mock=True)
     cid = next(iter(store.load_credentials(root=isolated)))
-    assert fido2_cmd.run_credential_export(cid, str(tmp_path / "saknas" / "x.json")) == 1
+    assert (
+        fido2_cmd.run_credential_export(cid, str(tmp_path / "saknas" / "x.json")) == 1
+    )
 
 
 def test_cli_wiring_export(isolated, capsys, tmp_path):
@@ -180,8 +186,20 @@ def test_cli_wiring_export(isolated, capsys, tmp_path):
     cid = next(iter(store.load_credentials(root=isolated)))
     out_file = tmp_path / "cli-02.json"
     capsys.readouterr()
-    assert cli.main(["fido2", "credential", "export",
-                     "--credential", cid, "--output", str(out_file)]) == 0
+    assert (
+        cli.main(
+            [
+                "fido2",
+                "credential",
+                "export",
+                "--credential",
+                cid,
+                "--output",
+                str(out_file),
+            ]
+        )
+        == 0
+    )
     assert "fingeravtryck" in capsys.readouterr().out
 
 
@@ -199,47 +217,85 @@ def test_verify_malformed_credential_denies_without_exception():
     cer = fido2.Ceremony(rng=lambda n: b"\x42" * n, now_fn=lambda: 1000.0)
     ch = cer.begin()
     allow, reason = cer.verify_assertion(
-        credential={"status": "active"}, challenge=ch, origin=fido2.ORIGIN,
-        rp_id=fido2.RP_ID, user_presence=True, signature=b"")
+        credential={"status": "active"},
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=b"",
+    )
     assert (allow, reason) == (False, "invalid-signature")
 
 
 def test_verify_with_nonsigner_backend_denies():
     from shallot_cli import fido2_backend
-    cer = fido2.Ceremony(backend=fido2_backend.CtapHidBackend(),
-                         rng=lambda n: b"\x42" * n, now_fn=lambda: 1000.0)
+
+    cer = fido2.Ceremony(
+        backend=fido2_backend.CtapHidBackend(),
+        rng=lambda n: b"\x42" * n,
+        now_fn=lambda: 1000.0,
+    )
     ch = cer.begin()
-    cred = {"credential_id": "c", "user_id": "u",
-            "created": "t", "status": store.STATUS_ACTIVE, "policy": {}}
+    cred = {
+        "credential_id": "c",
+        "user_id": "u",
+        "created": "t",
+        "status": store.STATUS_ACTIVE,
+        "policy": {},
+    }
     allow, reason = cer.verify_assertion(
-        credential=cred, challenge=ch, origin=fido2.ORIGIN,
-        rp_id=fido2.RP_ID, user_presence=True, signature=b"x")
+        credential=cred,
+        challenge=ch,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=b"x",
+    )
     assert (allow, reason) == (False, "wrong-backend")
 
 
 def test_verifier_module_owns_decision_directly():
     from shallot_cli import fido2_verify
+
     cer = fido2.Ceremony(rng=lambda n: b"\x42" * n, now_fn=lambda: 1000.0)
     ch = cer.begin()
     # Samma beslut via modulen som via Ceremony-wrappern.
-    assert fido2_verify.precheck(
-        cer, credential=None, challenge=ch, origin=fido2.ORIGIN,
-        rp_id=fido2.RP_ID, user_presence=True,
-        expected_origin=fido2.ORIGIN,
-        expected_rp_id=fido2.RP_ID) == "unknown-credential"
+    assert (
+        fido2_verify.precheck(
+            cer,
+            credential=None,
+            challenge=ch,
+            origin=fido2.ORIGIN,
+            rp_id=fido2.RP_ID,
+            user_presence=True,
+            expected_origin=fido2.ORIGIN,
+            expected_rp_id=fido2.RP_ID,
+        )
+        == "unknown-credential"
+    )
     assert fido2_verify.verify_assertion(
-        cer, credential=None, challenge=ch, origin="https://evil.example",
-        rp_id=fido2.RP_ID, user_presence=True, signature=b"",
+        cer,
+        credential=None,
+        challenge=ch,
+        origin="https://evil.example",
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=b"",
         expected_origin=fido2.ORIGIN,
-        expected_rp_id=fido2.RP_ID) == (False, "unknown-credential")
+        expected_rp_id=fido2.RP_ID,
+    ) == (False, "unknown-credential")
     # Ceremony är challenge-lager: begin + tillslag, inget beslut.
     assert set(cer._challenges) == {ch.hex()}
 
 
 def test_hw_corrupt_credential_id_denies(isolated, capsys):
-    meta = {"credential_id": None, "user_id": "op-11",
-            "created": "2026-01-01T00:00:00Z", "status": store.STATUS_ACTIVE,
-            "policy": {"backend": "hardware"}}
+    meta = {
+        "credential_id": None,
+        "user_id": "op-11",
+        "created": "2026-01-01T00:00:00Z",
+        "status": store.STATUS_ACTIVE,
+        "policy": {"backend": "hardware"},
+    }
     store.save_credential(meta, root=isolated)
     assert fido2_cmd._run_authenticate_hw("op-11", meta, "?", "preferred") == 1
     out = capsys.readouterr().out
@@ -251,19 +307,23 @@ def test_hw_corrupt_credential_id_denies(isolated, capsys):
 
 def test_export_path_shares_mamabear_rule(tmp_path):
     from shallot_cli import mamabear
+
     for bad in ("x.txt", str(tmp_path / "saknas" / "x.json"), "x\x00y", "   "):
         with pytest.raises(RuntimeError):
             mamabear.resolve_output_path(bad)
         with pytest.raises(RuntimeError):
             fido2_cmd._resolve_export_path(bad)
-    assert (mamabear.resolve_output_path(str(tmp_path / "a.json"))
-            == fido2_cmd._resolve_export_path(str(tmp_path / "a.json")))
+    assert mamabear.resolve_output_path(
+        str(tmp_path / "a.json")
+    ) == fido2_cmd._resolve_export_path(str(tmp_path / "a.json"))
 
 
-def test_default_register_without_device_denies_with_next_step(isolated, capsys, monkeypatch):
+def test_default_register_without_device_denies_with_next_step(
+    isolated, capsys, monkeypatch
+):
     from shallot_cli import fido2_backend
-    monkeypatch.setattr(fido2_backend.CtapHidBackend, "list_devices",
-                        lambda self: [])
+
+    monkeypatch.setattr(fido2_backend.CtapHidBackend, "list_devices", lambda self: [])
     assert cli.main(["fido2", "register", "--user", "nodev-01", "--yes"]) == 1
     assert "--mock" in capsys.readouterr().err
 
@@ -277,6 +337,7 @@ def test_default_never_silently_falls_back_to_mock(isolated, capsys):
 
 def test_default_store_is_persistent_production_path(monkeypatch):
     from pathlib import Path
+
     monkeypatch.delenv(store.STORE_ENV, raising=False)
     assert store.store_root() == Path.home() / ".local" / "share" / "shallot" / "fido2"
 
@@ -300,7 +361,10 @@ def test_set_policy_stores_and_audits(isolated, capsys):
     assert meta["policy"]["user_verification"] == "required"
     entry = store.read_audit(root=isolated)[-1]
     assert entry["action"] == "set-policy"
-    assert entry["details"]["user_verification"] == {"old": "preferred", "new": "required"}
+    assert entry["details"]["user_verification"] == {
+        "old": "preferred",
+        "new": "required",
+    }
 
 
 def test_set_policy_noop_declined_unknown_invalid(isolated, capsys, monkeypatch):
@@ -311,7 +375,10 @@ def test_set_policy_noop_declined_unknown_invalid(isolated, capsys, monkeypatch)
     assert "Oförändrat" in capsys.readouterr().out
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     assert fido2_cmd.run_credential_set_policy(cid, "required", yes=False) == 2
-    assert store.load_credentials(root=isolated)[cid]["policy"]["user_verification"] == "preferred"
+    assert (
+        store.load_credentials(root=isolated)[cid]["policy"]["user_verification"]
+        == "preferred"
+    )
     assert fido2_cmd.run_credential_set_policy("finns-inte", "required", yes=True) == 2
     assert fido2_cmd.run_credential_set_policy(cid, "alltid", yes=True) == 2
 
@@ -320,6 +387,19 @@ def test_cli_wiring_set_policy(isolated, capsys):
     assert cli.main(["fido2", "register", "--user", "cli-03", "--yes", "--mock"]) == 0
     cid = next(iter(store.load_credentials(root=isolated)))
     capsys.readouterr()
-    assert cli.main(["fido2", "credential", "set-policy", "--credential", cid,
-                     "--user-verification", "required", "--yes"]) == 0
+    assert (
+        cli.main(
+            [
+                "fido2",
+                "credential",
+                "set-policy",
+                "--credential",
+                cid,
+                "--user-verification",
+                "required",
+                "--yes",
+            ]
+        )
+        == 0
+    )
     assert "required" in capsys.readouterr().out

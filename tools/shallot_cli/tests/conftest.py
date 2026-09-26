@@ -7,7 +7,6 @@ oavsett ordning, parallellitet eller framtida test som glömmer
 """
 
 import pytest
-
 from shallot_cli import bench, demo
 from shallot_cli.fido2_store import STORE_ENV
 
@@ -18,5 +17,6 @@ def _hermetic_store(tmp_path, monkeypatch):
     monkeypatch.setenv(demo.DEMO_LOG_ENV, str(tmp_path / "demo-result.jsonl"))
     monkeypatch.setenv(demo.DEMO_SUMMARY_ENV, str(tmp_path / "demo-summary.txt"))
     monkeypatch.setenv(bench.BENCH_LOG_ENV, str(tmp_path / "bench-verify.jsonl"))
-    monkeypatch.setenv(bench.BENCH_SUMMARY_ENV,
-                       str(tmp_path / "bench-verify-summary.txt"))
+    monkeypatch.setenv(
+        bench.BENCH_SUMMARY_ENV, str(tmp_path / "bench-verify-summary.txt")
+    )

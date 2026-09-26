@@ -36,7 +36,7 @@
 
 #include <Arduino.h>
 #include <Arduino_RouterBridge.h>
-#include <Ed25519.h>
+#include <Ed25519.h>  // vår C-API (ren header: stdint/stddef + decls, alltid säker)
 #include <ShallotCrypto.h>  // PRO-49: SHA/wipe from shared module
 
 // =============================================================
@@ -390,6 +390,16 @@ static uint8_t blocklist_key_provisioned = 0;
 static bool sign_blocklist(uint8_t version, const char *issuer,
                            const uint8_t *entries, uint8_t entry_count,
                            uint8_t *signature) {
+#ifdef SHALLOT_NO_ED25519
+    // Staged unoq bring-up without Ed25519 backend: always fail closed.
+    // Callers (distributeBlocklist) already wipe + refuse transmit on
+    // false, so no caller changes needed. Full backend post-presentation.
+    (void)version; (void)issuer; (void)entries; (void)entry_count;
+    if (signature) {
+        memset(signature, 0, BLOCKLIST_SIGNATURE_SIZE);
+    }
+    return false;
+#else
     if (!blocklist_key_provisioned) {
 #if SECURE_DEBUG
         Serial.println("[PRO-98] Cannot sign: private key not provisioned");
@@ -413,6 +423,7 @@ static bool sign_blocklist(uint8_t version, const char *issuer,
         return false;
     }
     return true;
+#endif  // SHALLOT_NO_ED25519
 }
 
 static bool distributeBlocklist() {

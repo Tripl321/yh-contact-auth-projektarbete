@@ -140,10 +140,10 @@ shallot bench identify --timeout 10
 Spara som ny fil i repots rot, t.ex.
 `flash-log-den-paw-20260923T000000Z.md` (datum = verkligt datum):
 
-| Enhet | Källa (.ino + commit) | UF2-filnamn | Datum (UTC) | Banner (första raderna) |
-|---|---|---|---|---|
-| DEN | `plc/den-main/den-main.ino` @ `<hash>` | `<från ls>` | `<datum>` | `[DEN] docked UART auth ready …` |
-| PAW | `id-kort/paw-main/paw-main.ino` @ `<hash>` | `<från ls>` | `<datum>` | `SHALLOT PAW Main Firmware` … |
+| Enhet | Källa (.ino + commit)                      | UF2-filnamn | Datum (UTC) | Banner (första raderna)          |
+| ----- | ------------------------------------------ | ----------- | ----------- | -------------------------------- |
+| DEN   | `plc/den-main/den-main.ino` @ `<hash>`     | `<från ls>` | `<datum>`   | `[DEN] docked UART auth ready …` |
+| PAW   | `id-kort/paw-main/paw-main.ino` @ `<hash>` | `<från ls>` | `<datum>`   | `SHALLOT PAW Main Firmware` …    |
 
 Tomma fält = steget är inte gjort. Ingen rad utan banner.
 

@@ -11,8 +11,7 @@ import sys
 from shallot_cli import admin
 
 
-def run_login(user: str, credential: str | None = None,
-              mock: bool = False) -> int:
+def run_login(user: str, credential: str | None = None, mock: bool = False) -> int:
     """`shallot admin login --user <id> [--credential <id>] [--mock]`."""
     return admin.run_login(user, credential=credential, mock=mock)
 

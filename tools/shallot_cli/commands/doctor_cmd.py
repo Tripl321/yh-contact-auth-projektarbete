@@ -37,7 +37,9 @@ FIRMWARE_GUARD_FILES = [
 DEVKEY_PATTERNS = ("DEN_DEV_KEY", "#warning", "DEVELOPMENT-ONLY", "MASTER_KEY")
 
 _OPT_IN = "EDGE_ALLOW_DEV_KEY"
-_OPEN = re.compile(r"^\s*#\s*(?:ifndef\s+%s\b|if\s+!defined\s*\(\s*%s\s*\))" % (_OPT_IN, _OPT_IN))
+_OPEN = re.compile(
+    r"^\s*#\s*(?:ifndef\s+%s\b|if\s+!defined\s*\(\s*%s\s*\))" % (_OPT_IN, _OPT_IN)
+)
 _IF = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
 _ELSE = re.compile(r"^\s*#\s*(?:else|elif)\b")
 _ENDIF = re.compile(r"^\s*#\s*endif\b")
@@ -66,7 +68,7 @@ def _has_fail_closed_opt_in(text: str) -> bool:
         if _OPEN.match(line) and outer == 0:
             depth = 0
             else_seen = False
-            for later in lines[i + 1:]:
+            for later in lines[i + 1 :]:
                 if _IF.match(later):
                     depth += 1
                 elif _ENDIF.match(later):
@@ -107,8 +109,11 @@ def _find_upload_scripts() -> list[str]:
                 text = path.read_text(errors="replace")
             except OSError:
                 continue
-            if "--target upload" in text or "upload_protocol" in text or \
-                    ("pio run" in text and "upload" in text):
+            if (
+                "--target upload" in text
+                or "upload_protocol" in text
+                or ("pio run" in text and "upload" in text)
+            ):
                 hits.append(path.relative_to(REPO_ROOT).as_posix())
     return hits
 
@@ -141,16 +146,35 @@ def run() -> int:
         nonlocal problems
         if not ok:
             problems += 1
-        print("[%s] %-14s %s" % ("OK" if ok else "!!", name, detail or ("ok" if ok else "problem")))
+        print(
+            "[%s] %-14s %s"
+            % ("OK" if ok else "!!", name, detail or ("ok" if ok else "problem"))
+        )
 
     check("python", True, "version %s" % sys.version.split()[0])
-    check("pytest", importlib.util.find_spec("pytest") is not None,
-          "installerad" if importlib.util.find_spec("pytest") else "saknas: pip install pytest")
-    check("pyserial", importlib.util.find_spec("serial") is not None,
-          "installerad" if importlib.util.find_spec("serial") else "saknas: pip install pyserial")
+    check(
+        "pytest",
+        importlib.util.find_spec("pytest") is not None,
+        (
+            "installerad"
+            if importlib.util.find_spec("pytest")
+            else "saknas: pip install pytest"
+        ),
+    )
+    check(
+        "pyserial",
+        importlib.util.find_spec("serial") is not None,
+        (
+            "installerad"
+            if importlib.util.find_spec("serial")
+            else "saknas: pip install pyserial"
+        ),
+    )
 
     v = _tool_version(["arduino-cli", "version"])
-    check("arduino-cli", v is not None, v or "saknas (behövs endast för firmwarebyggen)")
+    check(
+        "arduino-cli", v is not None, v or "saknas (behövs endast för firmwarebyggen)"
+    )
     v = _tool_version(["pio", "--version"])
     check("platformio", v is not None, v or "saknas (behövs endast för firmwarebyggen)")
 
@@ -166,7 +190,11 @@ def run() -> int:
         print("[--] port          inga serieportar hittades (skrivfri sökning)")
 
     for hit in _find_upload_scripts():
-        check("upload-skript", False, "%s kan ladda upp firmware — körs aldrig av CLI:t" % hit)
+        check(
+            "upload-skript",
+            False,
+            "%s kan ladda upp firmware — körs aldrig av CLI:t" % hit,
+        )
     for rel in _firmware_devkey_guard():
         check("dev-nyckel", False, "%s innehåller hårdkodad utvecklingsnyckel" % rel)
 

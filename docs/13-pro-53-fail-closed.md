@@ -29,25 +29,25 @@ live dock is the remaining hardware step (open items H1–H7).
 
 ### States
 
-| State | Meaning | Transition to |
-|-------|---------|---------------|
-| `DENIED` | Initial after boot/reset/disconnect/malformed/session complete. Waits gap, then sends CHALLENGE. | `CHALLENGE_SENT` (after gap) |
-| `CHALLENGE_SENT` | Challenge sent, awaiting RESPONSE. Deadline = 2 s from CHALLENGE transmission. | `AUTHENTICATED` (valid HMAC) or `DENIED` (any error) |
-| `AUTHENTICATED` | HMAC verified. Brief confirmation. ACK already sent. | `DENIED` (after gap) |
+| State            | Meaning                                                                                          | Transition to                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| `DENIED`         | Initial after boot/reset/disconnect/malformed/session complete. Waits gap, then sends CHALLENGE. | `CHALLENGE_SENT` (after gap)                         |
+| `CHALLENGE_SENT` | Challenge sent, awaiting RESPONSE. Deadline = 2 s from CHALLENGE transmission.                   | `AUTHENTICATED` (valid HMAC) or `DENIED` (any error) |
+| `AUTHENTICATED`  | HMAC verified. Brief confirmation. ACK already sent.                                             | `DENIED` (after gap)                                 |
 
 ### Transition rules
 
-| From | Trigger | To | Notes |
-|------|---------|----|-------|
-| DENIED | `millis() - stateAt ≥ SESSION_GAP_MS` | CHALLENGE_SENT | Automatic; sends CHALLENGE |
-| CHALLENGE_SENT | Valid RESPONSE, HMAC matches | AUTHENTICATED | Access granted; ACK sent |
-| CHALLENGE_SENT | Valid HMAC but blocked fp / no valid list | DENIED | `den_fail(REASON_BLOCKLISTED)` before any grant (PRO-98, `docs/17`) |
-| CHALLENGE_SENT | Timeout (≥ 2 s) | DENIED | `den_fail(REASON_TIMEOUT)` |
-| CHALLENGE_SENT | CRC error, parse error, unexpected type, invalid size | DENIED | `den_fail(REASON_PARSE_ERROR/UNEXPECTED_TYPE/INVALID_SIZE)` |
-| CHALLENGE_SENT | HMAC mismatch | DENIED | `den_fail(REASON_HMAC_MISMATCH)` |
-| CHALLENGE_SENT | PAW disconnect (no bytes > 3 s) | DENIED | `den_fail(REASON_DISCONNECT)` |
-| CHALLENGE_SENT | Stale response (nonce wiped) | DENIED | `den_fail(REASON_STALE_RESPONSE)` |
-| AUTHENTICATED | `millis() - stateAt ≥ SESSION_GAP_MS` | DENIED | Session complete; new session requires fresh challenge |
+| From           | Trigger                                               | To             | Notes                                                               |
+| -------------- | ----------------------------------------------------- | -------------- | ------------------------------------------------------------------- |
+| DENIED         | `millis() - stateAt ≥ SESSION_GAP_MS`                 | CHALLENGE_SENT | Automatic; sends CHALLENGE                                          |
+| CHALLENGE_SENT | Valid RESPONSE, HMAC matches                          | AUTHENTICATED  | Access granted; ACK sent                                            |
+| CHALLENGE_SENT | Valid HMAC but blocked fp / no valid list             | DENIED         | `den_fail(REASON_BLOCKLISTED)` before any grant (PRO-98, `docs/17`) |
+| CHALLENGE_SENT | Timeout (≥ 2 s)                                       | DENIED         | `den_fail(REASON_TIMEOUT)`                                          |
+| CHALLENGE_SENT | CRC error, parse error, unexpected type, invalid size | DENIED         | `den_fail(REASON_PARSE_ERROR/UNEXPECTED_TYPE/INVALID_SIZE)`         |
+| CHALLENGE_SENT | HMAC mismatch                                         | DENIED         | `den_fail(REASON_HMAC_MISMATCH)`                                    |
+| CHALLENGE_SENT | PAW disconnect (no bytes > 3 s)                       | DENIED         | `den_fail(REASON_DISCONNECT)`                                       |
+| CHALLENGE_SENT | Stale response (nonce wiped)                          | DENIED         | `den_fail(REASON_STALE_RESPONSE)`                                   |
+| AUTHENTICATED  | `millis() - stateAt ≥ SESSION_GAP_MS`                 | DENIED         | Session complete; new session requires fresh challenge              |
 
 **All errors fail closed.** No error path transitions to AUTHENTICATED.
 
@@ -63,28 +63,28 @@ live dock is the remaining hardware step (open items H1–H7).
 
 ## 2. Reason codes (non-secret, observable over USB serial)
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 0 | OK | Authenticated |
-| 1 | TIMEOUT | Response deadline exceeded |
-| 2 | UNEXPECTED_TYPE | Frame type ≠ RESPONSE |
-| 3 | INVALID_SIZE | Payload length mismatch |
-| 4 | PARSE_ERROR | CRC, length, type, or resync failure |
-| 5 | HMAC_MISMATCH | Constant-time compare failed |
-| 6 | DISCONNECT | PAW UART disconnect detected |
-| 7 | STALE_RESPONSE | Response for a prior (wiped) nonce |
-| 8 | BLOCKLISTED | Revoked fingerprint, or no valid list (PRO-98, `docs/17`) |
+| Code | Name            | Meaning                                                   |
+| ---- | --------------- | --------------------------------------------------------- |
+| 0    | OK              | Authenticated                                             |
+| 1    | TIMEOUT         | Response deadline exceeded                                |
+| 2    | UNEXPECTED_TYPE | Frame type ≠ RESPONSE                                     |
+| 3    | INVALID_SIZE    | Payload length mismatch                                   |
+| 4    | PARSE_ERROR     | CRC, length, type, or resync failure                      |
+| 5    | HMAC_MISMATCH   | Constant-time compare failed                              |
+| 6    | DISCONNECT      | PAW UART disconnect detected                              |
+| 7    | STALE_RESPONSE  | Response for a prior (wiped) nonce                        |
+| 8    | BLOCKLISTED     | Revoked fingerprint, or no valid list (PRO-98, `docs/17`) |
 
 ## 3. Hardware acceptance record
 
 ### Wiring (unchanged, current DEN↔PAW UART)
 
-| Signal | DEN (Pico 2) | PAW (Feather RP2350) | Note |
-|--------|-------------|---------------------|------|
-| UART TX | GPIO0 (UART0 TX) | GPIO1 (UART0 RX) | Serial1 |
-| UART RX | GPIO1 (UART0 RX) | GPIO0 (UART0 TX) | Serial1 |
-| GND | GND | GND | Common ground |
-| Baud | 115200 | 115200 | Fixed |
+| Signal  | DEN (Pico 2)     | PAW (Feather RP2350) | Note          |
+| ------- | ---------------- | -------------------- | ------------- |
+| UART TX | GPIO0 (UART0 TX) | GPIO1 (UART0 RX)     | Serial1       |
+| UART RX | GPIO1 (UART0 RX) | GPIO0 (UART0 TX)     | Serial1       |
+| GND     | GND              | GND                  | Common ground |
+| Baud    | 115200           | 115200               | Fixed         |
 
 ### Acceptance tests (bench)
 
@@ -142,6 +142,7 @@ $ python3 -m pytest tests/ -q
 **Current transport: UART (Serial1) over pogo-pins/USB-C dock.**
 
 LoRa is explicitly out of scope. This is documented in:
+
 - `docs/00-scope.md` — LoRa-radiofeldsökning är explicit ur scope
 - `docs/architecture-pivot-2026-09-09.md` — kontaktbaserad primärtransport
 - `docs/11-dockat-uart-protokoll.md` — UART protokolldefinition
@@ -149,25 +150,25 @@ LoRa is explicitly out of scope. This is documented in:
 
 ## 6. What changed from the previous implementation
 
-| Aspect | Before (PRO-88) | After (PRO-53) |
-|--------|-----------------|----------------|
-| States | `GAP`, `WAIT` | `DENIED`, `CHALLENGE_SENT`, `AUTHENTICATED` |
-| Initial state | `DEN_ST_GAP` | `DEN_ST_DENIED` |
-| Fail transitions | `DEN_ST_GAP` | `DEN_ST_DENIED` |
-| Success transition | `DEN_ST_GAP` (immediate) | `DEN_ST_AUTHENTICATED` → `DEN_ST_DENIED` |
-| Reason codes | String labels | Enum `DenReason` with USB-observable integer codes |
-| Disconnect detection | None | `!Serial1.available()` for > 3 s → `DENIED` |
-| Stale response check | None | All-zero nonce → `DENIED` |
-| PAW display/UI | Not addressed | Explicitly excluded from DEN decision |
-| ACK semantics | Not addressed | Explicitly informational |
+| Aspect               | Before (PRO-88)          | After (PRO-53)                                     |
+| -------------------- | ------------------------ | -------------------------------------------------- |
+| States               | `GAP`, `WAIT`            | `DENIED`, `CHALLENGE_SENT`, `AUTHENTICATED`        |
+| Initial state        | `DEN_ST_GAP`             | `DEN_ST_DENIED`                                    |
+| Fail transitions     | `DEN_ST_GAP`             | `DEN_ST_DENIED`                                    |
+| Success transition   | `DEN_ST_GAP` (immediate) | `DEN_ST_AUTHENTICATED` → `DEN_ST_DENIED`           |
+| Reason codes         | String labels            | Enum `DenReason` with USB-observable integer codes |
+| Disconnect detection | None                     | `!Serial1.available()` for > 3 s → `DENIED`        |
+| Stale response check | None                     | All-zero nonce → `DENIED`                          |
+| PAW display/UI       | Not addressed            | Explicitly excluded from DEN decision              |
+| ACK semantics        | Not addressed            | Explicitly informational                           |
 
 ## 7. Residual risks
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| No hardware secure element | `id_sk` extraction possible | Future: secure element (ATECC608A/SE050) |
-| UART byte-level timeout only | Fast byte-level stall handled; no session-level keepalive | 2 s session deadline covers this |
-| MCU reboot resets epoch counter | PAW rejects next envelope | Operator re-runs ceremony; documented |
+| Risk                            | Impact                                                    | Mitigation                               |
+| ------------------------------- | --------------------------------------------------------- | ---------------------------------------- |
+| No hardware secure element      | `id_sk` extraction possible                               | Future: secure element (ATECC608A/SE050) |
+| UART byte-level timeout only    | Fast byte-level stall handled; no session-level keepalive | 2 s session deadline covers this         |
+| MCU reboot resets epoch counter | PAW rejects next envelope                                 | Operator re-runs ceremony; documented    |
 
 ## 8. LoRa status
 
@@ -178,15 +179,15 @@ LoRa is explicitly out of scope. This is documented in:
 Python-sviten verifierar protokoll, tillståndsmaskin och kryptovektorer —
 men inte fysiken. Följande kräver bänk och är öppna tills ikryssade:
 
-| # | Beroende | Varför endast HW duger | Status |
-|---|---|---|---|
-| H1 | RP2350 TRNG-entropi (`get_rand_64`) | Nonce-unikhet går ej att bevisa i mock; noll-RNG fångas fail-closed men svag entropi syns inte | Öppen |
-| H2 | UART-signalintegritet 115200 över pogo-docka | Bitfel, jitter och jordstudsning finns ej i modellen; CRC + deadline är skyddet | Delvis (acceptanstest 1–9 i §3) |
-| H3 | 2 s-deadline mot verkliga klockor | `millis()`-drift och interrupt-latens (RadioLib, e-paper) på PAW-sidan kan äta av budgeten | Öppen |
-| H4 | PAW svarar ej oprovisionerad (PRO-94 dock-gate) | Mock pinnar logiken; att ingen RESPONSE lämnar Serial1 kräver bänk | Öppen |
-| H5 | UNO Q-ceremoni (knapptryck + USB-distribution) | Operatörsbekräftelse och fysisk USB-timing finns ej i modellen | Öppen (se docs/16) |
-| H6 | SRAM-volatilitet vid spänningsbortfall | Att nyckel dör med kraften är ett kretspåstående, ej testbart i pytest | Öppen |
-| H7 | e-paper-degradering under dock-session | Död panel får ej påverka DEN-beslut; mockat som nollkostnad, panelbeteende kräver bänk | Delvis (PRO-11) |
+| #   | Beroende                                        | Varför endast HW duger                                                                         | Status                          |
+| --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------- |
+| H1  | RP2350 TRNG-entropi (`get_rand_64`)             | Nonce-unikhet går ej att bevisa i mock; noll-RNG fångas fail-closed men svag entropi syns inte | Öppen                           |
+| H2  | UART-signalintegritet 115200 över pogo-docka    | Bitfel, jitter och jordstudsning finns ej i modellen; CRC + deadline är skyddet                | Delvis (acceptanstest 1–9 i §3) |
+| H3  | 2 s-deadline mot verkliga klockor               | `millis()`-drift och interrupt-latens (RadioLib, e-paper) på PAW-sidan kan äta av budgeten     | Öppen                           |
+| H4  | PAW svarar ej oprovisionerad (PRO-94 dock-gate) | Mock pinnar logiken; att ingen RESPONSE lämnar Serial1 kräver bänk                             | Öppen                           |
+| H5  | UNO Q-ceremoni (knapptryck + USB-distribution)  | Operatörsbekräftelse och fysisk USB-timing finns ej i modellen                                 | Öppen (se docs/16)              |
+| H6  | SRAM-volatilitet vid spänningsbortfall          | Att nyckel dör med kraften är ett kretspåstående, ej testbart i pytest                         | Öppen                           |
+| H7  | e-paper-degradering under dock-session          | Död panel får ej påverka DEN-beslut; mockat som nollkostnad, panelbeteende kräver bänk         | Delvis (PRO-11)                 |
 
 Acceptanskriterier för att stänga H1–H7: kör `docs/16`-guiden på
 sammansatt DEN+PAW-docka och bocka av varje rad med loggutdrag.

@@ -1,20 +1,22 @@
 """Tester för FIDO2-adapterlagret. Mocken är HMAC-baserad; ingen HW rörs."""
 
 import pytest
-
 from shallot_cli import fido2_backend as be
 
 
 def test_mock_sign_verify_roundtrip():
     b = be.MockBackend()
     sig = b.sign(credential_id=b"cred-1", signed_data=b"challenge|origin")
-    assert b.verify(credential_id=b"cred-1", signed_data=b"challenge|origin", signature=sig)
+    assert b.verify(
+        credential_id=b"cred-1", signed_data=b"challenge|origin", signature=sig
+    )
 
 
 def test_mock_is_deterministic():
     b = be.MockBackend()
-    assert (b.sign(credential_id=b"c", signed_data=b"d")
-            == b.sign(credential_id=b"c", signed_data=b"d"))
+    assert b.sign(credential_id=b"c", signed_data=b"d") == b.sign(
+        credential_id=b"c", signed_data=b"d"
+    )
 
 
 def test_mock_rejects_tampered_signature():
@@ -40,6 +42,7 @@ def test_mock_rejects_empty_inputs():
 
 def test_mock_uses_constant_time_compare():
     import hmac as hmac_mod
+
     orig = hmac_mod.compare_digest
     calls = {"n": 0}
 

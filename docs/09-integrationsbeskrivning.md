@@ -101,16 +101,16 @@ prototypprocedur** som firmwaren inte kan bevisa **[R]**.
 
 ## 10. Statusmatris
 
-| Område | Implementerat [I] | Bänk krävs [B] | Restrisk [R] |
-|---|---|---|---|
-| Dock-auth + fail-closed | Logik + felvägar testlåsta (562 tests) | 2 s-timing, happy path per `docs/13` §3 | E2E sammansatt bänk |
-| Nyckelhantering SRAM/wipe | Källguards + 30 tester | K1–K6 (volatilitet, UF2-inspektion, trådanalys) | K7 bitfel, ingen ECC |
-| Beviljandevisning | 30 s-förfall testlåst | Panelbeteende på enhet | Bildfrys vid strömavbrott |
-| Break-glass | Ceremoni + relock + audit testlåst | Ceremoni på enhet | Single-operator, flyktig audit, ingen duress |
-| Blocklist | Verify + fail-closed tom lista + build-time key pinning | Lista signerad av HSM-nyckel | Provisioneringsflöde saknas |
-| FIDO2-admin | Flöde + maskning testlåst | Token på enhet | Dump utan Secure Boot |
-| Krypto | KAT + mirrors i suite | TRNG-statistik (NIST 800-90B), assembler-wipe | Oberoende audit, sidokanaler |
-| Supply chain | CI-byggen, doctor-guards | — | UF2/beroenden utan full pinning-review |
+| Område                    | Implementerat [I]                                       | Bänk krävs [B]                                  | Restrisk [R]                                 |
+| ------------------------- | ------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------- |
+| Dock-auth + fail-closed   | Logik + felvägar testlåsta (562 tests)                  | 2 s-timing, happy path per `docs/13` §3         | E2E sammansatt bänk                          |
+| Nyckelhantering SRAM/wipe | Källguards + 30 tester                                  | K1–K6 (volatilitet, UF2-inspektion, trådanalys) | K7 bitfel, ingen ECC                         |
+| Beviljandevisning         | 30 s-förfall testlåst                                   | Panelbeteende på enhet                          | Bildfrys vid strömavbrott                    |
+| Break-glass               | Ceremoni + relock + audit testlåst                      | Ceremoni på enhet                               | Single-operator, flyktig audit, ingen duress |
+| Blocklist                 | Verify + fail-closed tom lista + build-time key pinning | Lista signerad av HSM-nyckel                    | Provisioneringsflöde saknas                  |
+| FIDO2-admin               | Flöde + maskning testlåst                               | Token på enhet                                  | Dump utan Secure Boot                        |
+| Krypto                    | KAT + mirrors i suite                                   | TRNG-statistik (NIST 800-90B), assembler-wipe   | Oberoende audit, sidokanaler                 |
+| Supply chain              | CI-byggen, doctor-guards                                | —                                               | UF2/beroenden utan full pinning-review       |
 
 ## 11. Icke-påståenden
 

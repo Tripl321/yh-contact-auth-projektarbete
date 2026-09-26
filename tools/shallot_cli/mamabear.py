@@ -48,12 +48,17 @@ STATUS_COMMANDS = (
 #: Läsande självtestkommandon med strikta förväntningar.
 #: Oväntad output eller nonzero exit betyder teststatus fail.
 TEST_COMMANDS = (
-    {"name": "exec-sanity", "cmd": "echo MAMABEAR_SELFTEST_OK",
-     "expect_exact": "MAMABEAR_SELFTEST_OK"},
-    {"name": "pipe-sanity", "cmd": "printf 'a\\nb\\n' | wc -l",
-     "expect_exact": "2"},
-    {"name": "clock", "cmd": "date -u +%Y-%m-%dT%H:%M:%SZ",
-     "expect_regex": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"},
+    {
+        "name": "exec-sanity",
+        "cmd": "echo MAMABEAR_SELFTEST_OK",
+        "expect_exact": "MAMABEAR_SELFTEST_OK",
+    },
+    {"name": "pipe-sanity", "cmd": "printf 'a\\nb\\n' | wc -l", "expect_exact": "2"},
+    {
+        "name": "clock",
+        "cmd": "date -u +%Y-%m-%dT%H:%M:%SZ",
+        "expect_regex": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+    },
 )
 
 #: stderr-fragment som betyder att SSH-transporten fallerade (fail closed).
@@ -69,8 +74,10 @@ SSH_ERROR_HINTS = (
     "tailnet policy",
 )
 
-SCOPE_NOTE = ("Fysisk status-/självtestverifiering av MamaBear-noden. "
-              "Inte bevis för hela DEN–PAW-autentiseringskedjan.")
+SCOPE_NOTE = (
+    "Fysisk status-/självtestverifiering av MamaBear-noden. "
+    "Inte bevis för hela DEN–PAW-autentiseringskedjan."
+)
 
 # Maskningsregler ägs av fido2_sanitize (enda ägaren) — denna modul
 # importerar modulen, aldrig namnet (inget sanitize-alias här).
@@ -80,19 +87,24 @@ def validate_alias(host: str) -> str:
     """Validera ssh-alias. Aldrig adresser, user@-former eller flaggor."""
     alias = (host or "").strip()
     if IPV4_RE.fullmatch(alias) or alias.startswith("["):
-        raise ValueError("'%s' ser ut som en adress — ange ssh-alias från ~/.ssh/config." % host)
+        raise ValueError(
+            "'%s' ser ut som en adress — ange ssh-alias från ~/.ssh/config." % host
+        )
     if alias in (".", ".."):
         raise ValueError("ogiltigt ssh-alias %r." % host)
     if not ALIAS_RE.fullmatch(alias) or alias.startswith("-"):
-        raise ValueError("ogiltigt ssh-alias %r — använd ett alias från ~/.ssh/config "
-                         "(aldrig user@värd, adress, sökväg eller flaggor)." % host)
+        raise ValueError(
+            "ogiltigt ssh-alias %r — använd ett alias från ~/.ssh/config "
+            "(aldrig user@värd, adress, sökväg eller flaggor)." % host
+        )
     return alias
 
 
 #: Exakta fjärrkommandon som någonsin får köras (upprätthålls vid
 #: exec-gränsen, inte bara hos anroparen).
 _KNOWN_REMOTE_CMDS = frozenset(
-    [e["cmd"] for e in STATUS_COMMANDS] + [e["cmd"] for e in TEST_COMMANDS])
+    [e["cmd"] for e in STATUS_COMMANDS] + [e["cmd"] for e in TEST_COMMANDS]
+)
 
 
 def run_remote(alias: str, remote_cmd: str, timeout_s: int = CMD_TIMEOUT_S) -> dict:
@@ -106,19 +118,36 @@ def run_remote(alias: str, remote_cmd: str, timeout_s: int = CMD_TIMEOUT_S) -> d
     alias = validate_alias(alias)
     if remote_cmd not in _KNOWN_REMOTE_CMDS:
         raise RuntimeError("vägrat: fjärrkommando utanför allowlist.")
-    argv = ["ssh", "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT_S, alias, remote_cmd]
+    argv = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=%d" % CONNECT_TIMEOUT_S,
+        alias,
+        remote_cmd,
+    ]
     try:
-        proc = subprocess.run(argv, shell=False, capture_output=True,
-                              text=True, errors="replace", timeout=timeout_s)
+        proc = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_s,
+        )
     except FileNotFoundError:
         raise RuntimeError("ssh-binären hittades inte — installera OpenSSH.") from None
     except subprocess.TimeoutExpired:
         return {"exit_code": None, "timed_out": True, "stdout": "", "stderr": ""}
     except OSError as e:
         raise RuntimeError("kunde inte starta ssh: %s" % e) from None
-    return {"exit_code": proc.returncode, "timed_out": False,
-            "stdout": proc.stdout or "", "stderr": proc.stderr or ""}
+    return {
+        "exit_code": proc.returncode,
+        "timed_out": False,
+        "stdout": proc.stdout or "",
+        "stderr": proc.stderr or "",
+    }
 
 
 def is_transport_error(result: dict) -> bool:
@@ -156,20 +185,25 @@ def run_suite(alias: str, entries: tuple, timeout_s: int = CMD_TIMEOUT_S) -> dic
         result = run_remote(alias, entry["cmd"], timeout_s=timeout_s)
         if is_transport_error(result):
             transport_error = fido2_sanitize.sanitize(
-                (result.get("stderr") or result.get("stdout") or "okänd transportfel").strip())
+                (
+                    result.get("stderr") or result.get("stdout") or "okänd transportfel"
+                ).strip()
+            )
             aborted = True
             if result.get("timed_out"):
                 transport_error = "timeout efter %ds: %s" % (timeout_s, entry["name"])
             break
-        results.append({
-            "name": entry["name"],
-            "command": entry["cmd"],
-            "exit_code": result["exit_code"],
-            "timed_out": False,
-            "check": check_entry(entry, result),
-            "output": fido2_sanitize.sanitize(result.get("stdout") or ""),
-            "stderr": fido2_sanitize.sanitize(result.get("stderr") or ""),
-        })
+        results.append(
+            {
+                "name": entry["name"],
+                "command": entry["cmd"],
+                "exit_code": result["exit_code"],
+                "timed_out": False,
+                "check": check_entry(entry, result),
+                "output": fido2_sanitize.sanitize(result.get("stdout") or ""),
+                "stderr": fido2_sanitize.sanitize(result.get("stderr") or ""),
+            }
+        )
     return {"results": results, "transport_error": transport_error, "aborted": aborted}
 
 
@@ -202,7 +236,11 @@ def resolve_output_path(raw: str | Path) -> Path:
     candidate = Path(text).expanduser()
     if candidate.suffix != ".json":
         raise RuntimeError("målfil måste sluta med .json: %s" % text)
-    resolved = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+    resolved = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate).resolve()
+    )
     if not resolved.parent.is_dir():
         raise RuntimeError("målkatalogen finns inte: %s" % resolved.parent)
     return resolved
@@ -219,9 +257,13 @@ def build_payload(tool: str, alias: str, suite: dict) -> dict:
         "tool": tool,
         "host_alias": alias,
         "timestamp_utc": utc_now_iso(),
-        "transport": {"via": "system-ssh", "alias_source": "~/.ssh/config",
-                      "batch_mode": True, "connect_timeout_s": CONNECT_TIMEOUT_S,
-                      "command_timeout_s": CMD_TIMEOUT_S},
+        "transport": {
+            "via": "system-ssh",
+            "alias_source": "~/.ssh/config",
+            "batch_mode": True,
+            "connect_timeout_s": CONNECT_TIMEOUT_S,
+            "command_timeout_s": CMD_TIMEOUT_S,
+        },
         "commands": results,
         "passed": passed,
         "failed": failed,
@@ -244,7 +286,9 @@ def save_result(path: str | Path, payload: dict) -> Path:
     try:
         resolved.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     except OSError as e:
-        raise RuntimeError("kunde inte skriva resultatfil %s: %s" % (resolved, e)) from None
+        raise RuntimeError(
+            "kunde inte skriva resultatfil %s: %s" % (resolved, e)
+        ) from None
     return resolved
 
 
@@ -252,16 +296,24 @@ def render_summary(payload: dict, result_path: Path | None) -> str:
     """Tydlig terminalsammanfattning: anslutning, status, passerat/misslyckat, fil."""
     lines = [
         "%s — läsande fjärrläge, ingen skrivning på MamaBear." % payload["tool"],
-        "anslutning : %s ... %s" % (
+        "anslutning : %s ... %s"
+        % (
             payload["host_alias"],
-            "OK" if not payload["aborted"] else "FEL: %s" % payload["transport_error"]),
+            "OK" if not payload["aborted"] else "FEL: %s" % payload["transport_error"],
+        ),
     ]
     for r in payload["commands"]:
         first = (r["output"].strip().splitlines() or [""])[0][:100]
-        lines.append("  %-12s exit=%s check=%s %s" % (
-            r["name"], r["exit_code"], r["check"], first))
-    lines.append("status     : %s (passerade=%d misslyckade=%d)" % (
-        payload["teststatus"].upper(), payload["passed"], payload["failed"]))
-    lines.append("resultatfil: %s" % (result_path if result_path else "(ingen fil skriven)"))
+        lines.append(
+            "  %-12s exit=%s check=%s %s"
+            % (r["name"], r["exit_code"], r["check"], first)
+        )
+    lines.append(
+        "status     : %s (passerade=%d misslyckade=%d)"
+        % (payload["teststatus"].upper(), payload["passed"], payload["failed"])
+    )
+    lines.append(
+        "resultatfil: %s" % (result_path if result_path else "(ingen fil skriven)")
+    )
     lines.append("Notera: %s" % SCOPE_NOTE)
     return "\n".join(lines)

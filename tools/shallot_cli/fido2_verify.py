@@ -21,9 +21,18 @@ from shallot_cli import fido2_backend, fido2_store
 CHALLENGE_TIMEOUT_S = 120
 
 
-def signed_data(challenge: bytes, origin: str, rp_id: str, user_presence: bool) -> bytes:
-    return (bytes(challenge) + b"|" + origin.encode() + b"|"
-            + rp_id.encode() + b"|" + (b"UP" if user_presence else b"noUP"))
+def signed_data(
+    challenge: bytes, origin: str, rp_id: str, user_presence: bool
+) -> bytes:
+    return (
+        bytes(challenge)
+        + b"|"
+        + origin.encode()
+        + b"|"
+        + rp_id.encode()
+        + b"|"
+        + (b"UP" if user_presence else b"noUP")
+    )
 
 
 def _b64unpad(data: str) -> bytes:
@@ -35,8 +44,7 @@ def _client_data_type(client_data) -> str:
     return str(getattr(t, "value", t))
 
 
-def check_backend(credential: dict,
-                  expected_backend: str | None) -> str | None:
+def check_backend(credential: dict, expected_backend: str | None) -> str | None:
     """Kontrollera backend-policy utan att konsumera challenge."""
     if expected_backend is None:
         return None
@@ -46,10 +54,18 @@ def check_backend(credential: dict,
     return None
 
 
-def precheck(ceremony, *, credential: dict | None, challenge: bytes,
-             origin: str, rp_id: str, user_presence: bool,
-             expected_origin: str, expected_rp_id: str,
-             expected_backend: str | None = None) -> str | None:
+def precheck(
+    ceremony,
+    *,
+    credential: dict | None,
+    challenge: bytes,
+    origin: str,
+    rp_id: str,
+    user_presence: bool,
+    expected_origin: str,
+    expected_rp_id: str,
+    expected_backend: str | None = None,
+) -> str | None:
     """Delade billiga kontroller. Returnerar reason eller None vid OK.
 
     reason-kontraktet ägs här, inte i command-lagret.
@@ -76,20 +92,33 @@ def precheck(ceremony, *, credential: dict | None, challenge: bytes,
     return None
 
 
-def verify_assertion(ceremony, *, credential: dict | None, challenge: bytes,
-                     origin: str, rp_id: str, user_presence: bool,
-                     signature: bytes,
-                     expected_origin: str, expected_rp_id: str,
-                     user_verified: bool = True,
-                     require_uv: bool = False,
-                     expected_backend: str | None = None) -> tuple[bool, str]:
+def verify_assertion(
+    ceremony,
+    *,
+    credential: dict | None,
+    challenge: bytes,
+    origin: str,
+    rp_id: str,
+    user_presence: bool,
+    signature: bytes,
+    expected_origin: str,
+    expected_rp_id: str,
+    user_verified: bool = True,
+    require_uv: bool = False,
+    expected_backend: str | None = None,
+) -> tuple[bool, str]:
     """Returnerar (allow, reason-kod). Aldrig undantag för deny-fall."""
-    reason = precheck(ceremony, credential=credential, challenge=challenge,
-                      origin=origin, rp_id=rp_id,
-                      user_presence=user_presence,
-                      expected_origin=expected_origin,
-                      expected_rp_id=expected_rp_id,
-                      expected_backend=expected_backend)
+    reason = precheck(
+        ceremony,
+        credential=credential,
+        challenge=challenge,
+        origin=origin,
+        rp_id=rp_id,
+        user_presence=user_presence,
+        expected_origin=expected_origin,
+        expected_rp_id=expected_rp_id,
+        expected_backend=expected_backend,
+    )
     if reason is not None:
         return False, reason
     if not isinstance(ceremony.backend, fido2_backend.Signer):
@@ -104,21 +133,28 @@ def verify_assertion(ceremony, *, credential: dict | None, challenge: bytes,
         return False, "invalid-signature"
     try:
         ok = ceremony.backend.verify(
-            credential_id=credential_id,
-            signed_data=data, signature=signature_bytes)
+            credential_id=credential_id, signed_data=data, signature=signature_bytes
+        )
     except fido2_backend.BackendUnavailable:
         return False, "backend-unavailable"
     return (True, "ok") if ok else (False, "invalid-signature")
 
 
-def verify_hw_assertion(*, credential: dict, challenge: bytes,
-                        origin: str, rp_id: str,
-                        authenticator_data: bytes,
-                        client_data_json: bytes, signature: bytes,
-                        ceremony,
-                        expected_origin: str, expected_rp_id: str,
-                        require_uv: bool = False,
-                        expected_backend: str | None = None) -> tuple:
+def verify_hw_assertion(
+    *,
+    credential: dict,
+    challenge: bytes,
+    origin: str,
+    rp_id: str,
+    authenticator_data: bytes,
+    client_data_json: bytes,
+    signature: bytes,
+    ceremony,
+    expected_origin: str,
+    expected_rp_id: str,
+    require_uv: bool = False,
+    expected_backend: str | None = None,
+) -> tuple:
     """Verifiera HW-assertion. Returnerar (allow, reason, new_sign_count|None).
 
     Samma prechecks som mock (replay/timeout/origin/…) plus ECDSA mot
@@ -126,17 +162,24 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes,
     Med require_uv krävs UV-flaggan från enheten (PIN/badge), annars
     räcker närvaro.
     """
-    reason = precheck(ceremony, credential=credential, challenge=challenge,
-                      origin=origin, rp_id=rp_id, user_presence=True,
-                      expected_origin=expected_origin,
-                      expected_rp_id=expected_rp_id,
-                      expected_backend=expected_backend)
+    reason = precheck(
+        ceremony,
+        credential=credential,
+        challenge=challenge,
+        origin=origin,
+        rp_id=rp_id,
+        user_presence=True,
+        expected_origin=expected_origin,
+        expected_rp_id=expected_rp_id,
+        expected_backend=expected_backend,
+    )
     if reason is not None:
         return False, reason, None
     if not credential.get("public_key"):
         return False, "invalid-signature", None
-    from fido2.webauthn import AuthenticatorData, CollectedClientData
     from fido2.cose import CoseKey
+    from fido2.webauthn import AuthenticatorData, CollectedClientData
+
     try:
         auth_data = AuthenticatorData(bytes(authenticator_data))
         client_data = CollectedClientData(bytes(client_data_json))
@@ -148,9 +191,11 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes,
         return False, "no-user-presence", None
     if require_uv and not auth_data.is_user_verified():
         return False, "no-user-verification", None
-    if (_client_data_type(client_data) != "webauthn.get"
-            or not hmac.compare_digest(bytes(client_data.challenge), bytes(challenge))
-            or client_data.origin != origin):
+    if (
+        _client_data_type(client_data) != "webauthn.get"
+        or not hmac.compare_digest(bytes(client_data.challenge), bytes(challenge))
+        or client_data.origin != origin
+    ):
         return False, "invalid-signature", None
     stored = credential.get("sign_count", 0)
     new_count = int(auth_data.counter)
@@ -160,10 +205,13 @@ def verify_hw_assertion(*, credential: dict, challenge: bytes,
         return False, "clone-detected", None
     try:
         from fido2 import cbor
+
         key = CoseKey.parse(cbor.decode(_b64unpad(credential["public_key"])))
-        key.verify(bytes(authenticator_data)
-                   + hashlib.sha256(bytes(client_data_json)).digest(),
-                   bytes(signature))
+        key.verify(
+            bytes(authenticator_data)
+            + hashlib.sha256(bytes(client_data_json)).digest(),
+            bytes(signature),
+        )
     except Exception:
         return False, "invalid-signature", None
     return True, "ok", new_count

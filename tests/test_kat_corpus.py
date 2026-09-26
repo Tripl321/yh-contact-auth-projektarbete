@@ -23,16 +23,18 @@ CORPUS = json.loads((ROOT / "tests/vectors/kat.json").read_text())["vectors"]
 GREP_GUARD_RE = re.compile(
     r"""assert\s+['"].*(hmac_sha256\(|sha256\(|derive_k_mac|den_ct_compare|sha256_k|HMAC_BLOCK_SIZE|k_ipad|innerMsg)"""
 )
-GREP_GUARD_ALLOWLIST = frozenset({
-    "tests/test_pro46_usb_distribution.py",
-    "tests/test_pro49_key_derivation.py",
-    "tests/test_pro50_hmac_paw.py",
-    "tests/test_pro62_failure_scenarios.py",
-    "tests/test_pro84_paw.py",
-    "tests/test_pro94_security_review.py",
-    "tests/test_pro98_den_blocklist.py",
-    "tests/test_shallot_crypto_kat.py",  # C-KAT harness, ej ny grep-guard
-})
+GREP_GUARD_ALLOWLIST = frozenset(
+    {
+        "tests/test_pro46_usb_distribution.py",
+        "tests/test_pro49_key_derivation.py",
+        "tests/test_pro50_hmac_paw.py",
+        "tests/test_pro62_failure_scenarios.py",
+        "tests/test_pro84_paw.py",
+        "tests/test_pro94_security_review.py",
+        "tests/test_pro98_den_blocklist.py",
+        "tests/test_shallot_crypto_kat.py",  # C-KAT harness, ej ny grep-guard
+    }
+)
 
 
 def _compute(vec):
@@ -40,9 +42,9 @@ def _compute(vec):
     if kind == "sha256":
         return hashlib.sha256(vec["msg"].encode()).hexdigest()
     if kind == "hmac-sha256":
-        return hmac_module.new(bytes.fromhex(vec["key"]),
-                               bytes.fromhex(vec["msg_hex"]),
-                               hashlib.sha256).hexdigest()
+        return hmac_module.new(
+            bytes.fromhex(vec["key"]), bytes.fromhex(vec["msg_hex"]), hashlib.sha256
+        ).hexdigest()
     if kind == "kdf":
         master = bytes.fromhex(vec["master"])
         return hashlib.sha256(master + vec["label"].encode()).digest()[:16].hex()

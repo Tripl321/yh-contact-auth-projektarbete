@@ -59,6 +59,7 @@ shallot demo incident                       # simulerat driftlarm + avslöjande
 ```
 
 **Repetitionsnoteringar:**
+
 - `simulate auth` lägger alltid åtminstone en `SIMULATED`/`TEST-ONLY`-markering;
   den rör ingen fysisk enhet.
 - `demo incident` är deterministisk — samma kommando ger samma ut på

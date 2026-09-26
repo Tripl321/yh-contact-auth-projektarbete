@@ -1,6 +1,29 @@
-{"packets": [
-{"id": "handshake", "type": 161, "payload_hex": "01", "note": "MSG_HANDSHAKE + target PLC"},
-{"id": "ready", "type": 162, "payload_hex": "44454e01", "note": "MSG_READY + device DEN"},
-{"id": "key_data", "type": 163, "key_hex": "000102030405060708090a0b0c0d0e0f", "expect_crc_be": "cecee288", "note": "MSG_KEY_DATA + len 16 + key + CRC32 BE over key"},
-{"id": "stored", "type": 164, "payload_hex": "cecee288", "note": "MSG_STORED + hash"}
-]}
+{
+  "packets": [
+    {
+      "id": "handshake",
+      "type": 161,
+      "payload_hex": "01",
+      "note": "MSG_HANDSHAKE + target PLC"
+    },
+    {
+      "id": "ready",
+      "type": 162,
+      "payload_hex": "44454e01",
+      "note": "MSG_READY + device DEN"
+    },
+    {
+      "id": "key_data",
+      "type": 163,
+      "key_hex": "000102030405060708090a0b0c0d0e0f",
+      "expect_crc_be": "cecee288",
+      "note": "MSG_KEY_DATA + len 16 + key + CRC32 BE over key"
+    },
+    {
+      "id": "stored",
+      "type": 164,
+      "payload_hex": "cecee288",
+      "note": "MSG_STORED + hash"
+    }
+  ]
+}

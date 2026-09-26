@@ -5,8 +5,19 @@ from shallot_cli import cli, registry, tui
 
 def test_registry_holds_all_commands():
     assert set(registry.COMMANDS) == {
-        "test", "simulate", "demo", "explain", "protocol", "doctor",
-        "build", "device", "monitor", "mamabear", "fido2", "admin", "bench",
+        "test",
+        "simulate",
+        "demo",
+        "explain",
+        "protocol",
+        "doctor",
+        "build",
+        "device",
+        "monitor",
+        "mamabear",
+        "fido2",
+        "admin",
+        "bench",
     }
 
 

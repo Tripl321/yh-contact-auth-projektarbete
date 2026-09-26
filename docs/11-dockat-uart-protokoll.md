@@ -8,10 +8,10 @@ Ingen radio, ingen LoRa. Enda transporten här är dockad UART (Serial1)
 
 ## 1. Roller och session
 
-| Roll | Beteende |
-|---|---|
-| DEN (dockningsstation) | Initierar alltid. Skickar CHALLENGE, fattar fail-closed beslut, bekräftar med ACK |
-| PAW (ID-bricka) | Svarar endast — initierar aldrig trafik. Svarar på CHALLENGE med RESPONSE; ACK tolkas den endan. HEARTBEAT/ALARM är reserverade i ramformatet men har ingen aktiv dock-beteende i PAW (ignoreras) |
+| Roll                   | Beteende                                                                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEN (dockningsstation) | Initierar alltid. Skickar CHALLENGE, fattar fail-closed beslut, bekräftar med ACK                                                                                                                 |
+| PAW (ID-bricka)        | Svarar endast — initierar aldrig trafik. Svarar på CHALLENGE med RESPONSE; ACK tolkas den endan. HEARTBEAT/ALARM är reserverade i ramformatet men har ingen aktiv dock-beteende i PAW (ignoreras) |
 
 Sessionsflöde: `DEN --CHALLENGE--> PAW --RESPONSE--> DEN --ACK--> PAW`.
 **Svarsdeadline 2 s** från challenge-sändning. Vid uteblivet/ogiltigt svar:
@@ -33,13 +33,13 @@ sessionen — ny session kräver ny CHALLENGE med färsk nonce.
 
 ## 3. Meddelandetyper (exakta payload-storlekar)
 
-| Typ | Värde | Riktning | Payload | Storlek |
-|---|---|---|---|---|
-| CHALLENGE | 0x01 | DEN → PAW | färsk nonce (RP2350 TRNG, 64-bit) | **8 B** |
-| RESPONSE | 0x02 | PAW → DEN | HMAC-SHA256(K_mac, nonce) — se avvikelsenot nedan | **32 B** |
-| HEARTBEAT | 0x03 | valfri → valfri | ingen (närvaro = liv) | **0 B** |
-| ALARM | 0x04 | PAW → DEN | larmkod (t.ex. 0x01 sabotage, 0x02 lågt batteri) | **1 B** |
-| ACK | 0xFF | DEN → PAW | status (0x01 godkänd / 0x00 nekad) | **1 B** |
+| Typ       | Värde | Riktning        | Payload                                           | Storlek  |
+| --------- | ----- | --------------- | ------------------------------------------------- | -------- |
+| CHALLENGE | 0x01  | DEN → PAW       | färsk nonce (RP2350 TRNG, 64-bit)                 | **8 B**  |
+| RESPONSE  | 0x02  | PAW → DEN       | HMAC-SHA256(K_mac, nonce) — se avvikelsenot nedan | **32 B** |
+| HEARTBEAT | 0x03  | valfri → valfri | ingen (närvaro = liv)                             | **0 B**  |
+| ALARM     | 0x04  | PAW → DEN       | larmkod (t.ex. 0x01 sabotage, 0x02 lågt batteri)  | **1 B**  |
+| ACK       | 0xFF  | DEN → PAW       | status (0x01 godkänd / 0x00 nekad)                | **1 B**  |
 
 Avvikande payload-storlek för känd typ, okänd typ, LEN > 64, eller CRC-fel
 → ramen kasseras i sin helhet (fail closed, ingen delvis tolkning).

@@ -84,24 +84,35 @@ def run_scenario(name: str) -> dict:
         out["response_hmac_hex"] = mac.hex()
         expect = paw_answer(nonce)
         if hmac_module.compare_digest(expect, mac):
-            out.update(result="AUTHENTICATED", decision="grant",
-                       reason_code=0, reason=REASONS[0], ack="0x01")
+            out.update(
+                result="AUTHENTICATED",
+                decision="grant",
+                reason_code=0,
+                reason=REASONS[0],
+                ack="0x01",
+            )
         return out
 
     if name == "wrong-key":
         mac = paw_answer(nonce, master=WRONG_MASTER)
         out["response_frame_hex"] = uart.encode(uart.T_RESPONSE, mac).hex()
         out["response_hmac_hex"] = mac.hex()
-        out.update(reason_code=5, reason=REASONS[5],
-                   detail="PAW använde fel nyckel; konstanttidsjämförelsen fallerade.")
+        out.update(
+            reason_code=5,
+            reason=REASONS[5],
+            detail="PAW använde fel nyckel; konstanttidsjämförelsen fallerade.",
+        )
         return out
 
     if name == "timeout":
         full = uart.encode(uart.T_RESPONSE, paw_answer(nonce))
         out["response_frame_hex"] = full[:5].hex()
-        out.update(reason_code=1, reason=REASONS[1],
-                   detail="ofullständig RESPONSE inom %d s-deadline (5/%d byte); "
-                          "sessionen avbröts." % (DEADLINE_MS // 1000, len(full)))
+        out.update(
+            reason_code=1,
+            reason=REASONS[1],
+            detail="ofullständig RESPONSE inom %d s-deadline (5/%d byte); "
+            "sessionen avbröts." % (DEADLINE_MS // 1000, len(full)),
+        )
         return out
 
     if name == "crc":
@@ -112,22 +123,31 @@ def run_scenario(name: str) -> dict:
             uart.decode(bytes(bad))
         except uart.UartError:
             pass
-        out.update(reason_code=4, reason=REASONS[4],
-                   detail="CRC32-fel i RESPONSE; ramen kasserades i sin helhet.")
+        out.update(
+            reason_code=4,
+            reason=REASONS[4],
+            detail="CRC32-fel i RESPONSE; ramen kasserades i sin helhet.",
+        )
         return out
 
     if name == "disconnect":
-        out.update(reason_code=6, reason=REASONS[6],
-                   detail="inga byte från PAW sedan CHALLENGE (länken antas nere).")
+        out.update(
+            reason_code=6,
+            reason=REASONS[6],
+            detail="inga byte från PAW sedan CHALLENGE (länken antas nere).",
+        )
         return out
 
     if name == "late-ack":
         mac = paw_answer(nonce)
         out["response_frame_hex"] = uart.encode(uart.T_RESPONSE, mac).hex()
         out["response_hmac_hex"] = mac.hex()
-        out.update(reason_code=1, reason=REASONS[1],
-                   detail="giltig RESPONSE anlände efter %d s-deadline; för sent svar nekas."
-                          % (DEADLINE_MS // 1000))
+        out.update(
+            reason_code=1,
+            reason=REASONS[1],
+            detail="giltig RESPONSE anlände efter %d s-deadline; för sent svar nekas."
+            % (DEADLINE_MS // 1000),
+        )
         return out
 
     raise AssertionError("unreachable")  # pragma: no cover
@@ -147,7 +167,10 @@ def render(res: dict) -> str:
         lines.append("response : %s" % res["response_frame_hex"])
     if res.get("response_hmac_hex"):
         lines.append("hmac     : %s" % res["response_hmac_hex"])
-    lines.append("resultat : %s (kod %s: %s)" % (res["result"], res["reason_code"], res["reason"]))
+    lines.append(
+        "resultat : %s (kod %s: %s)"
+        % (res["result"], res["reason_code"], res["reason"])
+    )
     lines.append("beslut   : %s" % res["decision"])
     if res.get("detail"):
         lines.append("detalj   : %s" % res["detail"])

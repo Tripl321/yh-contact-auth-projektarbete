@@ -12,21 +12,31 @@ Crypto acceptance itself (Ed25519 sign/verify, format, manipulated,
 rollback) is pinned in tests/test_pro88_den.py; here those vectors
 drive the session gate end to end. All key material below is TEST-ONLY.
 """
-import hashlib
-import hmac as hmac_module
 
+import hashlib
 import sys
-sys.path.insert(0, '.')
-from tests.test_pro88_den import (
-    MockDenSession, K_MAC, hmac16,
-    REASON_OK, REASON_HMAC_MISMATCH, REASON_BLOCKLISTED,
-    BLOCKLIST_VERSION, BLOCKLIST_ISSUER, BLOCKLIST_MAX_ENTRIES,
-    KEY_HASH_SIZE, BLOCKLIST_SIGNATURE_SIZE,
-    TEST_ED25519_PRIVATE_KEY, TEST_ED25519_PUBLIC_KEY, TEST_BLOCKLIST_V1,
-    ed25519_sign, ed25519_verify,
-)
+
+sys.path.insert(0, ".")
 from tests.test_pro84_paw import MockPawResponder
-from tests.test_pro87_uart import encode, T_CHALLENGE, T_ACK
+from tests.test_pro87_uart import T_ACK, T_CHALLENGE, encode
+from tests.test_pro88_den import (
+    BLOCKLIST_ISSUER,
+    BLOCKLIST_MAX_ENTRIES,
+    BLOCKLIST_SIGNATURE_SIZE,
+    BLOCKLIST_VERSION,
+    K_MAC,
+    KEY_HASH_SIZE,
+    REASON_BLOCKLISTED,
+    REASON_HMAC_MISMATCH,
+    REASON_OK,
+    TEST_BLOCKLIST_V1,
+    TEST_ED25519_PRIVATE_KEY,
+    TEST_ED25519_PUBLIC_KEY,
+    MockDenSession,
+    ed25519_sign,
+    ed25519_verify,
+    hmac16,
+)
 
 BLOCKED_MASTER = bytes(range(16))  # test-only master; fp goes on the list
 CLEAN_MASTER = bytes(range(1, 17))  # test-only master; fp stays unlisted
@@ -40,8 +50,12 @@ def fp_of(master):
     return hashlib.sha256(bytes(master)).digest()[:4]
 
 
-def build_list(entries, priv=TEST_ED25519_PRIVATE_KEY,
-               version=BLOCKLIST_VERSION, issuer=BLOCKLIST_ISSUER):
+def build_list(
+    entries,
+    priv=TEST_ED25519_PRIVATE_KEY,
+    version=BLOCKLIST_VERSION,
+    issuer=BLOCKLIST_ISSUER,
+):
     """Build a signed raw list (mirrors UNO Q sign_blocklist layout)."""
     data = bytes([version]) + bytes(issuer) + bytes([len(entries)]) + b"".join(entries)
     return data + ed25519_sign(data, priv)
@@ -63,12 +77,13 @@ def try_install(s, raw, pubkey=TEST_ED25519_PUBLIC_KEY):
     need = 18 + count * KEY_HASH_SIZE + BLOCKLIST_SIGNATURE_SIZE
     if len(raw) < need:
         return False
-    data = raw[:18 + count * KEY_HASH_SIZE]
-    sig = raw[18 + count * KEY_HASH_SIZE:need]
+    data = raw[: 18 + count * KEY_HASH_SIZE]
+    sig = raw[18 + count * KEY_HASH_SIZE : need]
     if not ed25519_verify(data, sig, pubkey):
         return False
-    s.install_blocklist([data[18 + i * KEY_HASH_SIZE:22 + i * KEY_HASH_SIZE]
-                         for i in range(count)])
+    s.install_blocklist(
+        [data[18 + i * KEY_HASH_SIZE : 22 + i * KEY_HASH_SIZE] for i in range(count)]
+    )
     return True
 
 
@@ -84,6 +99,7 @@ def grant_session(master, entries):
 # ============================================================================
 # Valid / blocked / unknown / invalid / missing
 # ============================================================================
+
 
 def test_pro98_valid_list_unlisted_fp_grants():
     """Giltig lista + ospärrad fingerprint -> grant (deny-list semantics)."""
@@ -134,7 +150,10 @@ def test_pro98_invalid_signature_keeps_missing():
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
     assert s.on_frame(0x02, hmac16(K_MAC, nonce), 10100) == (
-        False, 0x00, REASON_BLOCKLISTED)
+        False,
+        0x00,
+        REASON_BLOCKLISTED,
+    )
 
 
 def test_pro98_rollback_version_rejected():
@@ -153,7 +172,10 @@ def test_pro98_truncated_list_rejected():
     nonce = bytes(range(0x10, 0x18))
     s.send_challenge(nonce, 10000)
     assert s.on_frame(0x02, hmac16(K_MAC, nonce), 10100) == (
-        False, 0x00, REASON_BLOCKLISTED)
+        False,
+        0x00,
+        REASON_BLOCKLISTED,
+    )
 
 
 def test_pro98_oversize_entry_count_rejected():
@@ -172,8 +194,12 @@ def test_pro98_wrong_trust_root_rejected():
     Modellerar placeholder/fel trust root: ingen lista blir giltig,
     alla sessioner nekas fail-closed."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    other_pub = Ed25519PrivateKey.from_private_bytes(
-        OTHER_ED25519_PRIVATE).public_key().public_bytes_raw()
+
+    other_pub = (
+        Ed25519PrivateKey.from_private_bytes(OTHER_ED25519_PRIVATE)
+        .public_key()
+        .public_bytes_raw()
+    )
     raw = build_list([fp_of(BLOCKED_MASTER)], priv=OTHER_ED25519_PRIVATE)
     s = MockDenSession(CLEAN_MASTER)
     assert try_install(s, raw, pubkey=TEST_ED25519_PUBLIC_KEY) is False
@@ -213,7 +239,11 @@ def test_pro98_keeps_last_valid_on_error():
     s.clear_blocklist()  # listan tappas (t.ex. aldrig distribuerad) -> deny
     s.advance_gap(10100 + 1000 + 1)
     s.send_challenge(nonce, 20000)
-    assert s.on_frame(0x02, hmac16(K_MAC, nonce), 20100) == (False, 0x00, REASON_BLOCKLISTED)
+    assert s.on_frame(0x02, hmac16(K_MAC, nonce), 20100) == (
+        False,
+        0x00,
+        REASON_BLOCKLISTED,
+    )
 
 
 def test_pro98_bad_hmac_never_reaches_gate():
@@ -248,10 +278,13 @@ def test_pro98_deny_chain_never_shows_authenticated():
 # Source guards: gate placement, reason code, placeholder scope
 # ============================================================================
 
+
 def _den_src():
     import pathlib
-    return (pathlib.Path(__file__).resolve().parent.parent /
-            "plc/den-main/den-main.ino").read_text()
+
+    return (
+        pathlib.Path(__file__).resolve().parent.parent / "plc/den-main/den-main.ino"
+    ).read_text()
 
 
 def test_pro98_source_reason_code_stable():
@@ -266,12 +299,14 @@ def test_pro98_source_deny_before_grant():
     """Revocation-grinden ligger efter HMAC-kontroll men före varje
     grant-artefakt (ACK 0x01-kodning, LED-tändning, AUTHENTICATED)."""
     src = _den_src()
-    body = src[src.index("static void den_on_response"):]
+    body = src[src.index("static void den_on_response") :]
     gate = body.index("if (!blocklist_valid)")
-    for artifact in ["uint8_t ackBody[1] = {0x01}",
-                     "digitalWrite(LED_BUILTIN, HIGH)",
-                     "denState = DEN_ST_AUTHENTICATED",
-                     'Serial.println("[DEN] AUTHENTICATED']:
+    for artifact in [
+        "uint8_t ackBody[1] = {0x01}",
+        "digitalWrite(LED_BUILTIN, HIGH)",
+        "denState = DEN_ST_AUTHENTICATED",
+        'Serial.println("[DEN] AUTHENTICATED',
+    ]:
         assert gate < body.index(artifact), artifact
     assert "DEN_REASON_BLOCKLISTED" in body
 
@@ -279,7 +314,7 @@ def test_pro98_source_deny_before_grant():
 def test_pro98_source_fingerprint_from_master_and_wiped():
     """Fingerprint beräknas från lagrad master och rensas efter bruk."""
     src = _den_src()
-    body = src[src.index("static void den_on_response"):]
+    body = src[src.index("static void den_on_response") :]
     assert "shalot_sha256(denDevKey, AES_KEY_SIZE, kh)" in body
     assert "memset(kh, 0, sizeof(kh))" in body
     assert "memset(fp, 0, sizeof(fp))" in body
@@ -288,7 +323,7 @@ def test_pro98_source_fingerprint_from_master_and_wiped():
 def test_pro98_source_issuer_checked():
     """Issuer binds mot SHALLOT-AUTH i process_blocklist_message."""
     src = _den_src()
-    body = src[src.index("static uint8_t process_blocklist_message"):]
+    body = src[src.index("static uint8_t process_blocklist_message") :]
     assert "kExpectedIssuer" in body
     assert "issuerOk" in body
 

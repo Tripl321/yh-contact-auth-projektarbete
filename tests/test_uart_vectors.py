@@ -11,7 +11,6 @@ import subprocess
 import tempfile
 
 import pytest
-
 from shallot_cli import uart
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -22,10 +21,21 @@ def _harness():
     tmp = tempfile.TemporaryDirectory()
     exe = str(pathlib.Path(tmp.name) / "uvect")
     proc = subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-         "-I", str(ROOT / "libraries/DenUartProtocol/src"),
-         str(ROOT / "tests/uart_vectors_host.c"), "-o", exe],
-        capture_output=True, text=True, timeout=120,
+        [
+            "cc",
+            "-std=c99",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(ROOT / "libraries/DenUartProtocol/src"),
+            str(ROOT / "tests/uart_vectors_host.c"),
+            "-o",
+            exe,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     return tmp, exe
@@ -62,6 +72,9 @@ def test_c_decode_matches_corpus(uvect):
 
 def test_python_matches_corpus():
     for vec in VECTORS:
-        assert uart.encode(vec["type"], bytes.fromhex(vec["payload"])).hex() == vec["frame"]
+        assert (
+            uart.encode(vec["type"], bytes.fromhex(vec["payload"])).hex()
+            == vec["frame"]
+        )
         t, p = uart.decode(bytes.fromhex(vec["frame"]))
         assert t == vec["type"] and p.hex() == vec["payload"]

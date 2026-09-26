@@ -18,37 +18,37 @@ Comprehensive audit of sensitive state handling across all three firmware compon
 
 ### 1. RAM-Only Storage (No Persistent Storage)
 
-| Component | Keys in SRAM | Flash/EEPROM Writes | Status |
-|-----------|--------------|---------------------|--------|
-| PAW | `aesKey`, `kMac`, `kEnc`, `keyStored` | None | ✅ PASS |
-| DEN | `denDevKey`, `kMac`, `kEnc`, `key_provisioned`, `current_blocklist` | None | ✅ PASS |
-| UNO Q | `aesKey`, `keyHash`, `blocklist_private_key`, `blocklist_key_provisioned` | None | ✅ PASS |
-| PAW Key Rx | `aesKey`, `keyStored` | None | ✅ PASS |
-| PLC Key Rx | `aesKey`, `keyStored` | None | ✅ PASS |
+| Component  | Keys in SRAM                                                              | Flash/EEPROM Writes | Status  |
+| ---------- | ------------------------------------------------------------------------- | ------------------- | ------- |
+| PAW        | `aesKey`, `kMac`, `kEnc`, `keyStored`                                     | None                | ✅ PASS |
+| DEN        | `denDevKey`, `kMac`, `kEnc`, `key_provisioned`, `current_blocklist`       | None                | ✅ PASS |
+| UNO Q      | `aesKey`, `keyHash`, `blocklist_private_key`, `blocklist_key_provisioned` | None                | ✅ PASS |
+| PAW Key Rx | `aesKey`, `keyStored`                                                     | None                | ✅ PASS |
+| PLC Key Rx | `aesKey`, `keyStored`                                                     | None                | ✅ PASS |
 
 **Verification:** Source guards confirm no `EEPROM`, `Flash`, `PROGMEM`, `LittleFS`, `SPIFFS`, or `preferences` APIs used for key material.
 
 ### 2. Buffer Clearing on Security Events
 
-| Event | PAW | DEN | UNO Q |
-|-------|-----|-----|-------|
-| Boot | `secure_clear_key()` in `setup()` | `key_provisioned=0`, `memset(kMac/kEnc)` | `keyState=UNINITIALIZED`, TRNG health check |
-| Provisioning timeout | `secure_clear_key()` | `secure_clear_key()`, `memset(provBuf/blBuf)` | N/A (initiator) |
-| CRC/format error | `secure_clear_key()` | `secure_clear_key()`, `memset(provBuf/blBuf)` | N/A |
-| Session complete | `memset(challenge)`, `memset(response)` | `memset(denNonce)`, `memset(denTx)`, `memset(expect)` | `secureWipeKey()` on TRNG fail |
-| Blocklist error | N/A | `memset(blBuf)`, `memset(current_blocklist)` | `memset(entries/signature)` |
-| Failed auth | `secure_clear_key()` | `memset(denNonce)` | N/A |
-| New session | `secure_clear_key()` on handshake | `memset(provBuf)` on handshake | N/A |
+| Event                | PAW                                     | DEN                                                   | UNO Q                                       |
+| -------------------- | --------------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
+| Boot                 | `secure_clear_key()` in `setup()`       | `key_provisioned=0`, `memset(kMac/kEnc)`              | `keyState=UNINITIALIZED`, TRNG health check |
+| Provisioning timeout | `secure_clear_key()`                    | `secure_clear_key()`, `memset(provBuf/blBuf)`         | N/A (initiator)                             |
+| CRC/format error     | `secure_clear_key()`                    | `secure_clear_key()`, `memset(provBuf/blBuf)`         | N/A                                         |
+| Session complete     | `memset(challenge)`, `memset(response)` | `memset(denNonce)`, `memset(denTx)`, `memset(expect)` | `secureWipeKey()` on TRNG fail              |
+| Blocklist error      | N/A                                     | `memset(blBuf)`, `memset(current_blocklist)`          | `memset(entries/signature)`                 |
+| Failed auth          | `secure_clear_key()`                    | `memset(denNonce)`                                    | N/A                                         |
+| New session          | `secure_clear_key()` on handshake       | `memset(provBuf)` on handshake                        | N/A                                         |
 
 **Implementation:** All wipes use `volatile uint8_t*` stores to prevent compiler optimization. Intermediate buffers (HMAC ipad/opad/inner/outer, SHA256 block) explicitly zeroed.
 
 ### 3. Fail-Closed Startup
 
-| Component | Behavior Without Provisioned Key |
-|-----------|----------------------------------|
-| PAW | `keyStored=false` at boot → `STATE_WAITING_FOR_KEY`; dock/LoRa auth rejected |
-| DEN | `key_provisioned=0` at boot → `DEN_ST_DENIED`; `den_on_response` returns `HMAC_MISMATCH` |
-| UNO Q | `keyState=UNINITIALIZED` at boot; `distributeKey`/`distributeBlocklist` return false; TRNG health check on generate |
+| Component | Behavior Without Provisioned Key                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------- |
+| PAW       | `keyStored=false` at boot → `STATE_WAITING_FOR_KEY`; dock/LoRa auth rejected                                        |
+| DEN       | `key_provisioned=0` at boot → `DEN_ST_DENIED`; `den_on_response` returns `HMAC_MISMATCH`                            |
+| UNO Q     | `keyState=UNINITIALIZED` at boot; `distributeKey`/`distributeBlocklist` return false; TRNG health check on generate |
 
 ### 4. No State Reuse After Errors
 
@@ -59,20 +59,22 @@ Comprehensive audit of sensitive state handling across all three firmware compon
 ### 5. SECURE_DEBUG Opt-In (Default OFF)
 
 All five firmware files implement:
+
 ```cpp
 #ifdef SECURE_DEBUG
 #define SECURE_DEBUG 1
 #endif
 ```
+
 **Verified:** No sensitive logs in default builds. All sensitive output (nonces, HMACs, key fingerprints, hashes, CRCs, blocklist details) guarded by `#if SECURE_DEBUG`.
 
 ### 6. Ed25519 Key Separation (MVP Design)
 
-| Component | Private Key | Public Key | Sign | Verify |
-|-----------|-------------|------------|------|--------|
-| UNO Q (MamaBear) | ✅ `blocklist_private_key` | — | ✅ `ed25519_sign` | — |
-| DEN | — | ✅ `blocklist_public_key` (placeholder) | — | ✅ `ed25519_verify` |
-| PAW | — | — | — | — |
+| Component        | Private Key                | Public Key                              | Sign              | Verify              |
+| ---------------- | -------------------------- | --------------------------------------- | ----------------- | ------------------- |
+| UNO Q (MamaBear) | ✅ `blocklist_private_key` | —                                       | ✅ `ed25519_sign` | —                   |
+| DEN              | —                          | ✅ `blocklist_public_key` (placeholder) | —                 | ✅ `ed25519_verify` |
+| PAW              | —                          | —                                       | —                 | —                   |
 
 **Verified:** No Ed25519 code in PAW; no private key in DEN; no signing in DEN.
 
@@ -86,6 +88,7 @@ All five firmware files implement:
 ### 8. No Key Exposure in Bridge RPC
 
 UNO Q Bridge RPC exposes only:
+
 - `get_key_state` → enum (`UNINITIALIZED`/`GENERATED`/etc.)
 - `get_key_fingerprint` → 4-byte SHA-256 hash only
 - `request_key_generation`/`request_key_distribution`/`request_blocklist_distribution` → actions only
@@ -97,52 +100,56 @@ No RPC returns raw key material (`aesKey`, `blocklist_private_key`, etc.).
 ## Deviations / Findings
 
 ### 1. PAW/PLC Key Receivers Use Heap for SHA256 (`calloc`/`free`)
+
 **Files:** `id-kort/paw-key-receiver/paw-key-receiver.ino`, `plc/plc-key-receiver/plc-key-receiver.ino`
 **Issue:** SHA256 implementation allocates message buffer on heap via `calloc`/`free`.
 **Risk:** Heap fragmentation, allocation failure in constrained environments.
 **Recommendation:** Use stack-allocated buffer (like UNO Q/PAW main/DEN firmware).
 
 ### 2. UNO Q Blocklist Private Key Not Explicitly Wiped on Error — FIXED
+
 **File:** `key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino`
 **Issue:** `blocklist_private_key` zero-initialized but no explicit wipe on `sign_blocklist` failure; `distributeBlocklist` ignored the sign return value and transmitted with a garbage signature buffer.
 **Fix Applied:** `sign_blocklist` wipes `signature` on Ed25519 failure and returns false; `distributeBlocklist` checks the return, wipes `entries`/`signature` and returns without transmitting. `distributeKey` wipes `keyPacket` (raw AES key) immediately after transmit.
 **Remaining limitation:** `blocklist_private_key` has no provisioning flow yet (`blocklist_key_provisioned` never set) — the sign/distribute paths are fail-closed dead code until a secure HSM-backed provisioning process exists (recommendation 5 below remains open). No hardware wipe of SRAM on the STM32U585 beyond power-cycle; RP2350 SRAM has no ECC (see K7).
 
 ### 3. DEN Firmware Had Missing `denDevKey` Declaration (Fixed)
+
 **File:** `plc/den-main/den-main.ino`
 **Issue:** `denDevKey` referenced but not declared; `secure_clear_key` didn't wipe it; `key_provisioned` flag missing.
 **Fix Applied:** Added `static uint8_t denDevKey[AES_KEY_SIZE]`, updated `secure_clear_key`, added `key_provisioned` flag, removed startup key derivation, added fail-closed check in `den_on_response`.
 
 ### 4. PAW/PLC Key Receivers Don't Derive `kMac`/`kEnc`
+
 **Note:** Simpler design — only receive/store master key, no HMAC/encryption roles. Acceptable for receiver-only role.
 
 ---
 
 ## Simulated / Test-Only Verification
 
-| Area | Method | Status |
-|------|--------|--------|
-| Full authentication flow | Python mock simulation (`test_pro61_e2e_integration.py`) | ✅ Simulated |
-| HMAC-SHA256 challenge-response | Python `hmac` oracle + firmware mirror | ✅ Simulated |
-| Ed25519 sign/verify | Python `cryptography` library + firmware mirror | ✅ Simulated |
-| UART framing/CRC/parser | Python implementation + firmware mirror | ✅ Simulated |
-| Session state machine | Python `MockDenSession` / `MockPawResponder` | ✅ Simulated |
-| Buffer clearing logic | Source code pattern matching | ✅ Verified |
-| Constant-time compare | Source code inspection | ✅ Verified |
+| Area                           | Method                                                   | Status       |
+| ------------------------------ | -------------------------------------------------------- | ------------ |
+| Full authentication flow       | Python mock simulation (`test_pro61_e2e_integration.py`) | ✅ Simulated |
+| HMAC-SHA256 challenge-response | Python `hmac` oracle + firmware mirror                   | ✅ Simulated |
+| Ed25519 sign/verify            | Python `cryptography` library + firmware mirror          | ✅ Simulated |
+| UART framing/CRC/parser        | Python implementation + firmware mirror                  | ✅ Simulated |
+| Session state machine          | Python `MockDenSession` / `MockPawResponder`             | ✅ Simulated |
+| Buffer clearing logic          | Source code pattern matching                             | ✅ Verified  |
+| Constant-time compare          | Source code inspection                                   | ✅ Verified  |
 
 ---
 
 ## Requires Physical Hardware Verification
 
-| Area | Reason |
-|------|--------|
-| STM32U585 TRNG entropy quality | Requires statistical tests (NIST SP 800-90B) on physical hardware |
-| RP2350 hardware SHA256 accelerator | Performance/side-channel verification on silicon |
-| Side-channel resistance (power/EM) | Requires lab equipment (oscilloscope, EM probes) |
-| Ed25519 implementation on target | Timing/power analysis on STM32U585/RP2350 |
-| Flash persistence across power cycles | Physical power-cycle testing |
-| LoRa link budget / reliability | RF environment testing |
-| e-Paper BUSY timeout behavior | Physical panel testing |
+| Area                                  | Reason                                                            |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| STM32U585 TRNG entropy quality        | Requires statistical tests (NIST SP 800-90B) on physical hardware |
+| RP2350 hardware SHA256 accelerator    | Performance/side-channel verification on silicon                  |
+| Side-channel resistance (power/EM)    | Requires lab equipment (oscilloscope, EM probes)                  |
+| Ed25519 implementation on target      | Timing/power analysis on STM32U585/RP2350                         |
+| Flash persistence across power cycles | Physical power-cycle testing                                      |
+| LoRa link budget / reliability        | RF environment testing                                            |
+| e-Paper BUSY timeout behavior         | Physical panel testing                                            |
 
 ### RP2350 key-storage bench checklist (PAW + DEN, per device)
 
@@ -153,15 +160,15 @@ innehåller grindarna (`key_is_valid`/`den_key_valid`, nollavvisning vid
 lagring, clear vid handshake/timeout/fel). Följande går inte att bevisa
 utan enheten och stängs endast via `docs/16`-guiden på sammansatt bänk:
 
-| # | Beroende | Bänkacceptans |
-|---|---|---|
-| K1 | SRAM-volatilitet: nyckel dör vid spänningsbortfall | Bryt matningen efter provisionering → efter omstart krävs ny ceremoni; ingen auth utan nyckel |
-| K2 | Ingen flash-persistens (nyckel hamnar aldrig i flash/UF2) | Inspektera UF2 + power-cykla; nyckel/fingerprint får ej överleva |
-| K3 | Volatile-wipe biter (kompilatorn optimerar ej bort nollställning) | Granska genererad assembler för `secure_clear_key` med repoets toolchain; verifiera nollställda buffertar i minnesdump |
-| K4 | Noll/korrupt nyckel nekar på enheten | Provisionera giltig nyckel (grön blink/AUTH), korrumpera via omprovisionering med nollnyckel → `MSG_ERROR`, därefter nekas challenge (fail closed) |
-| K5 | Timeout/handshake-clear på riktig USB-serie | Håll inne key-data > 10 s → `PROV_FAILED`, lagrad nyckel borta; ny handshake mitt i session nollställer |
-| K6 | Nyckel aldrig på tråd utom fingerprint | Logikanalysator på USB + dock-UART under ceremoni och session: endast 4-byte fingerprint, aldrig nyckelbyte |
-| K7 | Enstaka SRAM-bitfel detekteras ej (nollkoll fångar wipe, ej bitflip) | Restrisk: accepteras för MVP; ingen ECC på RP2350-SRAM — dokumenteras, ingen bänkåtgärd |
+| #   | Beroende                                                             | Bänkacceptans                                                                                                                                      |
+| --- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| K1  | SRAM-volatilitet: nyckel dör vid spänningsbortfall                   | Bryt matningen efter provisionering → efter omstart krävs ny ceremoni; ingen auth utan nyckel                                                      |
+| K2  | Ingen flash-persistens (nyckel hamnar aldrig i flash/UF2)            | Inspektera UF2 + power-cykla; nyckel/fingerprint får ej överleva                                                                                   |
+| K3  | Volatile-wipe biter (kompilatorn optimerar ej bort nollställning)    | Granska genererad assembler för `secure_clear_key` med repoets toolchain; verifiera nollställda buffertar i minnesdump                             |
+| K4  | Noll/korrupt nyckel nekar på enheten                                 | Provisionera giltig nyckel (grön blink/AUTH), korrumpera via omprovisionering med nollnyckel → `MSG_ERROR`, därefter nekas challenge (fail closed) |
+| K5  | Timeout/handshake-clear på riktig USB-serie                          | Håll inne key-data > 10 s → `PROV_FAILED`, lagrad nyckel borta; ny handshake mitt i session nollställer                                            |
+| K6  | Nyckel aldrig på tråd utom fingerprint                               | Logikanalysator på USB + dock-UART under ceremoni och session: endast 4-byte fingerprint, aldrig nyckelbyte                                        |
+| K7  | Enstaka SRAM-bitfel detekteras ej (nollkoll fångar wipe, ej bitflip) | Restrisk: accepteras för MVP; ingen ECC på RP2350-SRAM — dokumenteras, ingen bänkåtgärd                                                            |
 
 K1–K6 kryssas med loggutdrag per rad; K7 är en accepterad restrisk tills
 nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
@@ -179,23 +186,23 @@ nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
 
 ## Test Coverage
 
-| Test Suite | Tests | Coverage |
-|------------|-------|----------|
-| `test_pro94_security_review.py` | 30 | PRO-94 specific checks |
-| `test_pro88_den.py` + `test_pro98_*` | 26 | DEN + PRO-98 Ed25519 |
-| `test_pro45_key_generation.py` | 16 | UNO Q key gen |
-| `test_pro46_usb_distribution.py` | 20 | Key distribution |
-| `test_pro47_key_storage.py` | 9 | Key storage |
-| `test_pro49_key_derivation.py` | 9 | K_mac derivation |
-| `test_pro50_hmac_paw.py` | 10 | PAW HMAC |
-| `test_pro51_nonce_generation.py` | 11 | Nonce |
-| `test_pro61_e2e_integration.py` | 2 | E2E |
-| `test_pro62_failure_scenarios.py` | 6 | Failures |
-| `test_pro84_paw.py` | 10 | PAW auth |
-| `test_pro87_uart.py` | 13 | UART protocol |
-| `test_paw_responsive.py` | 5 | Responsiveness |
-| `test_paw_uart_split.py` | 6 | UART split |
-| **Total** | **401** | **All passing (point-in-time; per-suite rows above are historical)** |
+| Test Suite                           | Tests   | Coverage                                                             |
+| ------------------------------------ | ------- | -------------------------------------------------------------------- |
+| `test_pro94_security_review.py`      | 30      | PRO-94 specific checks                                               |
+| `test_pro88_den.py` + `test_pro98_*` | 26      | DEN + PRO-98 Ed25519                                                 |
+| `test_pro45_key_generation.py`       | 16      | UNO Q key gen                                                        |
+| `test_pro46_usb_distribution.py`     | 20      | Key distribution                                                     |
+| `test_pro47_key_storage.py`          | 9       | Key storage                                                          |
+| `test_pro49_key_derivation.py`       | 9       | K_mac derivation                                                     |
+| `test_pro50_hmac_paw.py`             | 10      | PAW HMAC                                                             |
+| `test_pro51_nonce_generation.py`     | 11      | Nonce                                                                |
+| `test_pro61_e2e_integration.py`      | 2       | E2E                                                                  |
+| `test_pro62_failure_scenarios.py`    | 6       | Failures                                                             |
+| `test_pro84_paw.py`                  | 10      | PAW auth                                                             |
+| `test_pro87_uart.py`                 | 13      | UART protocol                                                        |
+| `test_paw_responsive.py`             | 5       | Responsiveness                                                       |
+| `test_paw_uart_split.py`             | 6       | UART split                                                           |
+| **Total**                            | **401** | **All passing (point-in-time; per-suite rows above are historical)** |
 
 ---
 
@@ -213,12 +220,12 @@ nyckelintegritet (lagrad fingerprint-jämförelse vid hämtning) införs.
 
 ## Files Modified for PRO-94
 
-| File | Changes |
-|------|---------|
-| `plc/den-main/den-main.ino` | Added `denDevKey`, `key_provisioned`, updated `secure_clear_key`, removed startup key derivation, added fail-closed check |
+| File                                                                | Changes                                                                                                                                                         |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plc/den-main/den-main.ino`                                         | Added `denDevKey`, `key_provisioned`, updated `secure_clear_key`, removed startup key derivation, added fail-closed check                                       |
 | `key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino` | `sign_blocklist` wipes signature on failure; `distributeBlocklist` checks sign return, no transmit on failure; `distributeKey` wipes `keyPacket` after transmit |
-| `tests/test_pro94_security_review.py` | New: 27 PRO-94 security review tests + 3 wipe/transmit-guard tests |
-| `tests/test_pro88_den.py` | Updated for PRO-94 fail-closed checks |
+| `tests/test_pro94_security_review.py`                               | New: 27 PRO-94 security review tests + 3 wipe/transmit-guard tests                                                                                              |
+| `tests/test_pro88_den.py`                                           | Updated for PRO-94 fail-closed checks                                                                                                                           |
 
 ---
 

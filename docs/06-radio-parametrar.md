@@ -4,16 +4,16 @@
 
 Dessa parametrar är konfigurerade och beslutade enligt PRO-78.
 
-| Parameter | Värde | Kommentar |
-| -- | -- | -- |
-| Frekvens | 868.1 MHz | EU ISM-band |
-| Bandbredd | 125 kHz |  |
-| Spreading Factor | 7 |  |
-| Coding Rate | 4/5 |  |
-| Sändeffekt | 20 dBm |  |
-| Sync Word | 0x12 | Privat användning, inte LoRaWAN-standard |
-| Timeout | 5000 ms |  |
-| Omsändningspolicy | 3 försök |  |
+| Parameter         | Värde     | Kommentar                                |
+| ----------------- | --------- | ---------------------------------------- |
+| Frekvens          | 868.1 MHz | EU ISM-band                              |
+| Bandbredd         | 125 kHz   |                                          |
+| Spreading Factor  | 7         |                                          |
+| Coding Rate       | 4/5       |                                          |
+| Sändeffekt        | 20 dBm    |                                          |
+| Sync Word         | 0x12      | Privat användning, inte LoRaWAN-standard |
+| Timeout           | 5000 ms   |                                          |
+| Omsändningspolicy | 3 försök  |                                          |
 
 ## Duty cycle-policy och sändningsbudget
 
@@ -25,12 +25,12 @@ ETSI EN 300 220 tillåter maximalt 1 % duty cycle i EU ISM-bandet (868,0–868,6
 
 SHALLOT:s nuvarande implementation saknar LBT. Därför gäller följande designbudget:
 
-| Parameter | Värde |
-| -- | -- |
-| Duty cycle-budget | 1 % |
-| Max sändtid per rullande 60 min | 36 sekunder (36 000 ms) |
-| Fönstertyp | Rullande, glidande 60 minuter |
-| LBT implementerad | Nej |
+| Parameter                       | Värde                         |
+| ------------------------------- | ----------------------------- |
+| Duty cycle-budget               | 1 %                           |
+| Max sändtid per rullande 60 min | 36 sekunder (36 000 ms)       |
+| Fönstertyp                      | Rullande, glidande 60 minuter |
+| LBT implementerad               | Nej                           |
 
 ### Vad som räknas in i budgeten
 
@@ -47,22 +47,22 @@ Time-on-air (ToA) beräknas med Semtechs formel (AN1200.13) för konfigurerade p
 
 T_symbol = 2^SF / BW = 2^7 / 125 000 = 1,024 ms
 
-| Pakettyp | Storlek (byte) | ToA (ms) |
-| -- | -- | -- |
-| CHALLENGE | 29 | 66,8 |
-| RESPONSE | 37 | 82,2 |
-| SUCCESS | 29 | 66,8 |
-| FAILURE | 29 | 66,8 |
-| HEARTBEAT | 33 | 71,9 |
+| Pakettyp  | Storlek (byte) | ToA (ms) |
+| --------- | -------------- | -------- |
+| CHALLENGE | 29             | 66,8     |
+| RESPONSE  | 37             | 82,2     |
+| SUCCESS   | 29             | 66,8     |
+| FAILURE   | 29             | 66,8     |
+| HEARTBEAT | 33             | 71,9     |
 
 ### Konsekvens för autentiseringscykler
 
 En fullständig autentiseringscykel (CHALLENGE + RESPONSE + SUCCESS) utan returer förbrukar cirka 216 ms sändtid. Med tre returer per paket (worst case) stiger förbrukningen till cirka 514 ms.
 
-| Scenario | ToA per cykel (ms) | Max cykler per timme |
-| -- | -- | -- |
-| Utan returer | 216 | 166 |
-| Worst case (3 returer CHALLENGE + 3 returer RESPONSE) | 514 | 70 |
+| Scenario                                              | ToA per cykel (ms) | Max cykler per timme |
+| ----------------------------------------------------- | ------------------ | -------------------- |
+| Utan returer                                          | 216                | 166                  |
+| Worst case (3 returer CHALLENGE + 3 returer RESPONSE) | 514                | 70                   |
 
 Kontinuerlig polling med 10 sekunders intervall (360 cykler/timme) skulle förbruka cirka 78 sekunder sändtid och därmed överskrida budgeten med mer än en faktor två. SHALLOT bör därför vara händelsestyrt, inte pollande.
 
@@ -94,12 +94,12 @@ HEARTBEAT-paket ska vara avställda om ingen aktiv autentiseringssession eller t
 
 ### Nuvarande konfiguration
 
-| Parameter | Värde | Status |
-| -- | -- | -- |
-| Frekvens | 868,1 MHz | Inom EU ISM-band (868,0–868,6 MHz) |
-| Sändeffekt (konfigurerad) | 20 dBm | Ej verifierad |
-| Duty cycle-gräns | 1 % (36 s/timme) | Designbudget, ej verifierad |
-| LBT | Ej implementerad |  |
+| Parameter                 | Värde            | Status                             |
+| ------------------------- | ---------------- | ---------------------------------- |
+| Frekvens                  | 868,1 MHz        | Inom EU ISM-band (868,0–868,6 MHz) |
+| Sändeffekt (konfigurerad) | 20 dBm           | Ej verifierad                      |
+| Duty cycle-gräns          | 1 % (36 s/timme) | Designbudget, ej verifierad        |
+| LBT                       | Ej implementerad |                                    |
 
 ### Verifiering före fälttest och driftsättning
 
@@ -119,15 +119,15 @@ Efterlevnad av ETSI EN 300 220 får inte presenteras som uppmätt eller garanter
 
 Värdena nedan fylls i efter fälttestning som del av PRO-77.
 
-| Mätvärde | Målvärde | Uppmätt värde | Status |
-| -- | -- | -- | -- |
-| Paketleverans | ≥95% | — | Ej mätt |
-| Latens (32-byte paket) | ≤2 s | — | Ej mätt |
-| Paketförlust (10 min kontinuerlig) | 0% | — | Ej mätt |
-| Räckvidd (utomhus, fri sikt) | ≥1 km | — | Ej mätt |
-| Interferens (2 andra LoRa-enheter, samma kanal) | Fungerar | — | Ej mätt |
-| System-ERP | ≤20 dBm | — | Ej mätt |
-| Sammanlagd sändtid (60 min, normal drift) | ≤36 s | — | Ej mätt |
+| Mätvärde                                        | Målvärde | Uppmätt värde | Status  |
+| ----------------------------------------------- | -------- | ------------- | ------- |
+| Paketleverans                                   | ≥95%     | —             | Ej mätt |
+| Latens (32-byte paket)                          | ≤2 s     | —             | Ej mätt |
+| Paketförlust (10 min kontinuerlig)              | 0%       | —             | Ej mätt |
+| Räckvidd (utomhus, fri sikt)                    | ≥1 km    | —             | Ej mätt |
+| Interferens (2 andra LoRa-enheter, samma kanal) | Fungerar | —             | Ej mätt |
+| System-ERP                                      | ≤20 dBm  | —             | Ej mätt |
+| Sammanlagd sändtid (60 min, normal drift)       | ≤36 s    | —             | Ej mätt |
 
 ## Planerade testmetoder
 

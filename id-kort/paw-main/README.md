@@ -13,22 +13,23 @@ Kombinerad firmware för **Adafruit Feather RP2350 + Core1262-868M + 1.54" Waves
 
 ### Pin-tilldelning
 
-| Funktion | Feather Pin | Notering |
-|----------|-------------|----------|
-| **UART till UNO Q** | GP0 (TX), GP1 (RX) | Serial1 |
-| **LoRa SPI1** | GP10 (CLK), GP11 (MOSI), GP28 (MISO) | Core1262 |
-| &nbsp; | GP9 (CS), GP6 (BUSY), GP8 (RESET) | Core1262 |
-| &nbsp; | GP21 (DIO1) | Core1262 |
-| **e-Paper SPI0** | GP23 (DIN/MOSI), GP22 (SCK) | Waveshare 1.54" |
-| &nbsp; | GP5 (CS), GP24 (DC), GP25 (RST) | Waveshare 1.54" |
-| &nbsp; | GP7 (BUSY) | Waveshare 1.54" |
-| **LED** | LED_BUILTIN | Inbyggd NeoPixel |
+| Funktion            | Feather Pin                          | Notering         |
+| ------------------- | ------------------------------------ | ---------------- |
+| **UART till UNO Q** | GP0 (TX), GP1 (RX)                   | Serial1          |
+| **LoRa SPI1**       | GP10 (CLK), GP11 (MOSI), GP28 (MISO) | Core1262         |
+| &nbsp;              | GP9 (CS), GP6 (BUSY), GP8 (RESET)    | Core1262         |
+| &nbsp;              | GP21 (DIO1)                          | Core1262         |
+| **e-Paper SPI0**    | GP23 (DIN/MOSI), GP22 (SCK)          | Waveshare 1.54"  |
+| &nbsp;              | GP5 (CS), GP24 (DC), GP25 (RST)      | Waveshare 1.54"  |
+| &nbsp;              | GP7 (BUSY)                           | Waveshare 1.54"  |
+| **LED**             | LED_BUILTIN                          | Inbyggd NeoPixel |
 
 ## Flashningsinstruktioner
 
 ### Metod 1: Arduino IDE
 
 1. **Installera nödvändiga bibliotek:**
+
    ```bash
    # Installera via Library Manager i Arduino IDE:
    - arduino-pico (earlephilhower) - för RP2350 support
@@ -49,18 +50,20 @@ Kombinerad firmware för **Adafruit Feather RP2350 + Core1262-868M + 1.54" Waves
 ### Metod 2: PlatformIO (rekommenderad)
 
 1. **Installera PlatformIO:**
+
    ```bash
    pio init --board feather_rp2350
    ```
 
 2. **Skapa `platformio.ini`:**
+
    ```ini
    [env:feather_rp2350]
    platform = raspberrypi
    board = feather_rp2350
    framework = arduino
    monitor_speed = 115200
-   
+
    ; Bibliotek (avkommentera när du använder riktig LoRa)
    ; lib_deps =
    ;   jgromes/RadioLib @ ^5.0.0
@@ -172,11 +175,11 @@ Ingen parser läser någonsin den andras transport.
 
 ### Fysisk UART-koppling PAW↔DEN (+ delad GND)
 
-| Från | Till | Notering |
-|---|---|---|
+| Från           | Till           | Notering                           |
+| -------------- | -------------- | ---------------------------------- |
 | DEN GPIO0 (TX) | PAW GPIO1 (RX) | RP2350 UART0-defaults, ingen remap |
-| DEN GPIO1 (RX) | PAW GPIO0 (TX) | |
-| GND | GND | gemensam jord krävs |
+| DEN GPIO1 (RX) | PAW GPIO0 (TX) |                                    |
+| GND            | GND            | gemensam jord krävs                |
 
 ### Bygg och upload (Feather RP2350)
 

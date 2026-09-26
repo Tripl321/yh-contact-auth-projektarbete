@@ -25,8 +25,9 @@ def _validate_port(port: str) -> str:
     return port
 
 
-def read_until(port: str, baud: int, needles: list[str],
-               timeout: float = 60.0) -> tuple[str | None, str | None]:
+def read_until(
+    port: str, baud: int, needles: list[str], timeout: float = 60.0
+) -> tuple[str | None, str | None]:
     """Läs seriell logg tills en nål matchar eller timeout. Returnerar
     (träffad nål, rad) eller (None, None). Raden returneras osanerad
     (matchning); anroparen sanerar före visning."""
@@ -61,7 +62,10 @@ def read_until(port: str, baud: int, needles: list[str],
 
 def run(device: str, port: str, baud: int = 115200) -> int:
     if device not in DEVICES:
-        print("error: okänd enhet %r (välj: %s)" % (device, "|".join(DEVICES)), file=sys.stderr)
+        print(
+            "error: okänd enhet %r (välj: %s)" % (device, "|".join(DEVICES)),
+            file=sys.stderr,
+        )
         return 2
     try:
         port = _validate_port(port)
@@ -77,23 +81,31 @@ def run(device: str, port: str, baud: int = 115200) -> int:
         print("error: %s" % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
         return 1
     except Exception as e:
-        print("error: kunde inte öppna port: %s"
-              % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
+        print(
+            "error: kunde inte öppna port: %s" % fido2_sanitize.sanitize(str(e)),
+            file=sys.stderr,
+        )
         return 1
-    print("Läser %s (%s) @ %d baud — skrivskyddad visning, Ctrl-C avbryter." % (port, device, baud))
+    print(
+        "Läser %s (%s) @ %d baud — skrivskyddad visning, Ctrl-C avbryter."
+        % (port, device, baud)
+    )
     try:
         with ser:
             while True:
                 raw = ser.readline()
                 if not raw:
                     continue
-                sys.stdout.write(fido2_sanitize.sanitize(
-                    raw.decode("utf-8", errors="replace")))
+                sys.stdout.write(
+                    fido2_sanitize.sanitize(raw.decode("utf-8", errors="replace"))
+                )
                 sys.stdout.flush()
     except KeyboardInterrupt:
         print("\nAvbrutet av användaren.")
         return 0
     except Exception as e:
-        print("error: läsfel på port: %s"
-              % fido2_sanitize.sanitize(str(e)), file=sys.stderr)
+        print(
+            "error: läsfel på port: %s" % fido2_sanitize.sanitize(str(e)),
+            file=sys.stderr,
+        )
         return 1

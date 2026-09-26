@@ -38,8 +38,14 @@ CODE_RE = r"^\d{6}$"
 SESSION_FILE = "admin-session.json"
 AUDIT_FILE = "admin-audit.jsonl"
 
-STEP_NAMES = ("Anslutning", "Enhetsidentifiering", "Admin-verifiering",
-              "Kodverifiering", "Session", "Revisionslogg")
+STEP_NAMES = (
+    "Anslutning",
+    "Enhetsidentifiering",
+    "Admin-verifiering",
+    "Kodverifiering",
+    "Session",
+    "Revisionslogg",
+)
 
 
 class AdminDenied(RuntimeError):
@@ -107,8 +113,9 @@ def audit_admin(action: str, details: dict) -> None:
     for key in details:
         if key in fido2_store.FORBIDDEN_FIELDS:
             raise ValueError("förbjudet fält i auditpost: %s" % key)
-    line = json.dumps({"ts": fido2_store.utcnow(),
-                       "action": action, "details": details})
+    line = json.dumps(
+        {"ts": fido2_store.utcnow(), "action": action, "details": details}
+    )
     path = _audit_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,11 +127,9 @@ def audit_admin(action: str, details: dict) -> None:
 
 def hash_code(code: str, salt: bytes | None = None) -> dict:
     """Salta + hasha installationskod. Returnerar lagringsbar post."""
-    raw = (salt or secrets.token_bytes(16))
-    digest = hashlib.pbkdf2_hmac("sha256", code.encode(), raw,
-                                 PBKDF2_ITERATIONS)
-    return {"salt": raw.hex(), "hash": digest.hex(),
-            "iterations": PBKDF2_ITERATIONS}
+    raw = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", code.encode(), raw, PBKDF2_ITERATIONS)
+    return {"salt": raw.hex(), "hash": digest.hex(), "iterations": PBKDF2_ITERATIONS}
 
 
 def verify_code(code: str, record: dict) -> bool:
@@ -163,8 +168,7 @@ def require_session(action: str, now: float | None = None) -> dict:
         state["session"] = None
         _save_state(state)
         audit_admin("auth-denied", {"action": action, "reason": "no-session"})
-        raise AdminDenied(
-            "ingen giltig Admin-session — logga in: shallot admin login")
+        raise AdminDenied("ingen giltig Admin-session — logga in: shallot admin login")
     state["session"]["last_activity"] = now
     _save_state(state)
     return state["session"]
@@ -178,8 +182,11 @@ def check_confirm(confirm: bool, op: str) -> None:
 
 def _pick_admin_credential(user_id: str, credential: str | None) -> dict | None:
     try:
-        creds = {c: m for c, m in fido2_store.load_credentials().items()
-                 if m.get("user_id") == user_id}
+        creds = {
+            c: m
+            for c, m in fido2_store.load_credentials().items()
+            if m.get("user_id") == user_id
+        }
     except RuntimeError:
         return None
     if credential:
@@ -193,21 +200,31 @@ def _mock_assertion_ok(user_id: str, cred: dict) -> tuple[bool, str]:
     cer = fido2.Ceremony()
     challenge = cer.begin()
     data = fido2.signed_data(challenge, fido2.ORIGIN, fido2.RP_ID, True)
-    sig = cer.backend.sign(credential_id=cred["credential_id"].encode(),
-                           signed_data=data)
+    sig = cer.backend.sign(
+        credential_id=cred["credential_id"].encode(), signed_data=data
+    )
     return cer.verify_assertion(
-        credential=cred, challenge=challenge, origin=fido2.ORIGIN,
-        rp_id=fido2.RP_ID, user_presence=True, signature=sig,
-        user_verified=True, expected_backend="mock")
+        credential=cred,
+        challenge=challenge,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        user_presence=True,
+        signature=sig,
+        user_verified=True,
+        expected_backend="mock",
+    )
 
 
 def _hardware_assertion_ok(user_id: str) -> tuple[bool, str]:
     """Färsk HW-assertion för användaren (fysisk närvaro). Aldrig undantag."""
-    creds = {c: m for c, m in fido2_store.load_credentials().items()
-             if m.get("user_id") == user_id
-             and m.get("status") == fido2_store.STATUS_ACTIVE
-             and isinstance(m.get("policy"), dict)
-             and m["policy"].get("backend") == "hardware"}
+    creds = {
+        c: m
+        for c, m in fido2_store.load_credentials().items()
+        if m.get("user_id") == user_id
+        and m.get("status") == fido2_store.STATUS_ACTIVE
+        and isinstance(m.get("policy"), dict)
+        and m["policy"].get("backend") == "hardware"
+    }
     if len(creds) != 1:
         return False, "no-hw-credential"
     cred = next(iter(creds.values()))
@@ -221,17 +238,30 @@ def _hardware_assertion_ok(user_id: str) -> tuple[bool, str]:
     challenge = cer.begin()
     try:
         raw = fido2_backend.CtapHidBackend().authenticate(
-            origin=fido2.ORIGIN, rp_id=fido2.RP_ID, challenge=challenge,
+            origin=fido2.ORIGIN,
+            rp_id=fido2.RP_ID,
+            challenge=challenge,
             credential_id=fido2._b64unpad(cred["credential_id"]),
-            user_verification="preferred")
-    except (fido2_backend.DeviceNotFound, fido2_backend.DeviceError,
-            RuntimeError, ValueError):
+            user_verification="preferred",
+        )
+    except (
+        fido2_backend.DeviceNotFound,
+        fido2_backend.DeviceError,
+        RuntimeError,
+        ValueError,
+    ):
         return False, "device-error"
     allow, reason, new_count = fido2.verify_hw_assertion(
-        credential=cred, challenge=challenge, origin=fido2.ORIGIN,
-        rp_id=fido2.RP_ID, authenticator_data=raw["authenticator_data"],
-        client_data_json=raw["client_data_json"], signature=raw["signature"],
-        ceremony=cer, expected_backend="hardware")
+        credential=cred,
+        challenge=challenge,
+        origin=fido2.ORIGIN,
+        rp_id=fido2.RP_ID,
+        authenticator_data=raw["authenticator_data"],
+        client_data_json=raw["client_data_json"],
+        signature=raw["signature"],
+        ceremony=cer,
+        expected_backend="hardware",
+    )
     if allow:
         try:
             fido2_store.update_sign_count(cred["credential_id"], new_count)
@@ -240,8 +270,9 @@ def _hardware_assertion_ok(user_id: str) -> tuple[bool, str]:
     return allow, reason
 
 
-def run_login(user: str, credential: str | None = None,
-              mock: bool = False, vault=None) -> int:
+def run_login(
+    user: str, credential: str | None = None, mock: bool = False, vault=None
+) -> int:
     """Interaktiv Admin-inloggning: FIDO2 + installationskod. 0/1/2.
 
     Standardläge är fysisk authenticator (ingen flagga). Mockat läge
@@ -263,9 +294,11 @@ def run_login(user: str, credential: str | None = None,
         steps.fail("Anslutning", str(e))
         return 1
     if record is None:
-        steps.fail("Anslutning",
-                   "ingen installationskod — fysisk återställning krävs "
-                   "(shallot admin reset-code --confirm)")
+        steps.fail(
+            "Anslutning",
+            "ingen installationskod — fysisk återställning krävs "
+            "(shallot admin reset-code --confirm)",
+        )
         audit_admin("auth-denied", {"user_id": user_id, "reason": "no-enrolled-code"})
         return 1
     steps.ok("Anslutning")
@@ -278,16 +311,21 @@ def run_login(user: str, credential: str | None = None,
         try:
             devs = fido2_backend.CtapHidBackend().describe_devices()
         except (fido2_backend.DeviceError, RuntimeError) as e:
-            steps.fail("Enhetsidentifiering", "%s (nästa steg: anslut en "
-                       "FIDO2-authenticator via USB — mockat testläge endast "
-                       "med --mock)" % e)
+            steps.fail(
+                "Enhetsidentifiering",
+                "%s (nästa steg: anslut en "
+                "FIDO2-authenticator via USB — mockat testläge endast "
+                "med --mock)" % e,
+            )
             audit_admin("auth-denied", {"user_id": user_id, "reason": "device-error"})
             return 1
         if not devs:
-            steps.fail("Enhetsidentifiering",
-                       "ingen fysisk authenticator hittad (nästa steg: anslut "
-                       "en FIDO2-authenticator via USB — mockat testläge "
-                       "endast med --mock)")
+            steps.fail(
+                "Enhetsidentifiering",
+                "ingen fysisk authenticator hittad (nästa steg: anslut "
+                "en FIDO2-authenticator via USB — mockat testläge "
+                "endast med --mock)",
+            )
             audit_admin("auth-denied", {"user_id": user_id, "reason": "device-error"})
             return 1
         steps.ok("Enhetsidentifiering", "%d enhet(er)" % len(devs))
@@ -316,8 +354,7 @@ def run_login(user: str, credential: str | None = None,
         state["code_locked"] = False
         state["code_attempts"] = 0
         _save_state(state)
-        steps.fail("Kodverifiering",
-                   "låst — FIDO2 förnyad, logga in igen för kod")
+        steps.fail("Kodverifiering", "låst — FIDO2 förnyad, logga in igen för kod")
         audit_admin("auth-denied", {"user_id": user_id, "reason": "locked"})
         return 1
 
@@ -332,26 +369,41 @@ def run_login(user: str, credential: str | None = None,
         locked = state["code_attempts"] >= MAX_CODE_ATTEMPTS
         state["code_locked"] = state["code_locked"] or locked
         _save_state(state)
-        steps.fail("Kodverifiering",
-                   "fel kod (%d/%d)%s" % (state["code_attempts"],
-                                          MAX_CODE_ATTEMPTS,
-                                          " — låst, ny FIDO2 krävs" if locked else ""))
-        audit_admin("auth-denied", {"user_id": user_id, "reason": "bad-code",
-                                    "attempt": state["code_attempts"]})
+        steps.fail(
+            "Kodverifiering",
+            "fel kod (%d/%d)%s"
+            % (
+                state["code_attempts"],
+                MAX_CODE_ATTEMPTS,
+                " — låst, ny FIDO2 krävs" if locked else "",
+            ),
+        )
+        audit_admin(
+            "auth-denied",
+            {
+                "user_id": user_id,
+                "reason": "bad-code",
+                "attempt": state["code_attempts"],
+            },
+        )
         return 1
     steps.ok("Kodverifiering")
 
     # 5–6. Session + revisionslogg.
     now = time.time()
-    state["session"] = {"user": user_id,
-                        "session_id": secrets.token_hex(8),
-                        "created": now, "last_activity": now}
+    state["session"] = {
+        "user": user_id,
+        "session_id": secrets.token_hex(8),
+        "created": now,
+        "last_activity": now,
+    }
     state["code_attempts"] = 0
     state["code_locked"] = False
     _save_state(state)
     steps.ok("Session", "15 minuters inaktivitetstid")
-    audit_admin("login", {"user_id": user_id,
-                           "backend": "mock" if mock else "hardware"})
+    audit_admin(
+        "login", {"user_id": user_id, "backend": "mock" if mock else "hardware"}
+    )
     steps.ok("Revisionslogg")
     print("Inloggad som %s." % user_id)
     return 0
@@ -390,8 +442,10 @@ def run_status() -> int:
         backend = vault_backend_name()
     except RuntimeError:
         backend = "okänt"
-    print("Admin-session: %s (giltig i ca %d s till, %d kodförsök kvar, valv: %s)."
-          % (sess["user"], max(0, left), max(0, attempts_left), backend))
+    print(
+        "Admin-session: %s (giltig i ca %d s till, %d kodförsök kvar, valv: %s)."
+        % (sess["user"], max(0, left), max(0, attempts_left), backend)
+    )
     return 0
 
 
@@ -406,8 +460,16 @@ def run_reset_code(confirm: bool, vault=None) -> int:
     bootstrap då ingen kod finns än). Genererad kod visas EN gång och
     måste matas in igen för att aktiveras.
     """
-    steps = Steps(names=("Session", "Bekräftelse", "Fysisk närvaro",
-                         "Ny kod", "Lagring", "Revisionslogg"))
+    steps = Steps(
+        names=(
+            "Session",
+            "Bekräftelse",
+            "Fysisk närvaro",
+            "Ny kod",
+            "Lagring",
+            "Revisionslogg",
+        )
+    )
     try:
         check_confirm(confirm, "reset-code")
     except ValueError as e:
@@ -432,8 +494,10 @@ def run_reset_code(confirm: bool, vault=None) -> int:
     steps.ok("Bekräftelse", "--confirm")
 
     try:
-        user_id = fido2.validate_user((state.get("session") or {}).get("user")
-                                      or input("Admin-användare: ").strip())
+        user_id = fido2.validate_user(
+            (state.get("session") or {}).get("user")
+            or input("Admin-användare: ").strip()
+        )
     except ValueError as e:
         steps.fail("Fysisk närvaro", str(e))
         return 2
@@ -443,8 +507,10 @@ def run_reset_code(confirm: bool, vault=None) -> int:
     allow, reason = _hardware_assertion_ok(user_id)
     if not allow:
         steps.fail("Fysisk närvaro", "%s (kräver fysisk authenticator)" % reason)
-        audit_admin("auth-denied", {"user_id": user_id, "reason": reason,
-                                    "action": "reset-code"})
+        audit_admin(
+            "auth-denied",
+            {"user_id": user_id, "reason": reason, "action": "reset-code"},
+        )
         return 1
     steps.ok("Fysisk närvaro", "HW-assertion")
 
@@ -454,13 +520,17 @@ def run_reset_code(confirm: bool, vault=None) -> int:
         again = getpass.getpass("Mata in koden igen för att aktivera: ")
     except (EOFError, KeyboardInterrupt):
         print("\nAvbrutet — ingen kod lagrades.", file=sys.stderr)
-        audit_admin("auth-denied", {"user_id": user_id, "reason": "aborted",
-                                    "action": "reset-code"})
+        audit_admin(
+            "auth-denied",
+            {"user_id": user_id, "reason": "aborted", "action": "reset-code"},
+        )
         return 2
     if not hmac.compare_digest(again or "", code):
         steps.fail("Ny kod", "matchade inte — ingen kod lagrades")
-        audit_admin("auth-denied", {"user_id": user_id, "reason": "mismatch",
-                                    "action": "reset-code"})
+        audit_admin(
+            "auth-denied",
+            {"user_id": user_id, "reason": "mismatch", "action": "reset-code"},
+        )
         return 1
     steps.ok("Ny kod", "bekräftad av operatören")
     try:

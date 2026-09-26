@@ -478,10 +478,13 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
 
     switch (status) {
         case EPD_STATUS_AUTHENTICATING: {
-            // Three dots in triangle pattern
-            drawCircleFilled(cx, cy - r / 2, r / 5, false);
-            drawCircleFilled(cx - r / 2, cy + r / 2, r / 5, false);
-            drawCircleFilled(cx + r / 2, cy + r / 2, r / 5, false);
+            // Bear head in profile — waiting indicator
+            int u = r / 10;
+            drawCircleFilled(cx - 6 * u, cy - 6 * u, 2 * u, false);
+            drawCircleFilled(cx - 2 * u, cy - u, 6 * u, false);
+            drawCircleFilled(cx + 4 * u, cy + 2 * u, 3 * u, false);
+            drawCircleFilled(cx + u, cy - 3 * u, 3, true);
+            drawLine(cx + 3 * u, cy + 4 * u, cx + 6 * u, cy + 3 * u, true);
             drawCircle(cx, cy, r + 10, false);
             break;
         }

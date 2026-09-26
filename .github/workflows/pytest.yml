@@ -1,17 +1,19 @@
 name: Pytest Suite
+permissions:
+  contents: read
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'tests/**'
-      - 'libraries/**'
-      - '.github/workflows/pytest.yml'
+      - tests/**
+      - libraries/**
+      - .github/workflows/pytest.yml
   pull_request:
     paths:
-      - 'tests/**'
-      - 'libraries/**'
-      - '.github/workflows/pytest.yml'
+      - tests/**
+      - libraries/**
+      - .github/workflows/pytest.yml
   workflow_dispatch:
 
 jobs:

@@ -13,7 +13,6 @@ Tests for:
 """
 
 import pathlib
-import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -65,9 +64,9 @@ def test_pro94_paw_buffers_cleared_on_provisioning_events():
 
     # Each rejection path calls paw_session_reset (wipes prov_buf + key_stored).
     assert lib.count("paw_session_reset(session)") >= 4
-    assert "memset(session, 0, sizeof(*session))" in lib   # reset zeroes struct
-    assert "shalot_crc32" in lib                            # CRC verified before store
-    assert "shalot_wipe(session->prov_buf" in lib           # staged bytes wiped on store
+    assert "memset(session, 0, sizeof(*session))" in lib  # reset zeroes struct
+    assert "shalot_crc32" in lib  # CRC verified before store
+    assert "shalot_wipe(session->prov_buf" in lib  # staged bytes wiped on store
 
 
 def test_pro94_paw_challenge_response_buffers_cleared():
@@ -79,9 +78,9 @@ def test_pro94_paw_challenge_response_buffers_cleared():
     assert "paw_session_clear_challenge(session)" in lib
     assert "shalot_wipe(session->challenge" in lib
     # Sketch wipes the transient response/transmit buffers after send.
-    assert "shalot_wipe(response, sizeof(response))" in src     # HMAC digest
-    assert "shalot_wipe(txPacket, sizeof(txPacket))" in src     # framed tx
-    assert "shalot_wipe(mac, sizeof(mac))" in src               # dock mac buffer
+    assert "shalot_wipe(response, sizeof(response))" in src  # HMAC digest
+    assert "shalot_wipe(txPacket, sizeof(txPacket))" in src  # framed tx
+    assert "shalot_wipe(mac, sizeof(mac))" in src  # dock mac buffer
 
 
 def test_pro94_paw_fail_closed_no_key():
@@ -144,9 +143,10 @@ def test_pro94_paw_secure_debug_guards():
         idx = src.find(log)
         if idx >= 0:
             # Check that #if SECURE_DEBUG appears before this line
-            before = src[max(0, idx-200):idx]
-            assert "#if SECURE_DEBUG" in before or "#ifdef SECURE_DEBUG" in before, \
-                f"Log '{log}' not guarded by SECURE_DEBUG"
+            before = src[max(0, idx - 200) : idx]
+            assert (
+                "#if SECURE_DEBUG" in before or "#ifdef SECURE_DEBUG" in before
+            ), f"Log '{log}' not guarded by SECURE_DEBUG"
 
 
 def test_pro94_den_sram_only_no_flash_writes():
@@ -236,9 +236,10 @@ def test_pro94_den_secure_debug_guards():
     for log in sensitive_logs:
         idx = src.find(log)
         if idx >= 0:
-            before = src[max(0, idx-200):idx]
-            assert "#if SECURE_DEBUG" in before, \
-                f"DEN log '{log}' not guarded by SECURE_DEBUG"
+            before = src[max(0, idx - 200) : idx]
+            assert (
+                "#if SECURE_DEBUG" in before
+            ), f"DEN log '{log}' not guarded by SECURE_DEBUG"
 
 
 def test_pro94_unoq_sram_only_no_flash_writes():
@@ -293,6 +294,32 @@ def test_pro94_unoq_fail_closed_no_key():
     assert "keyState = KeyState::ERROR_STATE" in src
 
 
+def test_pro94_unoq_ed25519_optout_staged():
+    """UNO Q Ed25519 opt-out (SHALLOT_NO_ED25519): stub fail-closed.
+
+    Staged unoq bring-up without the Crypto backend (uncompilable for the
+    unoq target): the Ed25519 include and sign_blocklist body are guarded,
+    the stub wipes the output buffer and returns false, and callers
+    already refuse transmit on false. Default build (flag absent) keeps
+    the full backend byte-identical.
+    """
+    src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
+    assert "#ifdef SHALLOT_NO_ED25519" in src
+    # Ren header (stdint/stddef + decls) inkluderas alltid ofarligt.
+    assert "#include <Ed25519.h>" in src
+    idx = src.index("static bool sign_blocklist(")
+    body = src[idx : src.index("\n}\n", idx)]
+    assert "#ifdef SHALLOT_NO_ED25519" in body
+    assert "return false" in body
+    assert "memset(signature, 0, BLOCKLIST_SIGNATURE_SIZE)" in body
+    # Callers must refuse transmit when signing fails.
+    assert "if (!sign_blocklist" in src
+
+    lib = get_src("libraries/Ed25519/src/Ed25519.cpp")
+    assert "#ifdef SHALLOT_NO_ED25519" in lib
+    assert "#endif  // SHALLOT_NO_ED25519" in lib
+
+
 def test_pro94_unoq_secure_debug_guards():
     """UNO Q sensitive logs guarded by SECURE_DEBUG."""
     src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
@@ -309,14 +336,17 @@ def test_pro94_unoq_secure_debug_guards():
     for log in sensitive_logs:
         idx = src.find(log)
         if idx >= 0:
-            before = src[max(0, idx-200):idx]
-            assert "#if SECURE_DEBUG" in before, \
-                f"UNO Q log '{log}' not guarded by SECURE_DEBUG"
+            before = src[max(0, idx - 200) : idx]
+            assert (
+                "#if SECURE_DEBUG" in before
+            ), f"UNO Q log '{log}' not guarded by SECURE_DEBUG"
 
 
 def test_pro94_ed25519_key_separation():
     """Ed25519 private key only on UNO Q, public key only on DEN."""
-    uno_src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
+    uno_src = get_src(
+        "key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino"
+    )
     den_src = get_src("plc/den-main/den-main.ino")
     paw_src = get_src("id-kort/paw-main/paw-main.ino")
 
@@ -349,18 +379,18 @@ def test_pro94_no_persistent_storage_across_reboots():
         # No explicit flash write operations for key material
         # (OTP/flash would require specific APIs)
         assert "OTP" not in src or "OTP" in src  # May appear in comments
-        assert "flash" not in src.lower() or "flash" in src.lower()  # May appear in comments
+        assert (
+            "flash" not in src.lower() or "flash" in src.lower()
+        )  # May appear in comments
 
 
 def test_pro94_paw_key_receiver_no_heap_for_crypto():
     """PAW key receiver should not use heap for crypto buffers."""
-    src = get_src("id-kort/paw-key-receiver/paw-key-receiver.ino")
     # Note: currently uses calloc/free for SHA256 msg buffer - flagged as deviation
 
 
 def test_pro94_plc_key_receiver_no_heap_for_crypto():
     """PLC key receiver should not use heap for crypto buffers."""
-    src = get_src("plc/plc-key-receiver/plc-key-receiver.ino")
     # Note: currently uses calloc/free for SHA256 msg buffer - flagged as deviation
 
 
@@ -396,13 +426,33 @@ def test_pro94_source_guards_no_printf_keys():
             if "Serial.print" in line or "printf" in line:
                 # Check it's guarded by SECURE_DEBUG or only prints hashes/fingerprints
                 stripped = line.strip()
-                if any(s in stripped for s in ["aesKey", "kMac", "kEnc", "blocklist_private_key", "denDevKey", "private_key", "master"]):
-                    if "keyHash" not in stripped and "fingerprint" not in stripped.lower() and "hash" not in stripped.lower():
+                if any(
+                    s in stripped
+                    for s in [
+                        "aesKey",
+                        "kMac",
+                        "kEnc",
+                        "blocklist_private_key",
+                        "denDevKey",
+                        "private_key",
+                        "master",
+                    ]
+                ):
+                    if (
+                        "keyHash" not in stripped
+                        and "fingerprint" not in stripped.lower()
+                        and "hash" not in stripped.lower()
+                    ):
                         # Allow under SECURE_DEBUG
-                        before_idx = max(0, i-5)
-                        context = "\n".join(lines[before_idx:i+1])
-                        if "#if SECURE_DEBUG" not in context and "#ifdef SECURE_DEBUG" not in context:
-                            pytest.fail(f"Potential key exposure in {path}:{i+1}: {stripped}")
+                        before_idx = max(0, i - 5)
+                        context = "\n".join(lines[before_idx : i + 1])
+                        if (
+                            "#if SECURE_DEBUG" not in context
+                            and "#ifdef SECURE_DEBUG" not in context
+                        ):
+                            pytest.fail(
+                                f"Potential key exposure in {path}:{i+1}: {stripped}"
+                            )
 
 
 def test_pro94_den_blocklist_fail_closed_no_valid_list():
@@ -442,28 +492,34 @@ def test_pro94_no_key_in_bridge_rpc():
     assert "aesKey" not in src or "aesKey" in src  # aesKey exists but not returned
 
     # No RPC returns raw key
-    rpcs = ["get_key_state", "get_key_fingerprint", "request_key_generation",
-            "request_key_distribution", "request_blocklist_distribution"]
+    rpcs = [
+        "get_key_state",
+        "get_key_fingerprint",
+        "request_key_generation",
+        "request_key_distribution",
+        "request_blocklist_distribution",
+    ]
     for rpc in rpcs:
         assert rpc in src
 
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])
 
 
 def _func_body(src, signature):
     """Return the brace-balanced body of a C function starting at signature."""
     lines = src.splitlines()
-    start = next(i for i, l in enumerate(lines) if signature in l)
+    start = next(i for i, line in enumerate(lines) if signature in line)
     depth, begun = 0, False
     for i in range(start, len(lines)):
         depth += lines[i].count("{") - lines[i].count("}")
         if "{" in lines[i]:
             begun = True
         if begun and depth == 0:
-            return "\n".join(lines[start:i + 1])
+            return "\n".join(lines[start : i + 1])
     raise AssertionError("unbalanced: " + signature)
 
 
@@ -497,5 +553,6 @@ def test_pro94_unoq_key_packet_wiped_after_use():
     src = get_src("key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino")
     body = _func_body(src, "static bool distributeKey(")
     assert "memset(keyPacket, 0, sizeof(keyPacket))" in body
-    assert body.find("Serial1.write(keyPacket, 22)") < \
-        body.find("memset(keyPacket, 0, sizeof(keyPacket))")
+    assert body.find("Serial1.write(keyPacket, 22)") < body.find(
+        "memset(keyPacket, 0, sizeof(keyPacket))"
+    )

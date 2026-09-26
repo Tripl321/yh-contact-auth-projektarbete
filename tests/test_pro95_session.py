@@ -32,28 +32,27 @@ def test_pro95_grant_arms_display_window_on_success():
 
 
 def test_pro95_expiry_reverts_to_locked():
-    assert "paw_session_clear_grant(session)" in LIB      # expiry clears grant
-    assert "paw_session_grant_expired(" in LIB            # expiry checker
-    assert "EPD_STATUS_AUTHENTICATING" in PAW            # reverts to locked display
-    assert "EPD_STATUS_AUTHENTICATED" in PAW             # and to authenticated
+    assert "paw_session_clear_grant(session)" in LIB  # expiry clears grant
+    assert "paw_session_grant_expired(" in LIB  # expiry checker
+    assert "EPD_STATUS_AUTHENTICATING" in PAW  # reverts to locked display
+    assert "EPD_STATUS_AUTHENTICATED" in PAW  # and to authenticated
 
 
 def test_pro95_expiry_runs_regardless_of_protocol_state():
     """Förfallet ligger efter switchen, inte i ett enskilt case:
     WAITING_FOR_RESULT har ingen timeout (väntar på LoRa-RESULT), så ett
     beviljande visat mitt i en session skulle annars aldrig förfalla."""
-    loop = PAW[PAW.find("void loop()"):]
-    poll_at = loop.find("pollProvisioning()")           # step 4
+    loop = PAW[PAW.find("void loop()") :]
     adv_at = loop.find("// 5. Advance shared session")  # step 5 header
     chal_at = loop.find("paw_session_challenge_timeout")  # challenge timeout
-    grant_at = loop.find("paw_session_grant_expired(")     # grant expiry
-    hb_at = loop.find("// 7. Heartbeat")                 # step 7
+    grant_at = loop.find("paw_session_grant_expired(")  # grant expiry
+    hb_at = loop.find("// 7. Heartbeat")  # step 7
     # Grant expiry is polled independently of the auth state machine (no switch).
     assert adv_at < chal_at < grant_at < hb_at
 
 
 def test_pro95_boot_is_locked():
-    setup = PAW[PAW.find("void setup()"):]
+    setup = PAW[PAW.find("void setup()") :]
     setup = setup[: setup.find("\n}\n")]
     assert "EPD_STATUS_AUTHENTICATING" in setup
     assert "EPD_STATUS_AUTHENTICATED" not in setup

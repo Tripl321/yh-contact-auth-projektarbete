@@ -63,13 +63,15 @@ _COUNT_RES = {
 def _stream_pytest(cmd: list[str]) -> tuple[str, int]:
     """Kör pytest med live-output (så långa sviter inte ser ut att ha
     fastnat). Returnerar (sammanslagen output, exit-kod). Timeout 600 s."""
-    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(
+        cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
     assert proc.stdout is not None
     chunks: list[str] = []
     deadline = time.monotonic() + 600
     try:
         import select
+
         haveselect = True
     except ImportError:
         haveselect = False
@@ -87,8 +89,9 @@ def _stream_pytest(cmd: list[str]) -> tuple[str, int]:
                     proc.kill()
                     raise subprocess.TimeoutExpired(cmd, 600)
                 try:
-                    ready, _, _ = select.select([proc.stdout], [], [],
-                                                min(remaining, 0.5))
+                    ready, _, _ = select.select(
+                        [proc.stdout], [], [], min(remaining, 0.5)
+                    )
                 except (OSError, ValueError):
                     haveselect = False
                     continue
@@ -108,7 +111,10 @@ def _stream_pytest(cmd: list[str]) -> tuple[str, int]:
 def run_suite(suite: str, as_json: bool = False) -> int:
     """Kör en svit. Exit 0 = alla godkända, 1 = fel/underkända, 2 = användning."""
     if suite not in SUITES:
-        print("error: okänd svit %r (välj: %s)" % (suite, "|".join(SUITES)), file=sys.stderr)
+        print(
+            "error: okänd svit %r (välj: %s)" % (suite, "|".join(SUITES)),
+            file=sys.stderr,
+        )
         return 2
     targets = SUITES[suite]
     missing = [t for t in targets if not (REPO_ROOT / t).exists()]
@@ -118,8 +124,9 @@ def run_suite(suite: str, as_json: bool = False) -> int:
     cmd = [sys.executable, "-m", "pytest", *targets, "-q", "--tb=short"]
     if as_json:
         try:
-            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True,
-                                  text=True, timeout=600)
+            proc = subprocess.run(
+                cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=600
+            )
         except FileNotFoundError:
             print("error: python-tolken hittades inte.", file=sys.stderr)
             return 1
@@ -132,8 +139,7 @@ def run_suite(suite: str, as_json: bool = False) -> int:
         output = (proc.stdout or "") + (proc.stderr or "")
         returncode = proc.returncode
     else:
-        print("shallot test: svit '%s' (%s)" % (suite, ", ".join(targets)),
-              flush=True)
+        print("shallot test: svit '%s' (%s)" % (suite, ", ".join(targets)), flush=True)
         try:
             output, returncode = _stream_pytest(cmd)
         except FileNotFoundError:
@@ -145,20 +151,35 @@ def run_suite(suite: str, as_json: bool = False) -> int:
         except OSError as e:
             print("error: kunde inte starta pytest: %s" % e, file=sys.stderr)
             return 1
-    counts = {k: (int(r.search(output).group(1)) if r.search(output) else 0)
-              for k, r in _COUNT_RES.items()}
+    counts = {
+        k: (int(r.search(output).group(1)) if r.search(output) else 0)
+        for k, r in _COUNT_RES.items()
+    }
     ok = returncode == 0 and counts["failed"] == 0 and counts["errors"] == 0
     if as_json:
-        print(json.dumps({
-            "suite": suite, "targets": targets,
-            "passed": counts["passed"], "failed": counts["failed"],
-            "skipped": counts["skipped"], "errors": counts["errors"],
-            "pytest_exit": returncode, "ok": ok,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "suite": suite,
+                    "targets": targets,
+                    "passed": counts["passed"],
+                    "failed": counts["failed"],
+                    "skipped": counts["skipped"],
+                    "errors": counts["errors"],
+                    "pytest_exit": returncode,
+                    "ok": ok,
+                },
+                indent=2,
+            )
+        )
     else:
-        print("passerade=%d misslyckade=%d hoppade_över=%d fel=%d" % (
-            counts["passed"], counts["failed"], counts["skipped"], counts["errors"]))
+        print(
+            "passerade=%d misslyckade=%d hoppade_över=%d fel=%d"
+            % (counts["passed"], counts["failed"], counts["skipped"], counts["errors"])
+        )
         if not ok:
-            print("SVIKT: inte alla tester godkända (pytest exit %d)." % returncode,
-                  file=sys.stderr)
+            print(
+                "SVIKT: inte alla tester godkända (pytest exit %d)." % returncode,
+                file=sys.stderr,
+            )
     return 0 if ok else 1

@@ -5,6 +5,7 @@ compile-time configurable trust root that defaults to fail-closed (all-zeros = d
 requires explicit pinning for production builds.
 
 **Changes implemented:**
+
 - `plc/den-main/den-main.ino`: `#ifdef SHALLOT_BLOCKLIST_PUBKEY` → use build-flag bytes;
   `#else` → all-zeros fail-closed default; `#error` via `SHALLOT_BLOCKLIST_REQUIRE_KEY`
   when the production key is missing; added `blocklist_trust_root_pinned()` runtime helper;
@@ -19,6 +20,7 @@ requires explicit pinning for production builds.
 - `docs/13-pro-53-fail-closed.md`: testcounts updated to 562.
 
 **Production build command:**
+
 ```bash
 arduino-cli compile -e \
   -DSHALLOT_BLOCKLIST_PUBKEY='0x01,0x02,...,0x20' \

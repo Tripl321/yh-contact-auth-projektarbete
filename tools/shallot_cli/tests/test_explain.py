@@ -11,7 +11,6 @@ import re
 import urllib.error
 
 import pytest
-
 from shallot_cli import cli, explain, ollama
 from shallot_cli.commands import explain_cmd
 
@@ -27,6 +26,7 @@ class _Resp(io.BytesIO):
 def _no_net(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("nätverk anropat i offlinetest")
+
     monkeypatch.setattr(ollama.urllib.request, "urlopen", boom)
 
 
@@ -34,6 +34,7 @@ def _fake_tags(monkeypatch, models):
     def fake(req, timeout=None):
         assert req.full_url.endswith("/api/tags")
         return _Resp(json.dumps({"models": [{"name": m} for m in models]}).encode())
+
     monkeypatch.setattr(ollama.urllib.request, "urlopen", fake)
 
 
@@ -46,6 +47,7 @@ def _fake_generate(monkeypatch, text, models=("llama3.2:latest",)):
         assert req.full_url.endswith("/api/generate")
         seen["body"] = json.loads(req.data.decode())
         return _Resp(json.dumps({"response": text}).encode())
+
     monkeypatch.setattr(ollama.urllib.request, "urlopen", fake)
     return seen
 
@@ -101,6 +103,7 @@ def test_ai_success_appends_elaboration(monkeypatch, capsys):
 def test_ai_missing_server_clear_error(monkeypatch, capsys):
     def down(*a, **k):
         raise urllib.error.URLError("Connection refused")
+
     monkeypatch.setattr(ollama.urllib.request, "urlopen", down)
     assert cli.main(["explain", "auth", "--ai"]) == 2
     res = capsys.readouterr()
@@ -124,8 +127,10 @@ def test_ai_empty_answer_is_error(monkeypatch, capsys):
 
 def test_non_loopback_host_refused_without_request(monkeypatch, capsys):
     _no_net(monkeypatch)
-    assert cli.main(["explain", "auth", "--ai", "--host",
-                     "http://192.168.1.10:11434"]) == 2
+    assert (
+        cli.main(["explain", "auth", "--ai", "--host", "http://192.168.1.10:11434"])
+        == 2
+    )
     assert "endast localhost" in capsys.readouterr().err
 
 
@@ -138,9 +143,13 @@ def test_resolve_base_loopback_forms():
 
 def test_resolve_base_rejects_remote(monkeypatch):
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    for bad in ("http://example.com", "http://10.0.0.5:11434",
-                "https://ollama.example.com", "ftp://localhost/x",
-                "http://user:pass@localhost:11434"):
+    for bad in (
+        "http://example.com",
+        "http://10.0.0.5:11434",
+        "https://ollama.example.com",
+        "ftp://localhost/x",
+        "http://user:pass@localhost:11434",
+    ):
         with pytest.raises(ollama.OllamaError):
             ollama.resolve_base(bad)
 

@@ -1,12 +1,18 @@
 """Tester för shallot_cli.sim — determinism, fail-closed, inga hemligheter."""
 
 import pytest
-
 from shallot_cli import fido2, sim
 
 
 def test_all_scenarios_known():
-    assert set(sim.SCENARIOS) == {"success", "wrong-key", "timeout", "crc", "disconnect", "late-ack"}
+    assert set(sim.SCENARIOS) == {
+        "success",
+        "wrong-key",
+        "timeout",
+        "crc",
+        "disconnect",
+        "late-ack",
+    }
 
 
 def test_success_grants_rest_deny_fail_closed():

@@ -14,6 +14,17 @@
 // Build requirement: "Crypto" library, tested v0.4.0
 // (Arduino Library Manager: arduino-cli lib install "Crypto@0.4.0").
 //
+// Staged bring-up: define SHALLOT_NO_ED25519 to compile WITHOUT the
+// Crypto backend (its RNG.cpp TU does not compile for the unoq target:
+// macro collision with the U5 CMSIS headers). With the flag set this TU
+// emits no code; callers must be guarded to never reference the symbols
+// (uno-q key-authority stubs sign_blocklist fail-closed). Default (flag
+// absent): full backend, byte-identical behavior. Full backend on unoq
+// = vendored SHA-512/Ed25519 (post-presentation track), never toolchain
+// surgery.
+#ifdef SHALLOT_NO_ED25519
+// No backend: intentionally empty translation unit.
+#else
 // NOTE on includes: this file must NOT #include <Ed25519.h> from the
 // Crypto library (same filename as ours; ours wins by --libraries order).
 // The class is therefore redeclared below with signatures copied verbatim
@@ -57,3 +68,5 @@ int ed25519_public_key(uint8_t *public_key, const uint8_t *private_key) {
     Ed25519::derivePublicKey(public_key, private_key);
     return 1;
 }
+
+#endif  // SHALLOT_NO_ED25519

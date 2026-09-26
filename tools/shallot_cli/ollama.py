@@ -43,8 +43,7 @@ def resolve_base(host: str | None = None) -> str:
             "(ingen data får lämna maskinen)" % raw
         )
     if parts.username or parts.password:
-        raise OllamaError(
-            "autentiseringsinfo i Ollama-adress stöds inte: %r" % raw)
+        raise OllamaError("autentiseringsinfo i Ollama-adress stöds inte: %r" % raw)
     return "%s://%s" % (parts.scheme, parts.netloc)
 
 
@@ -82,9 +81,9 @@ def model_available(base: str, model: str) -> bool:
 
 def generate(base: str, model: str, prompt: str) -> str:
     """Generera ett svar (stream=false). Kastar OllamaError vid fel."""
-    body = json.dumps(
-        {"model": model, "prompt": prompt, "stream": False}
-    ).encode("utf-8")
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode(
+        "utf-8"
+    )
     payload = _read(base + "/api/generate", body, GENERATE_TIMEOUT_S)
     text = payload.get("response", "")
     if not isinstance(text, str) or not text.strip():

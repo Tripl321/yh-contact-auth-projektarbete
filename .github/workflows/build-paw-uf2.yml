@@ -5,22 +5,21 @@ permissions:
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'id-kort/paw-main/**'
-      - 'plc/edge-challenge-response/**'
-      - 'shared/**'
-      - 'tests/test_pro52_protocol.py'
-      - '.github/workflows/build-paw-uf2.yml'
+      - id-kort/paw-main/**
+      - plc/edge-challenge-response/**
+      - shared/**
+      - tests/test_pro52_protocol.py
+      - .github/workflows/build-paw-uf2.yml
   pull_request:
     paths:
-      - 'id-kort/paw-main/**'
-      - 'plc/edge-challenge-response/**'
-      - 'shared/**'
-      - 'tests/test_pro52_protocol.py'
-      - '.github/workflows/build-paw-uf2.yml'
+      - id-kort/paw-main/**
+      - plc/edge-challenge-response/**
+      - shared/**
+      - tests/test_pro52_protocol.py
+      - .github/workflows/build-paw-uf2.yml
   workflow_dispatch:
-
 
 jobs:
   build:
@@ -142,4 +141,3 @@ jobs:
           path: build/edge-challenge-response/*.uf2
           compression-level: 0
           if-no-files-found: error
-
