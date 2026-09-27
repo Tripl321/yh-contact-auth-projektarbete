@@ -13,7 +13,7 @@ HMAC-SHA256(AES-128-nyckel, nonce). Status visas på en e-Paper-display.
 
 - **PLC**: Raspberry Pi Pico 2 (RP2350A) + Waveshare Core1262-868M (SX1262 LoRa)
 - **ID-kort**: Adafruit Feather RP2350 + Core1262-868M + 1.54" Waveshare e-Paper
-- **Key Authority**: Arduino UNO Q (Qualcomm QRB2210 + STM32U585) -- genererar AES-128-nycklar, distribuerar via USB till bada noder
+- **Key Authority**: Arduino UNO Q (Qualcomm QRB2210 + STM32U585) -- genererar AES-256-nycklar, distribuerar via USB till bada noder
 
 ## Kryptografiskt flode
 
