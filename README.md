@@ -1,6 +1,6 @@
 # SHALLOT
 
-SHALLOT är ett IoT-säkerhetsprojekt för autentisering mellan ett ID-kort (**PAW**) och en edge-/PLC-enhet (**DEN**).
+SHALLOT är ett OT-säkerhetsprojekt för autentisering mellan ett ID-kort (**PAW**) och en edgeenhet (**DEN**).
 
 Den aktiva MVP-arkitekturen använder fysisk dockning via USB-C och seriell kommunikation (UART). LoRa finns kvar i repot som äldre och framtida spår, bland annat för OTA och en enkelriktad larmkanal, men är inte den primära transporten i nuläget.
 
