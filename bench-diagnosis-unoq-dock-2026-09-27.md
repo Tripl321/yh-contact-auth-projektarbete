@@ -113,7 +113,9 @@ ceremonivagga (pogo): UNO Q UART ──→ DEN | PAW (en i taget, + GND + DOCK_D
 1. **USB-testnyckel** (demos): ✅ KLART — `act2=OK`.
 2. **MCU→MPU→USB med riktig nyckel**: ✅ KLART — e-paper AUTHENTICATED
    med `fp 71190F5C` (operatörens väg, se tillägg ovan).
-3. **Serial3-rework** (dock-ceremoni): vilande — behövs ej längre för
-   nyckeldistribution; kvar som hårdvaruspår för vagga/dock-detect.
+3. **Serial3-rework** (dock-ceremoni): STRUKET som irrelevant sedan
+   operatören beslutat MCU→MPU→USB. `DOCK_SERIAL` återställd till
+   `Serial1` (o verifierad experimentkod hör inte hemma i trädet);
+   usart3/D20/D21 förblir verifierad-i-register men obevisad ände-till-ände.
    Notera vid ev. dock-hårdvara: `usart3`=D20/D21 krockar med `i2c2`
    SoC-default (PB10/PB11) — skissen använder ej Wire.

@@ -49,10 +49,12 @@
 #define DISTRIB_TIMEOUT_MS 5000
 #define UART_BAUD          115200
 
-// Dock transport: Serial3 (= usart3 = D20/D21) — NOT Serial1 (usart1).
-// Serial1 is usart1 (PA9/PA10, console link to the Linux SoC) in core
-// 1.0.0; D0/D1 carry no UART. See bench-diagnosis-unoq-dock-2026-09-27.
-#define DOCK_SERIAL Serial3
+// NOTE (verified 2026-09-27): header-UART dock is non-functional in core
+// 1.0.0 — Serial1 is usart1 (PA9/PA10, console link to the Linux SoC),
+// not D0/D1. Key distribution runs MCU->MPU->USB by operator decision;
+// see bench-diagnosis-unoq-dock-2026-09-27. Serial3/usart3 (D20/D21)
+// was verified live in registers but never proven end-to-end.
+#define DOCK_SERIAL Serial1
 
 // PRO-93: Debug configuration — must be explicitly defined to enable
 // sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
@@ -224,7 +226,7 @@ static bool generateKey() {
 // Key Distribution Protocol (PRO-46)
 // =============================================================
 //
-// Transport: UART (DOCK_SERIAL on UNO Q D20/D21)
+// Transport: UART (dormant — header dock non-functional, see note above)
 //
 // Protocol:
 //   UNO Q -> Target:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
@@ -373,7 +375,7 @@ static bool distributeKey(uint8_t targetId) {
 // PRO-98: Signed blocklist distribution to DEN
 // =============================================================
 //
-// Format sent over DOCK_SERIAL (UART to DEN):
+// Format sent over DOCK_SERIAL (dormant path — USB ceremony is live):
 //   MSG_BLOCKLIST (0xA6)
 //   version      : 1 byte
 //   issuer       : 16 bytes (null-padded ASCII)
