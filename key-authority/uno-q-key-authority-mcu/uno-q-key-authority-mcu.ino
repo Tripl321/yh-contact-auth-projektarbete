@@ -49,6 +49,11 @@
 #define DISTRIB_TIMEOUT_MS 5000
 #define UART_BAUD          115200
 
+// Dock transport: Serial3 (= usart3 = D20/D21) — NOT Serial1 (usart1).
+// Serial1 is usart1 (PA9/PA10, console link to the Linux SoC) in core
+// 1.0.0; D0/D1 carry no UART. See bench-diagnosis-unoq-dock-2026-09-27.
+#define DOCK_SERIAL Serial3
+
 // PRO-93: Debug configuration — must be explicitly defined to enable
 // sensitive diagnostic output. Off by default (define SECURE_DEBUG=1 to enable).
 #ifdef SECURE_DEBUG
@@ -86,6 +91,11 @@ static uint8_t aesKey[AES_KEY_SIZE];
 static uint8_t keyHash[KEY_HASH_SIZE];
 static KeyState keyState = KeyState::UNINITIALIZED;
 static volatile uint8_t pendingDistributionTarget = 0;
+static bool bridgeLinkUp = false;
+static uint32_t lastBridgeRetryMs = 0;
+static const uint32_t BRIDGE_RETRY_INTERVAL_MS = 10000;
+static uint32_t lastBridgeRefreshMs = 0;
+static const uint32_t BRIDGE_REFRESH_INTERVAL_MS = 60000;
 
 // =============================================================
 // Hex output helpers (Serial.printf unavailable on Zephyr core)
@@ -214,7 +224,7 @@ static bool generateKey() {
 // Key Distribution Protocol (PRO-46)
 // =============================================================
 //
-// Transport: UART (Serial1 on UNO Q D0/D1)
+// Transport: UART (DOCK_SERIAL on UNO Q D20/D21)
 //
 // Protocol:
 //   UNO Q -> Target:  MSG_HANDSHAKE (0xA1) + target_id (1 byte)
@@ -226,7 +236,7 @@ static bool generateKey() {
 static inline bool waitForByte(uint8_t* byte, uint32_t timeoutMs) {
   uint32_t start = millis();
   do {
-    if (Serial1.available()) { *byte = Serial1.read(); return true; }
+    if (DOCK_SERIAL.available()) { *byte = DOCK_SERIAL.read(); return true; }
   } while (millis() - start < timeoutMs);
   return false;
 }
@@ -235,7 +245,7 @@ static inline bool waitForBytes(uint8_t* buffer, size_t count, uint32_t timeoutM
   size_t received = 0;
   uint32_t start = millis();
   while (received < count && millis() - start < timeoutMs) {
-    if (Serial1.available()) { buffer[received++] = Serial1.read(); }
+    if (DOCK_SERIAL.available()) { buffer[received++] = DOCK_SERIAL.read(); }
   }
   return (received == count);
 }
@@ -262,8 +272,8 @@ static bool distributeKey(uint8_t targetId) {
   // Step 1: Handshake (2 bytes, single write)
   Serial.print("[PRO-46] Sending handshake... ");
   uint8_t handshake[2] = { MSG_HANDSHAKE, targetId };
-  Serial1.write(handshake, 2);
-  Serial1.flush();
+  DOCK_SERIAL.write(handshake, 2);
+  DOCK_SERIAL.flush();
 
   uint8_t response;
   if (!waitForByte(&response, DISTRIB_TIMEOUT_MS) || response != MSG_READY) {
@@ -296,8 +306,8 @@ static bool distributeKey(uint8_t targetId) {
   keyPacket[19] = (uint8_t)(crc >> 16);
   keyPacket[20] = (uint8_t)(crc >> 8);
   keyPacket[21] = (uint8_t)(crc & 0xFF);
-  Serial1.write(keyPacket, 22);
-  Serial1.flush();
+  DOCK_SERIAL.write(keyPacket, 22);
+  DOCK_SERIAL.flush();
   // PRO-94: keyPacket holds the raw AES key — wipe immediately after use
   // so no key bytes linger in SRAM beyond the transmit.
   memset(keyPacket, 0, sizeof(keyPacket));
@@ -363,7 +373,7 @@ static bool distributeKey(uint8_t targetId) {
 // PRO-98: Signed blocklist distribution to DEN
 // =============================================================
 //
-// Format sent over Serial1 (USB UART to DEN):
+// Format sent over DOCK_SERIAL (UART to DEN):
 //   MSG_BLOCKLIST (0xA6)
 //   version      : 1 byte
 //   issuer       : 16 bytes (null-padded ASCII)
@@ -461,13 +471,13 @@ static bool distributeBlocklist() {
   }
 
   // Send MSG_BLOCKLIST
-  Serial1.write(MSG_BLOCKLIST);
-  Serial1.write(BLOCKLIST_VERSION);
-  Serial1.write(BLOCKLIST_ISSUER, 16);
-  Serial1.write(entry_count);
-  Serial1.write(entries, entry_count * KEY_HASH_SIZE);
-  Serial1.write(signature, BLOCKLIST_SIGNATURE_SIZE);
-  Serial1.flush();
+  DOCK_SERIAL.write(MSG_BLOCKLIST);
+  DOCK_SERIAL.write(BLOCKLIST_VERSION);
+  DOCK_SERIAL.write(BLOCKLIST_ISSUER, 16);
+  DOCK_SERIAL.write(entry_count);
+  DOCK_SERIAL.write(entries, entry_count * KEY_HASH_SIZE);
+  DOCK_SERIAL.write(signature, BLOCKLIST_SIGNATURE_SIZE);
+  DOCK_SERIAL.flush();
 
 #if SECURE_DEBUG
   Serial.print("[PRO-98] Blocklist sent: version ");
@@ -486,14 +496,20 @@ static bool distributeBlocklist() {
 // Bridge RPC — MPU communication (status only, no key material)
 // =============================================================
 
-static void setupBridgeRPC() {
-  Bridge.begin();
+// Bring up the Bridge link (begin + provides). Returns true only when the
+// router confirms every step. Safe to call repeatedly: re-registers the
+// RPC surface while the link is down, and refreshes it periodically.
+// LIMITATION (verified 2026-09-27): if the router restarts after the link
+// was up, re-sent BINDs do not restore the session — the MCU must reboot
+// (SWD/mailbox reset) to re-register. See bench-diagnosis doc.
+static bool setupBridgeRPC() {
+  bool up = Bridge.begin();
 
-  Bridge.provide("get_key_state", []() -> uint8_t {
+  up = Bridge.provide("get_key_state", []() -> uint8_t {
     return (uint8_t)keyState;
-  });
+  }) && up;
 
-  Bridge.provide("get_key_fingerprint", []() -> String {
+  up = Bridge.provide("get_key_fingerprint", []() -> String {
     // Pre-allocate exact size (8 hex chars + null terminator)
     String fp;
     fp.reserve(9);
@@ -502,24 +518,51 @@ static void setupBridgeRPC() {
       fp += HEX_CHARS[keyHash[i] & 0x0F];
     }
     return fp;
-  });
+  }) && up;
 
-  Bridge.provide("request_key_generation", []() -> bool {
+  // PRO-46/USB: expose the 16-byte master key as 32 hex chars so the MPU
+  // can provision DEN/PAW over USB. Fail-closed: empty unless a key was
+  // generated. Deviates from status-only Bridge by operator decision
+  // (airgapped host trusted with cleartext); see bench-diagnosis doc.
+  up = Bridge.provide("get_key_material", []() -> String {
+    if (keyState != KeyState::GENERATED &&
+        keyState != KeyState::DISTRIBUTED_PLC &&
+        keyState != KeyState::DISTRIBUTED_PAW &&
+        keyState != KeyState::DISTRIBUTED_BOTH) {
+      return String("");
+    }
+    String out;
+    out.reserve(2 * AES_KEY_SIZE + 1);
+    for (int i = 0; i < AES_KEY_SIZE; i++) {
+      out += HEX_CHARS[(aesKey[i] >> 4) & 0x0F];
+      out += HEX_CHARS[aesKey[i] & 0x0F];
+    }
+    return out;
+  }) && up;
+
+  up = Bridge.provide("request_key_generation", []() -> bool {
     return generateKey();
-  });
+  }) && up;
 
-  Bridge.provide("request_key_distribution", [](uint8_t targetId) -> bool {
+  up = Bridge.provide("request_key_distribution", [](int targetId) -> bool {
+    // int (not uint8_t): MsgPack fixint args must decode (the unpacker
+    // rejects narrow types); range is validated fail-closed here.
+    if (targetId != TARGET_PLC && targetId != TARGET_PAW) {
+      return false;
+    }
     Serial.print("[PRO-46] MPU requested distribution to target ");
     Serial.print(targetId);
     Serial.println(". Awaiting button press.");
-    pendingDistributionTarget = targetId;
+    pendingDistributionTarget = (uint8_t)targetId;
     return true;
-  });
+  }) && up;
 
-  Bridge.provide("request_blocklist_distribution", []() -> bool {
+  up = Bridge.provide("request_blocklist_distribution", []() -> bool {
     Serial.println("[PRO-98] MPU requested blocklist distribution.");
     return distributeBlocklist();
-  });
+  }) && up;
+
+  return up;
 }
 
 // =============================================================
@@ -559,12 +602,15 @@ static void printStatus() {
 
 void setup() {
   Serial.begin(UART_BAUD);
-  Serial1.begin(UART_BAUD);
+  DOCK_SERIAL.begin(UART_BAUD);
 
   pinMode(CONFIRM_BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED_PIN, OUTPUT);
 
-  setupBridgeRPC();
+  bridgeLinkUp = setupBridgeRPC();
+  lastBridgeRetryMs = millis();
+  Serial.print("Bridge link: ");
+  Serial.println(bridgeLinkUp ? "UP" : "PENDING (retry in loop)");
 
   delay(2000);
 
@@ -578,6 +624,37 @@ void setup() {
 }
 
 void loop() {
+  // Bridge link maintenance: the router may come up after us (or restart
+  // later). Re-attempt registration until it confirms; the RPC surface
+  // then appears with no reboot or reflash.
+  if (!bridgeLinkUp) {
+    uint32_t now = millis();
+    if (now - lastBridgeRetryMs >= BRIDGE_RETRY_INTERVAL_MS) {
+      lastBridgeRetryMs = now;
+      if (setupBridgeRPC()) {
+        bridgeLinkUp = true;
+        Serial.println("Bridge link: UP");
+        for (int i = 0; i < 3; i++) {
+          digitalWrite(STATUS_LED_PIN, HIGH);
+          delay(100);
+          digitalWrite(STATUS_LED_PIN, LOW);
+          delay(100);
+        }
+      }
+    }
+  }
+
+  // Periodic re-registration (side effect only): re-sends BINDs while the
+  // link is down. NOTE: verified 2026-09-27 that re-BINDs do NOT heal a
+  // link orphaned by a router restart — MCU reboot required (see above).
+  {
+    uint32_t now = millis();
+    if (now - lastBridgeRefreshMs >= BRIDGE_REFRESH_INTERVAL_MS) {
+      lastBridgeRefreshMs = now;
+      (void)setupBridgeRPC();
+    }
+  }
+
   // Serial command processing
   if (Serial.available()) {
     char cmd = Serial.read();

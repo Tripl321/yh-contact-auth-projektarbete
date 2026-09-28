@@ -71,7 +71,9 @@ static const uint8_t deviceId[4] = { 0x50, 0x4C, 0x43, 0x01 };  // "PLC\x01"
 #define LORA_RESET_PIN  8  // GP8 (physical pin 11)
 #define LORA_DIO1_PIN   21 // GP21 (physical pin 27)
 
-SPIClassRP2040 spi1(spi1);
+// NOTE: använder kärnans SPI1-objekt (arduino-pico). Eget SPIClassRP2040-
+// objekt med namnet spi1 kolliderar med pico-SDK:ts spi1-makro.
+
 
 // =============================================================
 // Minimal SHA-256 (same implementation as UNO Q firmware)
@@ -307,10 +309,10 @@ void setup() {
   Serial.begin(115200);
 
   // Initialize SPI1 for Core1262 (PRO-27)
-  spi1.setSCK(SPI1_SCK_PIN);
-  spi1.setTX(SPI1_MOSI_PIN);
-  spi1.setRX(SPI1_MISO_PIN);
-  spi1.begin();
+  SPI1.setSCK(SPI1_SCK_PIN);
+  SPI1.setTX(SPI1_MOSI_PIN);
+  SPI1.setRX(SPI1_MISO_PIN);
+  SPI1.begin();
   Serial.println("[PRO-27] SPI1 initialized for Core1262.");
   Serial1.begin(115200);  // UART to UNO Q (GP0=TX, GP1=RX)
 

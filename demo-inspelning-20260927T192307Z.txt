@@ -1,0 +1,105 @@
+=== SHALLOT DEMO RECORDING (TEST-ONLY bench, MVP: DENIED + GRANTED) ===
+waiting for DEN loop (max 20 s)...
+DEN loop alive
+waiting for PAW loop (max 20 s)...
+PAW loop alive
+--- Baseline: provision DEN + signed empty list ---
+  DEN provisioned fp=be45cb26
+  blocklist sent
+--- ACT 1: wrong key -> must be DENIED (fail closed) ---
+  PAW(wrong) provisioned fp=fc2e2c73
+  Watch the e-paper: should show FAILED.
+[DEN] �[DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN denied (ACK 0x00)
+[DEN] [DEN] FAILED: hmac mismatch (code 5)
+  [ACT1] code 0: 0, denied: 32
+  ACT 1 VERDICT: DENIED (expected)
+
+████ .██. ███ █... ████ ███.
+█... █..█ .█. █... █... █..█
+███. ████ .█. █... ███. █..█
+█... █..█ .█. █... █... █..█
+█... █..█ ███ ████ ████ ███.
+
+--- ACT 2: right key -> must be GRANTED ---
+  PAW(right) provisioned fp=be45cb26
+  Watch the e-paper: should show AUTHENTICATED.
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] AUTHENTICATED (code 0)
+[DEN] [DEN] session complete, returning to DENIED
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[DEN] [DEN] AUTHENTICATED (code 0)
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] session complete, returning to DENIED
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] AUTHENTICATED (code 0)
+[DEN] [DEN] session complete, returning to DENIED
+[PAW] [PRO-84] DEN acknowledged success
+[DEN] [DEN] CHALLENGE sent, waiting <=2000ms for RESPONSE
+  [ACT2] code 0: 5, denied: 0
+  ACT 2 VERDICT: GRANTED (expected)
+
+.██. █..█ █████ █..█ ████ █...█ █████ ███ .███ .██. █████ ████ ███.
+█..█ █..█ ..█.. █..█ █... ██..█ ..█.. .█. █... █..█ ..█.. █... █..█
+████ █..█ ..█.. ████ ███. █.█.█ ..█.. .█. █... ████ ..█.. ███. █..█
+█..█ █..█ ..█.. █..█ █... █..██ ..█.. .█. █... █..█ ..█.. █... █..█
+█..█ .██. ..█.. █..█ ████ █...█ ..█.. ███ .███ █..█ ..█.. ████ ███.
+
+=== END: act1=OK act2=OK ===
