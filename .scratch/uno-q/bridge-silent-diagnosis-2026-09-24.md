@@ -40,3 +40,14 @@ Båda avgörs på sekunder med USB-konsol (bootlogg syns direkt). Fjärrvägen (
 
 - **Repo (verifierade 2026-09-24):** `key-authority/uno-q-key-authority-mcu/uno-q-key-authority-mcu.ino` rader 217-300, 489-490, 560-578.
 - **Dokumentsökning:** forumtrådar + citerad Bridge-källkod. URL:er ej säkrade — bakgrundsagenten avbröts innan länkfil skrevs. Innan domslut på fynd 1 och 3: säkra primärkällorna (Arduino-forum, Bridge-lib-källkod på GitHub) och komplettera här.
+
+## Upplösning 2026-09-26 (SWD + router-loggar + RPC, ingen USB-konsol behövdes)
+
+**Ingen av kandidaterna stämde.** Verklig orsakskedja (allt verifierat):
+
+1. Sketchen flashades med brädans `arduino-flash` till **0x080F0000** — men 1.0.0-kärnan läser sketch (`user_sketch`) från **0x08100000**. Fel adress + fel format (rå ELF istället för zsk-container) → kärnan hittade ingen giltig sketch → idle i `arch_cpu_idle` (3× identisk PC, inga faults). "Tystnaden" var alltså: ingen sketch körde alls.
+2. Mamabear ÄR UNO Q:ns Linux-sida (`Machine model: Arduino UnoQ`, Debian 13). Dess USB visar bara interna hubbar + DEN/PAW — MCU:ns USB når aldrig hit. USB-konsol var fel spår från början.
+3. Rättelse: bygg zsk på Mac (`arduino-cli`, `NO_ED25519` pga RNG.cpp-kollision, `boot_mode=immediate`), flasha till **0x08100000** via SWD med kanoniska `flash_sketch.cfg`, mailbox-reboot. Domslut via SWD: boot → `llext_load` rc=0 → `bootstrap(main)` → `Bridge.begin(115200)` (this+baud verifierade) → **return TRUE** → loop kör (mon/connected-poll ~1/s i router-loggen).
+4. Kvar: routern (0.9.0) svarar `$/reset`/`$/version`/`$/register` men sketch-metoder syns ändå inte; `mon/connected=false` permanent (ingen gadget-värd). `Bridge.begin()` + provides behöver retry-tålighet → implementerat i sketch (`bringUpBridge()` + 10 s retry + 60 s re-registration, LED-ack vid länk-up).
+5. Verifierat fungerande: RPC `get_key_state`→0, `request_key_generation`→true, state→1, `get_key_fingerprint`→hash. LED-ack + bryggåterhämtning efter router-omstart delvis verifierad (återstår: orphan efter manuell router-omstart behöver MCU-reboot — dokumenterad begränsning, ej åtgärdad).
+6. Kvar att göra: knapp-initierad ceremoni utan konsol/RPC (designbeslut — knappen idag endast confirm), ev. router-uppdatering (versionsfrågan kvarstår: finns nyare arduino-router med full handshake?).

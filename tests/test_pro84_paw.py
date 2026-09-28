@@ -626,6 +626,39 @@ def test_pro59b_source_setup_never_grants_or_denies():
     assert "EPD_STATUS_FAILED" not in setup
 
 
+def test_pro11_epd_mid_refresh_request_is_buffered_not_lost():
+    """En status begärd mitt i en pågående refresh buffras och commitas av
+    poll() när panelen blir idle. Panelen låser sitt RAM under refresh, så
+    en ram som sänds mitt i refreshen går förlorad — och dedup mot _shown
+    (satt vid commit, inte vid begäran) får aldrig frysa en tappad ram
+    (bänkfynd 2026-09-24: björnen fastnade, verdict kom aldrig fram)."""
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parent.parent / "id-kort/paw-main/paw-main.ino"
+    ).read_text()
+    show_i = src.index("void ShallotEPD::showStatus")
+    draw_i = src.index("void ShallotEPD::drawStatus")
+    poll_i = src.index("void ShallotEPD::poll")
+    show_block = src[show_i:draw_i]
+    draw_block = src[draw_i:poll_i]
+    poll_block = src[poll_i : poll_i + 1400]
+
+    # showStatus: begäran mitt i refresh buffras, ingen direkt-sändning
+    assert "if (_updateBusy) {" in show_block
+    assert "_pendingValid = true" in show_block
+    assert "displayFrame" not in show_block
+    # drawStatus: _shown sätts först vid commit (panel idle); ramsändning
+    # enbart här — BLANK-grenen + normalvägen = exakt två anrop
+    assert "_shown = status;" in draw_block
+    assert draw_block.count("displayFrame(_buffer);") == 2
+    # poll: idle = committa senaste buffrade status; degrade rensar bufferten
+    assert "drawStatus(next)" in poll_block
+    assert "_pendingValid = false" in poll_block
+    degraded_tail = poll_block[poll_block.index("_degraded = true") :]
+    assert "_pendingValid = false" in degraded_tail
+
+
 # ============================================================================
 # PRO-59 fixes: missing key, strict RESULT length, stale-grant clear
 # ============================================================================

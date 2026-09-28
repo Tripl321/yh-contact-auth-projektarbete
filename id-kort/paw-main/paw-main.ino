@@ -217,9 +217,10 @@ public:
     void sleep();
     void clear();
     void displayFrame(const uint8_t* frameBuffer);
-    // showStatus draws the icon and STARTS the refresh, then returns
-    // immediately (never waits). Call poll() every loop pass to complete
-    // the refresh, run the post-BLANK sleep, or degrade on BUSY timeout.
+    // showStatus starts the refresh (or buffers the request while one is in
+    // flight) and returns immediately — never waits. Call poll() every loop
+    // pass to complete the refresh, commit a buffered request, run the
+    // post-BLANK sleep, or degrade on BUSY timeout.
     void showStatus(EpdStatus status);
     void poll();
 
@@ -241,6 +242,7 @@ private:
     void drawChar(char c, int x, int y);
     void drawText(const char* text, int x, int y);
     void drawBitmapCentered(const unsigned char* bmp, int w, int h, int y);
+    void drawStatus(EpdStatus status);
 
     uint8_t _buffer[EPD_BUFFER_SIZE];
     // Async refresh state (PRO-11): transmit starts in showStatus/clear,
@@ -249,8 +251,10 @@ private:
     bool _updateBusy = false;    // refresh in flight
     uint32_t _updateStart = 0;   // millis at trigger
     bool _pendingSleep = false;  // BLANK path sleeps after completion
-    EpdStatus _shown = EPD_STATUS_BLANK;  // last requested status
-    bool _shownValid = false;             // false until first showStatus
+    EpdStatus _shown = EPD_STATUS_BLANK;  // last committed status (panel idle)
+    bool _shownValid = false;             // false until first commit
+    EpdStatus _pending = EPD_STATUS_BLANK; // latest status requested mid-refresh
+    bool _pendingValid = false;
 };
 
 ShallotEPD::ShallotEPD() {
@@ -478,14 +482,9 @@ void ShallotEPD::drawIcon(int cx, int cy, int size, EpdStatus status) {
 
     switch (status) {
         case EPD_STATUS_AUTHENTICATING: {
-            // Bear head in profile — waiting indicator
-            int u = r / 10;
-            drawCircleFilled(cx - 6 * u, cy - 6 * u, 2 * u, false);
-            drawCircleFilled(cx - 2 * u, cy - u, 6 * u, false);
-            drawCircleFilled(cx + 4 * u, cy + 2 * u, 3 * u, false);
-            drawCircleFilled(cx + u, cy - 3 * u, 3, true);
-            drawLine(cx + 3 * u, cy + 4 * u, cx + 6 * u, cy + 3 * u, true);
-            drawCircle(cx, cy, r + 10, false);
+            // Bear badge — white bear cut out of a black blob (waiting indicator)
+            drawBitmapCentered(BEAR_BADGE, BEAR_BADGE_W, BEAR_BADGE_H,
+                              cy - BEAR_BADGE_H / 2);
             break;
         }
 
@@ -586,9 +585,22 @@ void ShallotEPD::drawBitmapCentered(const unsigned char* bmp, int w, int h,
 
 void ShallotEPD::showStatus(EpdStatus status) {
     if (_degraded) return;  // fail silent: display stays as-is, loop stays fast
+    // Panelen låser sitt RAM under pågående refresh: en ram som sänds nu
+    // går förlorad. Buffra senaste begäran; poll() commitar den vid idle.
+    if (_updateBusy) {
+        _pending = status;
+        _pendingValid = true;
+        return;
+    }
     // Flimmerfri UX: displayen visar senaste utfall, så identisk status
     // uppdateras aldrig om (en full refresh per ändring, inte per challenge).
     if (_shownValid && status == _shown) return;
+    drawStatus(status);
+}
+
+// Bygger ramen för `status` och startar refreshen. Anroparen garanterar
+// att panelen är idle (aldrig mitt i en refresh).
+void ShallotEPD::drawStatus(EpdStatus status) {
     _shownValid = true;
     _shown = status;
     if (status == EPD_STATUS_BLANK) {
@@ -623,6 +635,16 @@ void ShallotEPD::poll() {
     if (_degraded || !_updateBusy) return;
     if (digitalRead(EPD_BUSY_PIN) == LOW) {
         _updateBusy = false;
+        // Committa senaste buffrade begäran nu när panelen är idle
+        // (en nyare begäran går före post-BLANK-sömnen).
+        if (_pendingValid) {
+            EpdStatus next = _pending;
+            _pendingValid = false;
+            if (!_shownValid || next != _shown) {
+                drawStatus(next);
+                return;
+            }
+        }
         if (_pendingSleep) {
             _pendingSleep = false;
             sleep();
@@ -632,6 +654,7 @@ void ShallotEPD::poll() {
     if (millis() - _updateStart > EPD_REFRESH_TIMEOUT_MS) {
         _degraded = true;
         _updateBusy = false;
+        _pendingValid = false;
         _pendingSleep = false;
         Serial.println("[EPD] BUSY timeout - degraded display mode, dock auth continues");
     }

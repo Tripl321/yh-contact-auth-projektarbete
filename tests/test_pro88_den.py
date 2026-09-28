@@ -27,10 +27,10 @@ K_MAC = bytes(range(16))
 DEADLINE_MS = 2000
 SESSION_GAP_MS = 1000
 
-DEV_KEY = bytes(range(16))  # test-only master; PRO-93 forbids it in firmware
+DEV_KEY = bytes(range(16))  # TEST-ONLY master; PRO-93 forbids it in firmware
 K_MAC = bytes.fromhex(
     "99c7117275f487623752e6d5d0eb438f"
-)  # SHA-256(master || "MAC")[:16]
+)  # TEST-ONLY: SHA-256(master || "MAC")[:16]
 
 # HMAC-SHA256(K_mac, nonce 0x10..0x17) — pins firmware behavior (PRO-49, PRO-51).
 DEV_HMAC_HEX = "782b6a817980c559128e9804f6434d4a08ca0dacb2107658e7f777b1ecb57bda"
@@ -56,8 +56,11 @@ KEY_HASH_SIZE = 4
 BLOCKLIST_SIGNATURE_SIZE = 64  # Ed25519
 ED25519_PUBLIC_KEY_SIZE = 32  # Ed25519 public key size (bytes)
 
-# Test Ed25519 key pair for blocklist signing (generated once for testing).
-# Private key: 32 bytes, Public key: 32 bytes.
+# TEST-ONLY Ed25519-nyckelpair för blocklistsignering i testerna nedan.
+# Genererad en gång för detta repos testsviter; publicerad här med flit.
+# Den signerar ingenting i verkligheten och ska aldrig användas som
+# trust root i produktion (den|DE) nyckeln pinnas via byggflaggan
+# -DSHALLOT_BLOCKLIST_PUBKEY, se test_pro98_trust_root_build_config_guards.
 TEST_ED25519_PRIVATE_KEY = bytes.fromhex(
     "bf7ed457a2cdccedccf2dce7d00c1fc52b745573f06051dcbcb8cb5a4b592128"
 )
@@ -65,7 +68,7 @@ TEST_ED25519_PUBLIC_KEY = bytes.fromhex(
     "69439bd129608dbc156b181da38aa0350775cb2357801b62a32639885c16ae0c"
 )
 
-# Pre-computed test blocklist with one entry, signed with TEST_ED25519_PRIVATE_KEY.
+# TEST-ONLY försignerad lista, en post (deadbeef), under nyckeln ovan.
 # Format: version(1) + issuer(16) + entry_count(1) + entries + signature(64)
 TEST_BLOCKLIST_V1 = bytes.fromhex(
     "015348414c4c4f542d415554480000000001deadbeef"

@@ -38,8 +38,11 @@ from tests.test_pro88_den import (
     hmac16,
 )
 
-BLOCKED_MASTER = bytes(range(16))  # test-only master; fp goes on the list
-CLEAN_MASTER = bytes(range(1, 17))  # test-only master; fp stays unlisted
+BLOCKED_MASTER = bytes(range(16))  # TEST-ONLY master; fp goes on the list
+CLEAN_MASTER = bytes(range(1, 17))  # TEST-ONLY master; fp stays unlisted
+# TEST-ONLY främmande Ed25519-nyckel (syntetisk, inget som används någonstans
+# utanför testerna). Modellar fel/placeholder-trust root: lista signerad under
+# denna rot får ej installeras mot vår pinnade rot.
 OTHER_ED25519_PRIVATE = bytes.fromhex(
     "9d61b19f0854a2d6457cb4c1480b9e326f8c8f7ef2869fd8f7c8f8f8f8f8f8f8"
 )

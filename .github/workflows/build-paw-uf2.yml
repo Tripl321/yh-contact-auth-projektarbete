@@ -1,7 +1,18 @@
 name: Build PAW UF2 Firmware
+
+# Least privilege: byggjobbet läser, skriver bara release-steget.
+# id-token (OIDC) används inte av något steg här och är borttaget.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+# === versionsfästar beroenden (PRO-93-mönster) ============================
+# Byggresultatet ska vara reproducerbart: samma commit -> samma firmware.
+# Bumpa här, inte i två jobb. Uppdatera vid provat förnyat byggande.
+env:
+  ARDUINO_CLI_VERSION: v1.5.1
+  RP2040_CORE_VERSION: "6.1.1"
+  RADIOLIB_VERSION: "7.8.0"
+  AESLIB_VERSION: "2.3.6"
 
 on:
   push:
@@ -25,25 +36,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Actions är fästade på commit-SHA, inte på flyttbara taggar (@v4).
+      # Taggar kan flyttas efter att en review godkänt dem.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Arduino CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+          curl -fsSL "https://raw.githubusercontent.com/arduino/arduino-cli/${ARDUINO_CLI_VERSION}/install.sh" | sudo BINDIR=/usr/local/bin sh
 
       - name: Install RP2040 core
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
           arduino-cli core update-index
-          arduino-cli core install rp2040:rp2040
+          arduino-cli core install "rp2040:rp2040@${RP2040_CORE_VERSION}"
 
       - name: Install libraries (RadioLib)
-        run: arduino-cli lib install RadioLib
+        run: arduino-cli lib install "RadioLib@${RADIOLIB_VERSION}"
 
       - name: Build PAW firmware (UF2)
         run: |
@@ -73,7 +86,7 @@ jobs:
           fi
 
       - name: Upload UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: paw-main-uf2
           path: build/paw-main/paw-main.uf2
@@ -81,7 +94,10 @@ jobs:
 
       - name: Create Release (on main branch)
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        # Endast detta steg får skriva innehåll (skapat release).
+        permissions:
+          contents: write
         with:
           tag_name: paw-latest
           name: PAW Firmware (Latest)
@@ -95,24 +111,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Arduino CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sudo BINDIR=/usr/local/bin sh
+          curl -fsSL "https://raw.githubusercontent.com/arduino/arduino-cli/${ARDUINO_CLI_VERSION}/install.sh" | sudo BINDIR=/usr/local/bin sh
 
       - name: Install RP2040 core
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
           arduino-cli core update-index
-          arduino-cli core install rp2040:rp2040
+          arduino-cli core install "rp2040:rp2040@${RP2040_CORE_VERSION}"
 
       - name: Install libraries (RadioLib, AESLib)
-        run: arduino-cli lib install RadioLib "AESLib@2.3.6"
+        run: arduino-cli lib install "RadioLib@${RADIOLIB_VERSION}" "AESLib@${AESLIB_VERSION}"
 
       - name: Build edge challenge-response firmware (UF2)
         run: |
@@ -135,7 +151,7 @@ jobs:
           echo "UF2 file created: $UF2_FILE"
 
       - name: Upload UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: edge-challenge-response-uf2
           path: build/edge-challenge-response/*.uf2

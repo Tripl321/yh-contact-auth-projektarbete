@@ -345,6 +345,25 @@ konsulterar MamaBears godkännanden vid autentisering. Ett framtida
 Ed25519-nyckel, samma mönster som blocklist-signering) är specificerat
 som nästa steg i `docs/19-fido2-designspec.md`.
 
+### Commit inte lokala status-, approval- och credentialfiler
+
+`shallot` skriver löpande filer som innehåller autentiserings- och
+driftmetadata för en riktig installation:
+
+| Mönster | Innehåll | Kommandot |
+| --- | --- | --- |
+| `<user>.approval.json` | `credential_id` + publik COSE-nyckel för en verklig autentisator, `rp_id`/`origin`/`registered` | `shallot fido2 credential export` |
+| `mamabear-status-<tid>.json` | SSH-alias, tidsstämpel, sanerad fjärr-output | `shallot mamabear status` |
+
+Båda mönstren ligger i `.gitignore` (`*.approval.json`,
+`mamabear-status-*.json`) och ska inte committas. Filerna hör hemma i
+lokal Credential Store (`~/.shallot/`) och i nodens godkända katalog.
+Anonymiserade schema-exempel för dokumentation ligger i
+`docs/examples/` — de är avsiktligt inte användbara som credentials.
+
+Samma gäller nyckelmaterial (`*.key`, `*.pem`, `secrets.h`), vilket redan
+täcks av `.gitignore`. Se `docs/07-sakerhetsdesign.md`.
+
 ### Kända specifikationskonflikter
 
 1. **Nonce-längd:** `docs/01-kravspecifikation.md` (FR-CR-001),

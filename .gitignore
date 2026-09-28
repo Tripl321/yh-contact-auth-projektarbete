@@ -33,6 +33,27 @@ Thumbs.db
 secrets.h
 config_local.h
 
+# Lokal drift- och credentialmetadata — genererade, aldrig versionsstyrda.
+# approval-filer innehåller credential-id + publik nyckel för en riktig
+# autentisator; status-filer innehåller värdalias och tidsstämplad
+# fjärr-output. Anonymiserade exempel ligger i docs/examples/.
+*.approval.json
+mamabear-status-*.json
+
 # Dev artifacts
 .trunk/
-shallot_cli.egg-info/
+# Byggartefakt från pip/setuptools. Katalognamnet har en PUNKT
+# ("shallot.egg-info"), inte understreck — regeln med understreck
+# fångade aldrig den faktiska katalogen.
+*.egg-info/
+
+# gittuf (metadata cached locally; trust state lives in refs/gittuf/*)
+.gittuf/
+
+# Agent-verktygets worktrees och sessionsstate (ligger som en hel kopia av
+# repot inuti sig själv). Skyddas även i .git/info/exclude, men den filen är
+# lokal och följer inte med vid kloning — därför även här.
+.kilo/worktrees/
+.kilo/agent-manager.json
+.kilocode/worktrees/
+.kilocode/agent-manager.json

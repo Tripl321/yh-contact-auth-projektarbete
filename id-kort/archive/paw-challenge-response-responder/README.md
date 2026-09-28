@@ -22,8 +22,14 @@ Den arkiveras här med denna banner så att inget framtida arbete råkar aktiver
 
 ## Säkerhetsnot (historik)
 
-Den arkiverade `.ino`-filen innehåller en hårdkodad utvecklingsnyckel
-(`MASTER_KEY = 00..0F`, publik testvektor). Den är historik och byggs inte
-längre av CI (jobbet `build-paw-pro52` är borttaget). Återaktivera aldrig
-filen utan att ersätta nyckeln med provisionering eller explicit
-opt-in-guard enligt mönstret i `plc/edge-challenge-response/`.
+Den arkiverade `.ino`-filen innehåller den publika bänkvektorn
+`MASTER_KEY = 00..0F` (testmaterial, inte ett hemlighet). Sedan saneringen
+är den **fail-closed skyddad**: `#ifndef PAW_ARCHIVE_ALLOW_DEV_KEY` +
+`#error` gör att filen vägrar kompileras om inte byggaren uttryckligen
+opt-in:ar med `-DPAW_ARCHIVE_ALLOW_DEV_KEY=1`. Ingen CI-jobb gör det —
+`build-paw-pro52` är borttaget. Guardet är testlåst i
+`tests/test_edge_devkey_guard.py`.
+
+Återaktivera aldrig filen utan att ersätta nyckeln med provisionering
+eller explicit opt-in-guard enligt mönstret i
+`plc/edge-challenge-response/`.

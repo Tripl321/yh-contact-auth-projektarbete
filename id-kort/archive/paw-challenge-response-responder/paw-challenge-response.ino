@@ -20,6 +20,14 @@
  *
  * LoRa config (PRO-78): 868.1 MHz, SF7, BW125, CR4/5, sync 0x12, 20 dBm
  * Protocol (PRO-81): challenge-response with HMAC-SHA256 truncated to 8 bytes
+ *
+ * ARKIVERAD (se ../README.md) — RadioLib/LoRa är ur scope.
+ *
+ * TEST-ONLY DEVELOPMENT KEY (bench fixture, NEVER production):
+ * MASTER_KEY = 00..0F är en publik testvektor, inte ett hemlighet.
+ * Den får aldrig byggas till en firmware-artefakt utan explicit
+ * opt-in, precis som plc/edge-challenge-response/edge-challenge-response.ino:
+ * -DPAW_ARCHIVE_ALLOW_DEV_KEY=1. Utan flaggan vägrar bygget med #error.
  */
 
 #include <SPI.h>
@@ -43,6 +51,14 @@
 #define LORA_SYNC_WORD  0x12
 #define LORA_TX_POWER   20
 #define LORA_TIMEOUT_MS 5000
+
+// Fail-closed dev-key guard: MASTER_KEY nedan är en publik bänkvektor
+// (00..0F). Ingen artefakt får byggas från den utan att byggaren
+// uttryckligen opt-in:ar, och ingen CI-jobb gör det (jobbet
+// build-paw-pro52 är borttaget). Mönster: edge-challenge-response.ino.
+#ifndef PAW_ARCHIVE_ALLOW_DEV_KEY
+#error "arkiverad paw-challenge-response bäddar in en TEST-ONLY dev-nyckel; bygg aldrig den här filen (opt-in: -DPAW_ARCHIVE_ALLOW_DEV_KEY=1)"
+#endif
 
 static const uint8_t MASTER_KEY[SHALLOT_MASTER_KEY_LEN] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,

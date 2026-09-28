@@ -1,0 +1,48 @@
+{
+  "tool": "shallot",
+  "host_alias": "example-host",
+  "timestamp_utc": "1970-01-01T00:00:00Z",
+  "transport": {
+    "via": "system-ssh",
+    "alias_source": "~/.ssh/config",
+    "batch_mode": true,
+    "connect_timeout_s": 10,
+    "command_timeout_s": 30
+  },
+  "commands": [
+    {
+      "name": "exec-sanity",
+      "command": "echo MAMABEAR_SELFTEST_OK",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "MAMABEAR_SELFTEST_OK\n",
+      "stderr": ""
+    },
+    {
+      "name": "pipe-sanity",
+      "command": "printf 'a\\nb\\n' | wc -l",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "2\n",
+      "stderr": ""
+    },
+    {
+      "name": "clock",
+      "command": "date -u +%Y-%m-%dT%H:%M:%SZ",
+      "exit_code": 0,
+      "timed_out": false,
+      "check": "pass",
+      "output": "1970-01-01T00:00:00Z\n",
+      "stderr": ""
+    }
+  ],
+  "passed": 3,
+  "failed": 0,
+  "aborted": false,
+  "transport_error": null,
+  "teststatus": "pass",
+  "exit_code": 0,
+  "scope_note": "Fysisk status-/självtestverifiering av MamaBear-noden. Inte bevis för hela DEN–PAW-autentiseringskedjan."
+}

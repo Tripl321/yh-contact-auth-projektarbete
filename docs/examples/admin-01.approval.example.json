@@ -1,0 +1,16 @@
+{
+  "format": "shallot-fido2-approval/1",
+  "user_id": "example-user",
+  "credential_id": "ZXhhbXBsZS1jcmVkZW50aWFsLWlk",
+  "public_key": "ZXhhbXBsZS1wdWJsaWMta2V5LWNvc2UtZXhhbXBsZQ",
+  "rp_id": "shallot.local",
+  "origin": "https://shallot.local",
+  "backend": "mock",
+  "attestation": "none",
+  "user_verification": "preferred",
+  "registered": "1970-01-01T00:00:00Z",
+  "status": "active",
+  "fingerprint": "0000000000000000",
+  "exported_at": "1970-01-01T00:00:00Z",
+  "scope_note": "Endast publik metadata. Privat nyckel lämnar aldrig authenticatorn. Godkännande hos MamaBear är bokföring, ännu ej verkställighet."
+}
