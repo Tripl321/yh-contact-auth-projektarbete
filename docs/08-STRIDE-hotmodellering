@@ -1,0 +1,61 @@
+# STRIDE-hotmodellering – SHALLOT UART-MVP
+
+## Syfte och avgränsning
+
+Detta är en STRIDE-hotmodellering för SHALLOTs **aktiva MVP**: fysisk dockning mellan PAW och DEN över UART Serial1. Den omfattar inte den tidigare LoRa-inriktningen, som ligger utanför aktiv scope.
+
+Målet är att identifiera hot mot den lokala autentiseringskedjan, dokumentera befintliga kontroller och tydliggöra kvarvarande risker. Dokumentet är en design- och granskningsartefakt; det är inte ett bevis på fullständig fysisk hårdvaruverifiering eller produktionsmognad.
+
+## System och tillitsgränser
+
+* **PAW** är den portabla identitetsbrickan och svarar endast på challenge från DEN.
+* **DEN** initierar autentiseringen och fattar beslut om åtkomst.
+* **Fysisk dockning** över pogo-pins/USB-C utgör gränssnittet mellan PAW och DEN. UART transporterar challenge, response, ACK, alarm och heartbeat—inte rått nyckelmaterial.
+* **Provisionering/nyckelauktoritet** ligger utanför den tidskritiska UART-sessionen.
+* Delad master-nyckel och härledda nycklar (`K_mac` och reserverad `K_enc`) hålls avsedda i flyktigt SRAM på PAW och DEN.
+
+### Dataflöde
+
+1. DEN skickar `CHALLENGE` med en färsk 64-bitars nonce
+2. PAW returnerar `RESPONSE` med `HMAC-SHA256(K_mac, nonce)`
+3. DEN verifierar svaret och genomför policykontroller
+4. DEN skickar `ACK` med godkännande eller nekande
+5. Vid fel, timeout eller ogiltig validering nekas åtkomst
+
+## Skyddsvärden
+
+* Master- och MAC-nycklar
+* Nonce, HMAC-svar och protokollintegritet
+* Åtkomstbeslut och systemets fail-closed-beteende
+* PAW:s och DEN:s firmware samt flyktiga tillstånd
+* Status- och alarminformation
+* Tilliten till provisionering och blocklistekonfiguration
+
+## STRIDE-analys
+
+| Hotkategori | Hotbild | Befintliga kontroller | Restrisk och behov |
+| -- | -- | -- | -- |
+| **Spoofing** | En angripare försöker utge sig för att vara en giltig PAW eller DEN. | DEN använder färsk nonce och PAW svarar med HMAC-SHA256. DEN jämför HMAC i konstant tid. PAW är responder-only och DEN avvisar oombedd PAW-trafik. | Ett korrekt HMAC visar innehav av nyckelmaterial men skyddar inte mot nyckelextraktion från en påslagen eller komprometterad enhet. Fysisk åtkomst och firmwarekompromettering måste ingå i hotantagandena och testas vidare. |
+| **Tampering** | En angripare med fysisk åtkomst ändrar, injicerar eller trunkerar UART-trafik. | Strikta meddelandetyper och längder, CRC32, parser-resynkronisering, HMAC-kontroll och fail-closed vid fel. | CRC32 detekterar oavsiktlig korruption men är inte ett kryptografiskt integritetsskydd. Manipulerade challenge- eller response-ramar ska leda till nekande, men protokollet behöver verifieras med fysisk UART-fault-injection. |
+| **Repudiation** | Det går inte i efterhand att avgöra om en viss autentisering, nekning eller blockering har inträffat. | DEN fattar beslut och skickar explicit ACK. | Det aktiva UART-flödet visar inte en beständig, manipulationsskyddad revisionslogg. Krav på loggning, tidsstämpling, lagring, åtkomst och integritet behöver definieras innan spårbarhet kan hävdas. |
+| **Information Disclosure** | En angripare läser UART-trafik, statusinformation eller nyckelmaterial. | UART transporterar challenge, HMAC och status—not råa nycklar. E-paper visar begränsad status utan namn eller roll. Nycklar är avsedda att ligga i flyktigt SRAM. | UART-payloaden är inte beskriven som krypterad i den aktiva MVP:n. En fysisk angripare kan observera metadata och trafik. SRAM skyddar inte mot fysisk extraktion under drift, sidokanaler eller komprometterad firmware. |
+| **Denial of Service** | Dockning, UART eller motpart störs så att legitim autentisering inte kan slutföras. | Byte-timeout på 100 ms, svarstidsgräns på två sekunder, strikta ramar och fail-closed vid timeout, frånkoppling eller ogiltiga ramar. | Fail-closed skyddar mot felaktigt godkännande men ger avsiktligt en tillgänglighetskostnad vid störning. Driftpolicy behöver definiera larm, återställning och kontrollerad break-glass utan att försvaga den normala accesskedjan. |
+| **Elevation of Privilege** | En angripare försöker få åtkomst utöver sin behörighet genom stulen PAW, felaktig blocklista, svag provisionering eller kringgång av policy. | DEN kräver giltigt HMAC-svar och genomför policykontroller före godkännande. Fel i nyckel, ram, timeout eller blocklistevalidering ska ge nekande. | Tillitskedjan är bara så stark som provisioneringen och blocklistekonfigurationen. Giltig förtroenderot, signerad blocklista, nyckellivscykel, spärrning av förlorade enheter och fysisk nyckelskyddsmekanism behöver vara på plats före drift. |
+
+## Viktiga tekniska observationer
+
+* Den aktiva UART-specifikationen beskriver både HMAC över `epoch || nonce` och en låst implementation med `HMAC(K_mac, nonce)`. Den motsägelsen behöver lösas genom att en enda, testad transkriptdefinition beslutas och dokumenteras.
+* Replay-skyddet i aktiv UART bygger på färsk nonce. Det finns ingen implementerad epoch eller räknare i response-transkriptet. Det bör verifieras mot realistiska omstarts- och återspelningsscenarier.
+* UART-protokolldokumentet är märkt som utkast. Därför ska kontrollerna ovan beskrivas som dokumenterade och delvis testade, inte som slutligt hårdvaruverifierade.
+
+## Prioriterade åtgärder
+
+1. Fastställ en entydig HMAC-transkriptdefinition och uppdatera implementation, testvektorer och dokumentation tillsammans.
+2. Genomför fysisk end-to-end-testning av dockning, UART-timeouter, injicerade fel, frånkoppling och fail-closed-beteende; spara daterade körloggar och buildartefakter.
+3. Verifiera nyckelhantering i verklig hårdvara, inklusive SRAM-rensning, fysisk extraktion, firmwareintegritet och relevanta sidokanaler.
+4. Definiera en säker provisionerings- och blocklisteprocess med giltig förtroenderot, signerade uppdateringar, nyckelrotation och spärrning.
+5. Ta fram krav för revisionsloggning och kontrollerad break-glass, inklusive ansvar, granskningsbarhet och konsekvenser för säkerhet respektive tillgänglighet.
+
+## Bedömning
+
+SHALLOTs aktiva MVP har en tydlig säkerhetsprincip: en lokalt verifierad challenge-response-kedja där osäkerhet leder till nekad åtkomst. STRIDE-analysen visar att de mest betydande kvarvarande riskerna ligger i fysisk åtkomst, nyckelskydd, provisionering, verifierbar hårdvaruintegration och dokumentationskonsekvens. Dessa områden bör behandlas som krav för nästa mognadsnivå, inte som redan lösta egenskaper.
